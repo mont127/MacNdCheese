@@ -45,8 +45,6 @@ DEFAULT_STEAM_SETUP = str(Path.home() / "Downloads" / "SteamSetup.exe")
 DEFAULT_MESA_DIR = str(Path.home() / "mesa" / "x64")
 DXVK_DLLS = ("dxgi.dll", "d3d11.dll", "d3d10core.dll")
 
-# Mesa (Windows build) download - used to provide a modern OpenGL implementation inside Wine.
-# We use the .7z artifact because GitHub's zip redirects can sometimes produce HTML stubs.
 DEFAULT_MESA_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
 
 
@@ -57,7 +55,6 @@ LAUNCH_BACKEND_MESA_LLVMPIPE = "mesa:llvmpipe"
 LAUNCH_BACKEND_MESA_ZINK = "mesa:zink"
 LAUNCH_BACKEND_MESA_SWR = "mesa:swr"
 
-# Mesa driver tokens
 MESA_DRIVER_LLVMPIPE = "llvmpipe"
 MESA_DRIVER_ZINK = "zink"
 MESA_DRIVER_SWR = "swr"
@@ -87,7 +84,7 @@ class GameEntry:
         if not self.game_dir.exists():
             return None
 
-        # 0) Unreal Engine fast-path: prefer the real Shipping binary if present
+        
         try:
             shipping = sorted(
                 self.game_dir.glob("**/*-Shipping.exe"),
@@ -99,7 +96,7 @@ class GameEntry:
         except Exception:
             pass
 
-        # 1) Try obvious names in the root folder
+       
         candidates: list[Path] = []
         for name in (
             f"{self.install_dir_name}.exe",
@@ -111,7 +108,7 @@ class GameEntry:
             if p.exists():
                 candidates.append(p)
 
-        # 2) Scan root folder for EXEs, largest first
+       
         def _is_probably_not_game(exe: Path) -> bool:
             lowered = exe.name.lower()
             bad_tokens = (
@@ -130,8 +127,7 @@ class GameEntry:
         root_exes = sorted(self.game_dir.glob("*.exe"), key=lambda p: p.stat().st_size, reverse=True)
         candidates.extend([p for p in root_exes if not _is_probably_not_game(p)])
 
-        # 3) Some games store the main EXE in a subfolder. Search a little deeper.
-        # Keep it reasonably shallow to avoid heavy scans.
+      
         sub_exes: list[Path] = []
         patterns = [
             "*/*.exe",
@@ -147,8 +143,8 @@ class GameEntry:
                 if exe.is_file() and not _is_probably_not_game(exe):
                     sub_exes.append(exe)
 
-        # Prefer Unreal Engine shipping binaries if present
-        # Typical: <Game>/WindowsNoEditor/<Game>/Binaries/Win64/*-Win64-Shipping.exe
+       
+       
         shipping = [p for p in sub_exes if "shipping.exe" in p.name.lower()]
         shipping.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
         if shipping:
@@ -157,7 +153,7 @@ class GameEntry:
         sub_exes.sort(key=lambda p: p.stat().st_size, reverse=True)
         candidates.extend(sub_exes)
 
-        # 4) If we found anything, pick the largest plausible EXE
+       
         for exe in candidates:
             try:
                 if exe.exists() and exe.is_file():
@@ -298,6 +294,8 @@ class MainWindow(QMainWindow):
         self.games: list[GameEntry] = []
         self.last_game_launch_ts: dict[str, float] = {}
         self.last_game_wine_log: dict[str, Path] = {}
+        self.simple_ui_enabled: bool = False
+        self.dev_ui_enabled: bool = False
 
         self._build_ui()
         self._build_menu()
@@ -357,6 +355,39 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(paths_box)
 
+        ui_mode_box = QGroupBox("UI")
+        ui_mode_layout = QGridLayout(ui_mode_box)
+
+        self.simple_ui_btn = QPushButton("Simplified UI")
+        self.simple_ui_btn.setCheckable(True)
+        self.simple_ui_btn.clicked.connect(self.toggle_simplified_ui)
+
+        self.dev_ui_btn = QPushButton("Dev UI")
+        self.dev_ui_btn.setCheckable(True)
+        self.dev_ui_btn.clicked.connect(self.toggle_dev_ui)
+
+        ui_mode_layout.addWidget(self.simple_ui_btn, 0, 0)
+        ui_mode_layout.addWidget(self.dev_ui_btn, 0, 1)
+
+        left_layout.addWidget(ui_mode_box)
+
+        
+        quick_box = QGroupBox("Quick Setup")
+        quick_layout = QVBoxLayout(quick_box)
+
+        self.quick_setup_btn = QPushButton("One Click Setup")
+        self.quick_setup_btn.clicked.connect(self.quick_setup)
+        quick_layout.addWidget(self.quick_setup_btn)
+
+        quick_hint = QLabel("Installs tools, Wine, builds DXVK (64/32), then installs Mesa")
+        quick_hint.setWordWrap(True)
+        quick_layout.addWidget(quick_hint)
+
+        left_layout.addWidget(quick_box)
+        self._quick_setup_box = quick_box
+
+        self._paths_box = paths_box
+
         setup_box = QGroupBox("Setup")
         setup_grid = QGridLayout(setup_box)
 
@@ -389,6 +420,7 @@ class MainWindow(QMainWindow):
 
         setup_grid.addWidget(self.install_steam_btn, 3, 0, 1, 2)
         left_layout.addWidget(setup_box)
+        self._setup_box = setup_box
 
         runtime_box = QGroupBox("Runtime")
         runtime_grid = QGridLayout(runtime_box)
@@ -430,6 +462,7 @@ class MainWindow(QMainWindow):
         runtime_grid.addWidget(self.show_player_log_btn, 5, 0, 1, 2)
 
         left_layout.addWidget(runtime_box)
+        self._runtime_box = runtime_box
 
         status_box = QGroupBox("Status")
         status_layout = QVBoxLayout(status_box)
@@ -437,6 +470,7 @@ class MainWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         status_layout.addWidget(self.status_label)
         left_layout.addWidget(status_box)
+        self._status_box = status_box
 
         left_layout.addStretch(1)
 
@@ -475,6 +509,61 @@ class MainWindow(QMainWindow):
     def set_status(self, message: str) -> None:
         self.status_label.setText(message)
         self.log(message)
+
+    def toggle_simplified_ui(self) -> None:
+        self.simple_ui_enabled = bool(self.simple_ui_btn.isChecked())
+        if self.simple_ui_enabled and self.dev_ui_enabled:
+            self.dev_ui_enabled = False
+            self.dev_ui_btn.setChecked(False)
+        self.apply_ui_modes()
+
+    def toggle_dev_ui(self) -> None:
+        self.dev_ui_enabled = bool(self.dev_ui_btn.isChecked())
+        if self.dev_ui_enabled and self.simple_ui_enabled:
+            self.simple_ui_enabled = False
+            self.simple_ui_btn.setChecked(False)
+        self.apply_ui_modes()
+
+    def apply_ui_modes(self) -> None:
+        if getattr(self, "simple_ui_enabled", False):
+            self._setup_box.setVisible(False)
+            self._quick_setup_box.setVisible(True)
+            if hasattr(self, "dxvk_src_edit"):
+                self.dxvk_src_edit.setVisible(False)
+            if hasattr(self, "dxvk_install_edit"):
+                self.dxvk_install_edit.setVisible(False)
+            if hasattr(self, "dxvk_install32_edit"):
+                self.dxvk_install32_edit.setVisible(False)
+            if hasattr(self, "mesa_dir_edit"):
+                self.mesa_dir_edit.setVisible(False)
+            self.set_status("Simplified UI enabled")
+            return
+
+        if getattr(self, "dev_ui_enabled", False):
+            self._setup_box.setVisible(True)
+            self._quick_setup_box.setVisible(False)
+            if hasattr(self, "dxvk_src_edit"):
+                self.dxvk_src_edit.setVisible(True)
+            if hasattr(self, "dxvk_install_edit"):
+                self.dxvk_install_edit.setVisible(True)
+            if hasattr(self, "dxvk_install32_edit"):
+                self.dxvk_install32_edit.setVisible(True)
+            if hasattr(self, "mesa_dir_edit"):
+                self.mesa_dir_edit.setVisible(True)
+            self.set_status("Dev UI enabled")
+            return
+
+        self._setup_box.setVisible(True)
+        self._quick_setup_box.setVisible(False)
+        if hasattr(self, "dxvk_src_edit"):
+            self.dxvk_src_edit.setVisible(True)
+        if hasattr(self, "dxvk_install_edit"):
+            self.dxvk_install_edit.setVisible(True)
+        if hasattr(self, "dxvk_install32_edit"):
+            self.dxvk_install32_edit.setVisible(True)
+        if hasattr(self, "mesa_dir_edit"):
+            self.mesa_dir_edit.setVisible(True)
+        self.set_status("UI mode reset")
 
     @property
     def prefix_path(self) -> Path:
@@ -531,7 +620,7 @@ class MainWindow(QMainWindow):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
-        # If an old QThread wrapper exists but its underlying C++ object was deleted, reset it.
+        
         if self.worker_thread is not None:
             try:
                 if self.worker_thread.isRunning():
@@ -543,7 +632,7 @@ class MainWindow(QMainWindow):
 
         self.set_status("Task running")
 
-        # Parent the thread to the window to avoid premature deletion/GC.
+       
         self.worker_thread = QThread(self)
         self.worker = CommandWorker(commands, env=env, cwd=cwd)
         self.worker.moveToThread(self.worker_thread)
@@ -575,7 +664,7 @@ class MainWindow(QMainWindow):
             return self.wine_binary()
         except Exception as exc:
             msg = str(exc)
-            # If Wine is missing, kick off installation automatically (best effort).
+           
             if "wine not found" in msg.lower() or "no such file" in msg.lower():
                 QMessageBox.information(
                     self,
@@ -593,8 +682,7 @@ class MainWindow(QMainWindow):
         )
 
     def install_wine(self) -> None:
-        # Try the Homebrew cask first (typical on macOS), then fall back to formula.
-        # XQuartz can be required on some setups, but installing it is harmless.
+       
         self.run_commands(
             [
                 [
@@ -625,7 +713,7 @@ class MainWindow(QMainWindow):
                     f"curl -L -o mesa.7z {shlex.quote(url)}; "
                     "mkdir -p mesa; "
                     "7z x mesa.7z -omesa >/dev/null; "
-                    # Some releases extract directly to ~/mesa/x64; others to a subfolder.
+                   
                     "if [ ! -d ~/mesa/x64 ] && ls -1 ~/mesa | grep -q mesa3d-; then "
                     "  sub=$(ls -1 ~/mesa | grep mesa3d- | head -n1); "
                     "  if [ -d ~/mesa/$sub/x64 ]; then "
@@ -638,6 +726,46 @@ class MainWindow(QMainWindow):
         ]
 
         self.run_commands(commands)
+
+    def quick_setup(self) -> None:
+        src = self.dxvk_src
+        if not src.exists():
+            QMessageBox.warning(self, APP_NAME, f"DXVK source folder not found: {src}\n\nFix: set 'DXVK source' to your DXVK-macOS folder (git clone), then try again.")
+            return
+
+        cross64 = src / "build-win64.txt"
+        cross32 = src / "build-win32.txt"
+        if not cross64.exists() or not cross32.exists():
+            QMessageBox.warning(self, APP_NAME, f"DXVK cross files not found in: {src}\nExpected: build-win64.txt and build-win32.txt")
+            return
+
+        install64 = self.dxvk_install
+        install32 = self.dxvk_install32
+
+        script = (
+            "set -euo pipefail; "
+            "brew install git meson ninja mingw-w64 glslang p7zip winetricks || true; "
+            "brew install --cask xquartz || true; "
+            "brew install --cask wine-stable || brew install wine-stable || true; "
+            f"mkdir -p {shlex.quote(str(install64))} {shlex.quote(str(install32))}; "
+            f"rm -rf {shlex.quote(str(install64 / 'build.64'))} {shlex.quote(str(install32 / 'build.32'))}; "
+            f"meson setup {shlex.quote(str(install64 / 'build.64'))} {shlex.quote(str(src))} --cross-file {shlex.quote(str(cross64))} --prefix {shlex.quote(str(install64))} --buildtype release -Denable_d3d9=false; "
+            f"ninja -C {shlex.quote(str(install64 / 'build.64'))}; "
+            f"ninja -C {shlex.quote(str(install64 / 'build.64'))} install; "
+            f"meson setup {shlex.quote(str(install32 / 'build.32'))} {shlex.quote(str(src))} --cross-file {shlex.quote(str(cross32))} --prefix {shlex.quote(str(install32))} --buildtype release -Denable_d3d9=false; "
+            f"ninja -C {shlex.quote(str(install32 / 'build.32'))}; "
+            f"ninja -C {shlex.quote(str(install32 / 'build.32'))} install; "
+            f"cd ~; rm -rf mesa mesa.7z; curl -L -o mesa.7z {shlex.quote(DEFAULT_MESA_URL)}; mkdir -p mesa; 7z x mesa.7z -omesa >/dev/null; "
+            "if [ ! -d ~/mesa/x64 ] && ls -1 ~/mesa | grep -q mesa3d-; then "
+            "  sub=$(ls -1 ~/mesa | grep mesa3d- | head -n1); "
+            "  if [ -d ~/mesa/$sub/x64 ]; then "
+            "    rm -rf ~/mesa/x64; "
+            "    cp -R ~/mesa/$sub/x64 ~/mesa/x64; "
+            "  fi; "
+            "fi"
+        )
+
+        self.run_commands([["bash", "-lc", script]], env=None, cwd=str(src))
 
     def _build_dxvk(self, *, arch: str) -> None:
         wine = self.ensure_wine()
@@ -701,7 +829,7 @@ class MainWindow(QMainWindow):
             out = subprocess.check_output(["file", str(exe)], text=True, stderr=subprocess.STDOUT)
         except Exception:
             return False
-        # PE32 is 32-bit, PE32+ is 64-bit
+       
         return "PE32 executable" in out and "PE32+" not in out
 
     def dxvk_bin_for_exe(self, exe: Path) -> Path:
@@ -721,21 +849,21 @@ class MainWindow(QMainWindow):
         return backend.startswith("mesa:")
 
     def mesa_driver_from_backend(self, backend: str) -> str:
-        # backend format: "mesa:<driver>"
+        
         return backend.split(":", 1)[1] if ":" in backend else MESA_DRIVER_LLVMPIPE
 
     def auto_backend_for_game(self, game: GameEntry) -> str:
-        # Keep the current proven behavior: Mewgenics defaults to Mesa llvmpipe; everything else to DXVK.
+      
         token = f"{game.name} {game.install_dir_name}".lower()
         if "mewgenics" in token:
             return LAUNCH_BACKEND_MESA_LLVMPIPE
         return LAUNCH_BACKEND_DXVK
 
     def mesa_runtime_dlls_for_driver(self, driver: str) -> tuple[str, ...]:
-        # llvmpipe is known-good for Mewgenics with just these 3 DLLs.
+        
         base = ("opengl32.dll", "libgallium_wgl.dll", "libglapi.dll")
 
-        # zink/swr may require additional Mesa runtime DLLs depending on Mesa build.
+        
         extras = ("libEGL.dll", "libGLESv2.dll")
 
         if driver in (MESA_DRIVER_ZINK, MESA_DRIVER_SWR):
@@ -743,13 +871,13 @@ class MainWindow(QMainWindow):
         return base
 
     def patch_selected_game_with_mesa(self, game: GameEntry, exe: Path, *, driver: str) -> str:
-        # Returns the effective driver used (may fall back).
+        
         wanted = driver
 
         dlls = self.mesa_runtime_dlls_for_driver(wanted)
         missing = [dll for dll in dlls if not (self.mesa_dir / dll).exists()]
         if missing:
-            # If the user asked for zink/swr but the Mesa package is missing extras, fall back to llvmpipe.
+            
             if wanted in (MESA_DRIVER_ZINK, MESA_DRIVER_SWR):
                 self.log(f"Mesa: missing {', '.join(missing)} for '{wanted}', falling back to llvmpipe")
                 wanted = MESA_DRIVER_LLVMPIPE
@@ -762,7 +890,7 @@ class MainWindow(QMainWindow):
                 "Fix: click 'Install Mesa' in the Setup section, or set 'Mesa x64 dir' to the folder that contains those DLLs (usually ~/mesa/x64)."
             )
 
-        # For zink, try to also deploy zink_dri.dll if present in the Mesa bundle.
+        
         optional: list[str] = []
         if wanted == MESA_DRIVER_ZINK and (self.mesa_dir / "zink_dri.dll").exists():
             optional.append("zink_dri.dll")
@@ -771,7 +899,7 @@ class MainWindow(QMainWindow):
         for tdir in sorted(target_dirs):
             tdir.mkdir(parents=True, exist_ok=True)
 
-            # Remove any stale Mesa overrides we may have copied previously.
+            
             for stale in ("opengl32.dll", "libgallium_wgl.dll", "libglapi.dll", "libEGL.dll", "libGLESv2.dll", "zink_dri.dll"):
                 stale_path = tdir / stale
                 if stale_path.exists():
@@ -848,17 +976,15 @@ class MainWindow(QMainWindow):
                     self.log(line)
 
     def is_unity_game(self, game: GameEntry) -> bool:
-        # Heuristic: Unity games usually have <GameName>_Data folder
         data_dir = game.game_dir / f"{game.install_dir_name}_Data"
         if data_dir.exists():
             return True
-        # Fallback: any *_Data directory next to the exe
         if any(p.is_dir() and p.name.lower().endswith("_data") for p in game.game_dir.iterdir() if game.game_dir.exists()):
             return True
         return False
 
     def _unity_player_log_candidates(self) -> list[Path]:
-        # Unity Player.log location inside prefix is typically under AppData/LocalLow/**/Player.log
+        
         base = self.prefix_path / "drive_c" / "users"
         if not base.exists():
             return []
@@ -869,13 +995,13 @@ class MainWindow(QMainWindow):
         if not candidates:
             return None
 
-        # Prefer logs whose path contains the game name or install dir
+        
         needle1 = game.name.lower()
         needle2 = game.install_dir_name.lower()
         preferred = [p for p in candidates if needle1 in str(p).lower() or needle2 in str(p).lower()]
         pool = preferred if preferred else candidates
 
-        # Pick newest by mtime
+        
         try:
             pool.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         except Exception:
@@ -903,16 +1029,10 @@ class MainWindow(QMainWindow):
             self.log(line)
 
     def _latest_dxvk_log_for_game(self, game: GameEntry) -> Optional[Path]:
-        """Return the newest DXVK D3D11 log for this game.
-
-        DXVK log filenames vary; we try strong name matches first, then fall back.
-        If we have a recorded launch timestamp for this appid, prefer logs written after launch.
-        """
         logs_dir = Path.home() / "dxvk-logs"
         if not logs_dir.exists():
             return None
 
-        # Common DXVK naming patterns
         patterns = [
             f"{game.install_dir_name}_d3d11.log",
             f"{game.install_dir_name.replace(' ', '')}_d3d11.log",
@@ -927,11 +1047,9 @@ class MainWindow(QMainWindow):
         for pat in patterns:
             candidates.extend(list(logs_dir.glob(pat)))
 
-        # Final fallback: any d3d11 log
         if not candidates:
             candidates = list(logs_dir.glob("*_d3d11.log"))
 
-        # De-dup
         uniq: dict[str, Path] = {}
         for p in candidates:
             uniq[str(p)] = p
@@ -1011,21 +1129,16 @@ class MainWindow(QMainWindow):
 
         game.game_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy DXVK DLLs into every plausible launch directory.
-        # Some games launch a wrapper EXE (e.g. in WindowsNoEditor) that then spawns the real binary
-        # from a deeper folder (e.g. */Binaries/Win64/*-Shipping.exe). We want DXVK available in both.
         target_dirs: set[Path] = set()
         target_dirs.add(game.game_dir)
 
         if exe is not None:
             target_dirs.add(exe.parent)
 
-        # Unity/Unreal common layout helpers
         windows_no_editor = game.game_dir / "WindowsNoEditor"
         if windows_no_editor.is_dir():
             target_dirs.add(windows_no_editor)
 
-        # Any folder that contains a Shipping binary
         try:
             for ship in game.game_dir.glob("**/*-Shipping.exe"):
                 if ship.is_file():
@@ -1033,7 +1146,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Ensure all Binaries/Win64 folders get patched
         try:
             for p in game.game_dir.glob("**/Binaries/Win64"):
                 if p.is_dir():
@@ -1041,7 +1153,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Some games keep the real exe under .../<Game>/Binaries/Win64
         try:
             for p in game.game_dir.glob("WindowsNoEditor/**/Binaries/Win64"):
                 if p.is_dir():
@@ -1049,7 +1160,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Do the copy
         for tdir in sorted(target_dirs):
             for dll in DXVK_DLLS:
                 shutil.copy2(dxvk_bin / dll, tdir / dll)
@@ -1067,7 +1177,7 @@ class MainWindow(QMainWindow):
             return
         exe = game.detect_exe()
         if not exe:
-            # Give the user a helpful hint and list some EXE candidates for debugging.
+            
             try:
                 root_exes = sorted(game.game_dir.glob('*.exe'))
                 sub_exes = sorted(list(game.game_dir.glob('*/*.exe')) + list(game.game_dir.glob('*/*/*.exe')))
@@ -1079,8 +1189,6 @@ class MainWindow(QMainWindow):
                 hint += "\n\nEXEs found (first 20):\n" + "\n".join(shown)
             QMessageBox.warning(self, APP_NAME, f"{hint}\n\nFolder: {game.game_dir}")
             return
-        # If an Unreal Engine Shipping EXE exists, prefer launching it directly.
-        # This avoids wrapper launchers that then spawn the real binary from a deeper folder.
         try:
             shipping_exes = sorted(
                 game.game_dir.glob("**/*Shipping.exe"),
@@ -1109,10 +1217,10 @@ class MainWindow(QMainWindow):
                 effective_mesa_driver = self.mesa_driver_from_backend(effective_backend)
                 effective_mesa_driver = self.patch_selected_game_with_mesa(game, exe, driver=effective_mesa_driver)
             elif effective_backend == LAUNCH_BACKEND_DXVK:
-                # Patch after we have the final EXE choice so DLLs land in the right folders.
+               
                 self.patch_selected_game()
             else:
-                # Wine builtin: do not patch anything
+                
                 pass
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, str(exc))
@@ -1127,7 +1235,7 @@ class MainWindow(QMainWindow):
         if self.backend_is_mesa(effective_backend):
             env["GALLIUM_DRIVER"] = effective_mesa_driver
             env["WINEDLLOVERRIDES"] = "opengl32=n,b"
-            # Helpful perf toggle for Mesa (can help on CPU drivers too)
+            
             env["MESA_GLTHREAD"] = "true"
             env.pop("DXVK_LOG_PATH", None)
             env.pop("DXVK_LOG_LEVEL", None)
@@ -1137,7 +1245,7 @@ class MainWindow(QMainWindow):
             env["DXVK_LOG_LEVEL"] = "info"
             Path(env["DXVK_LOG_PATH"]).mkdir(parents=True, exist_ok=True)
         else:
-            # Force builtin Wine D3D/OpenGL paths
+            
             env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=b"
             env.pop("DXVK_LOG_PATH", None)
             env.pop("DXVK_LOG_LEVEL", None)
@@ -1146,37 +1254,30 @@ class MainWindow(QMainWindow):
         for key, value in env.items():
             qenv.insert(key, value)
         self.game_process.setProcessEnvironment(qenv)
-        # If the main EXE is in a subfolder, run Wine from that folder.
+    
         exe_dir = exe.parent
         self.game_process.setWorkingDirectory(str(exe_dir))
 
-        # Build arguments
-        # Use the basename because we set the working directory to exe.parent above.
         args = [exe.name]
 
-        # Extra args from UI
         extra = ""
         if hasattr(self, "game_args_edit"):
             extra = self.game_args_edit.text().strip()
         if extra:
             args += extra.split()
 
-        # For Unity games, force a host-side log file so users can always fetch it
         if self.is_unity_game(game):
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", game.install_dir_name or game.name)
             unity_log = str(Path.home() / f"{safe_name}-player.log")
             args += ["-logFile", unity_log]
             self.log(f"Unity log file will be written to: {unity_log}")
 
-        # Also tee Wine output to a host-side file via shell redirection
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", game.install_dir_name or game.name)
         host_wine_log = str(Path.home() / f"{safe_name}-wine.log")
         self.log(f"Wine output will be written to: {host_wine_log}")
         self.last_game_launch_ts[game.appid] = time.time()
         self.last_game_wine_log[game.appid] = Path(host_wine_log)
 
-        # Run via bash so we can redirect stdout/stderr to a file
-        # Prepend a quick DLL load trace to make it obvious whether DXVK (native dlls) are used.
         debug_prefix = "WINEDEBUG=+loaddll"
         if self.backend_is_mesa(effective_backend):
             debug_prefix = "WINEDEBUG=+loaddll,+wgl,+opengl"
@@ -1195,11 +1296,9 @@ class MainWindow(QMainWindow):
         def _on_game_finished(code, status) -> None:
             self.set_status(f"{game.name} exited with code {code}")
 
-            # Show DXVK log only if we launched with DXVK
             if effective_backend == LAUNCH_BACKEND_DXVK:
                 self.show_dxvk_log_for_selected_game()
 
-            # Always show last lines of the host-side wine log for this game
             wine_log_path = self.last_game_wine_log.get(game.appid)
             if wine_log_path and wine_log_path.exists():
                 try:
@@ -1212,14 +1311,13 @@ class MainWindow(QMainWindow):
                 except Exception as exc:
                     self.log(f"Failed to read wine log {wine_log_path}: {exc}")
 
-            # Unity log (if applicable)
             if self.is_unity_game(game):
                 self.show_unity_player_log_for_selected_game()
 
         self.game_process.finished.connect(_on_game_finished)
         self.game_process.start()
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event) -> None:
         for proc in (self.game_process, self.steam_process):
             if proc and proc.state() != QProcess.ProcessState.NotRunning:
                 proc.kill()
@@ -1231,6 +1329,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
+    win.apply_ui_modes()
     return app.exec()
 
 
