@@ -1,5 +1,5 @@
 # MacNCheese
-
+(ty spacedoutt for contributing) 
 MacNCheese manages Wine alongside custom graphics dependencies (ex. MoltenVK, D3D11, Vulkan, etc..) to make installing and running Wine games easier on macOS.
 
 ## Requirements
