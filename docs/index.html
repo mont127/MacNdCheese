@@ -3,35 +3,110 @@
 <head>
 <title>MacNCheese</title>
 <style>
-body {
-    font-family: -apple-system;
-    text-align: center;
-    background: #111;
-    color: white;
-    padding: 40px;
+body{
+margin:0;
+font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial;
+background:#0d0d0d;
+color:white;
+display:flex;
+align-items:center;
+justify-content:center;
+min-height:100vh;
+text-align:center
 }
-h1 { font-size: 48px; }
-p { font-size: 20px; }
-button {
-    padding: 15px 30px;
-    font-size: 18px;
-    border-radius: 10px;
-    border: none;
-    background: #ffcc66;
-    cursor: pointer;
+
+.container{
+max-width:800px;
+padding:40px
+}
+
+.logo{
+width:120px;
+border-radius:20px;
+margin-bottom:20px
+}
+
+h1{
+font-size:56px;
+margin:10px 0
+}
+
+.tagline{
+font-size:22px;
+opacity:.8;
+margin-bottom:40px
+}
+
+.buttons{
+display:flex;
+gap:20px;
+justify-content:center;
+flex-wrap:wrap
+}
+
+.button{
+padding:16px 36px;
+border-radius:12px;
+font-size:18px;
+text-decoration:none;
+color:black;
+background:#ffd166;
+font-weight:600
+}
+
+.button.secondary{
+background:#2a2a2a;
+color:white
+}
+
+.features{
+margin-top:60px;
+display:grid;
+grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+gap:25px
+}
+
+.feature{
+background:#1a1a1a;
+padding:25px;
+border-radius:14px;
+font-size:18px
+}
+
+.footer{
+margin-top:60px;
+opacity:.6;
+font-size:15px
 }
 </style>
 </head>
 <body>
 
+<div class="container">
+
 <h1>MacNCheese</h1>
-<p>Run Windows Games on macOS</p>
 
-<a href="https://github.com/mont127/MacNdCheese/releases/latest/download/MacNCheese.tar.gz">
-    Download MacNdCheese
-</a>
+<div class="tagline">
+Run Windows Games on macOS
+</div>
 
-<p>Open Source • Apple Silicon Ready • Free</p>
+<div class="buttons">
+<a class="button" href="https://github.com/mont127/MacNdCheese/releases/download/v2.0.0/MacNCheese.dmg">Download</a>
+<a class="button secondary" href="https://github.com/mont127/MacNdCheese">GitHub</a>
+</div>
+
+<div class="features">
+<div class="feature">Wine Manager</div>
+<div class="feature">DXVK Ready</div>
+<div class="feature">Apple Silicon Optimized</div>
+<div class="feature">Open Source</div>
+</div>
+
+<div class="footer">
+Free Open Source Software
+</div>
+
+</div>
 
 </body>
 </html>
