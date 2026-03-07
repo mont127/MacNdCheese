@@ -6,8 +6,10 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 import webbrowser
@@ -787,10 +789,42 @@ class MainWindow(QMainWindow):
             return None
 
     def request_admin_env(self) -> Optional[dict[str, str]]:
-        return os.environ.copy()
+        password, ok = QInputDialog.getText(
+            self,
+            APP_NAME,
+            "Enter your macOS password for installation tasks",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return None
+        env = os.environ.copy()
+        env["MNC_SUDO_PASSWORD"] = password
+        return env
 
-    def _sudo_script(self, script: str) -> str:
-        return script
+    def installer_script_path(self) -> Path:
+        return Path(__file__).resolve().with_name("installer.sh")
+
+    def run_installer_action(self, action: str) -> None:
+        env = self.request_admin_env()
+        if env is None:
+            return
+        script = self.installer_script_path()
+        if not script.exists():
+            QMessageBox.warning(self, APP_NAME, f"installer.sh not found at {script}")
+            return
+        args = [
+            "bash",
+            str(script),
+            action,
+            str(self.prefix_path),
+            str(self.dxvk_src),
+            str(self.dxvk_install),
+            str(self.dxvk_install32),
+            str(self.mesa_dir),
+            DEFAULT_MESA_URL,
+        ]
+        self.run_commands([args], env=env, cwd=str(script.parent))
+
 
     def _version_tuple(self, value: str) -> tuple[int, ...]:
         cleaned = value.strip().lower().lstrip("v")
@@ -830,124 +864,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"Update check failed: {exc}")
 
     def install_tools(self) -> None:
-        env = self.request_admin_env()
-        if env is None:
-            return
-        script = "brew install git meson ninja mingw-w64 glslang p7zip winetricks || true"
-        self.run_commands([["bash", "-lc", script]], env=env)
+        self.run_installer_action("install_tools")
 
     def install_wine(self) -> None:
-        env = self.request_admin_env()
-        if env is None:
-            return
-        script = (
-    "set -e; "
-    "command -v brew >/dev/null 2>&1 || "
-    "(/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"); "
-    "brew install --cask xquartz || true; "
-    "if brew list --cask wine-stable >/dev/null 2>&1; then "
-    "  echo wine-stable already installed; "
-    "elif brew install --cask wine-stable >/dev/null 2>&1; then "
-    "  echo installed wine-stable cask; "
-    "elif brew install wine-stable >/dev/null 2>&1; then "
-    "  echo installed wine-stable formula; "
-    "else "
-    "  brew install wine || true; "
-    "fi"
-)
-        self.run_commands([["bash", "-lc", script]], env=env)
+        self.run_installer_action("install_wine")
 
     def install_mesa(self) -> None:
-        env = self.request_admin_env()
-        if env is None:
-            return
-        url = DEFAULT_MESA_URL
-
-        commands: list[list[str]] = [
-            ["bash", "-lc", self._sudo_script("brew install p7zip || true")],
-            [
-                "bash",
-                "-lc",
-                (
-                    "set -euo pipefail; "
-                    "cd ~; "
-                    "rm -rf mesa mesa.7z; "
-                    f"curl -L -o mesa.7z {shlex.quote(url)}; "
-                    "mkdir -p mesa; "
-                    "7z x mesa.7z -omesa >/dev/null; "
-                    "if [ ! -d ~/mesa/x64 ] && ls -1 ~/mesa | grep -q mesa3d-; then "
-                    "  sub=$(ls -1 ~/mesa | grep mesa3d- | head -n1); "
-                    "  if [ -d ~/mesa/$sub/x64 ]; then "
-                    "    rm -rf ~/mesa/x64; "
-                    "    cp -R ~/mesa/$sub/x64 ~/mesa/x64; "
-                    "  fi; "
-                    "fi"
-                ),
-            ],
-        ]
-
-        self.run_commands(commands, env=env)
+        self.run_installer_action("install_mesa")
 
     def quick_setup(self) -> None:
-        env = self.request_admin_env()
-        if env is None:
-            return
-
-        src = self.dxvk_src
-        if not src.exists():
-            self.log("DXVK source not found, cloning automatically")
-            subprocess.run(["git", "clone", "https://github.com/Gcenx/DXVK-macOS.git", str(src)], check=False)
+        self.run_installer_action("quick_setup")
 
     def _build_dxvk(self, *, arch: str) -> None:
         wine = self.ensure_wine()
         if not wine:
             return
-
-        src = self.dxvk_src
-        if arch == "win64":
-            install = self.dxvk_install
-            cross_file = src / "build-win64.txt"
-            build_dir = install / "build.64"
-        else:
-            install = self.dxvk_install32
-            cross_file = src / "build-win32.txt"
-            build_dir = install / "build.32"
-
-        if not cross_file.exists():
-            QMessageBox.warning(self, APP_NAME, f"DXVK cross file not found: {cross_file}")
-            return
-
-        install.mkdir(parents=True, exist_ok=True)
-        coredata = build_dir / "meson-private" / "coredata.dat"
-
-        meson_args = [
-            "meson",
-            "setup",
-            str(build_dir),
-            str(src),
-            "--cross-file",
-            str(cross_file),
-            "--prefix",
-            str(install),
-            "--buildtype",
-            "release",
-            "-Denable_d3d9=false",
-        ]
-
-        if build_dir.exists():
-            if coredata.exists():
-                meson_args.append("--reconfigure")
-            else:
-                meson_args.append("--wipe")
-
-        commands = [
-            meson_args,
-            ["ninja", "-C", str(build_dir)],
-            ["ninja", "-C", str(build_dir), "install"],
-        ]
-
-        self.log(f"Building DXVK ({arch}) in: {build_dir}")
-        self.run_commands(commands, cwd=str(src))
+        self.run_installer_action("build_dxvk64" if arch == "win64" else "build_dxvk32")
 
     def build_dxvk(self) -> None:
         self._build_dxvk(arch="win64")
@@ -1053,17 +985,22 @@ class MainWindow(QMainWindow):
         wine = self.ensure_wine()
         if not wine:
             return
-        self.prefix_path.mkdir(parents=True, exist_ok=True)
-        self.run_commands([[wine, "wineboot"]], env=self.wine_env())
+        self.run_installer_action("init_prefix")
 
     def install_steam(self) -> None:
         wine = self.ensure_wine()
         if not wine:
             return
+        env = self.request_admin_env()
+        if env is None:
+            return
+        env = self._askpass_env(env)
         if not self.steam_setup.exists():
             QMessageBox.warning(self, APP_NAME, f"SteamSetup.exe not found at {self.steam_setup}")
             return
-        self.run_commands([[wine, str(self.steam_setup)]], env=self.wine_env())
+        run_env = env.copy()
+        run_env.update(self.wine_env())
+        self.run_commands([[wine, str(self.steam_setup)]], env=run_env)
 
     def launch_steam(self) -> None:
         wine = self.ensure_wine()
@@ -1371,16 +1308,6 @@ class MainWindow(QMainWindow):
                 hint += "\n\nEXEs found (first 20):\n" + "\n".join(shown)
             QMessageBox.warning(self, APP_NAME, f"{hint}\n\nFolder: {game.game_dir}")
             return
-        try:
-            shipping_exes = sorted(
-                game.game_dir.glob("**/*Shipping.exe"),
-                key=lambda p: p.stat().st_size if p.exists() else 0,
-                reverse=True,
-            )
-            if shipping_exes:
-                exe = shipping_exes[0]
-        except Exception:
-            pass
         self.log(f"Launching EXE: {exe} (cwd={exe.parent})")
         self.log(f"EXE architecture: {'32-bit' if self.exe_is_32bit(exe) else '64-bit'}")
         if not self.steam_process or self.steam_process.state() == QProcess.ProcessState.NotRunning:
