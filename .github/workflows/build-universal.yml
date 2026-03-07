@@ -1,0 +1,122 @@
+name: Build architechture DMGs
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (universal2)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # setup-python >= 3.11 ships universal2 binaries from python.org
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install arm64 deps (native)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      # Install x86_64 slices of compiled deps into a staging dir,
+      # then lipo-merge any .so files that differ by arch
+      - name: Install x86_64 deps and merge slices
+        run: |
+          pip install -r requirements.txt \
+            --target _deps_x86 \
+            --platform macosx_10_9_x86_64 \
+            --only-binary=:all: \
+            --python-version 3.12
+
+          find _deps_x86 -name "*.so" | while read x86_so; do
+            rel="${x86_so#_deps_x86/}"
+            # find the matching arm64 .so in the active venv
+            arm_so=$(python -c "import site; print(site.getsitepackages()[0])")/"$rel"
+            if [ -f "$arm_so" ]; then
+              archs=$(lipo -info "$arm_so" 2>/dev/null || true)
+              if echo "$archs" | grep -q "x86_64"; then
+                echo "Already fat: $rel"
+              else
+                echo "Merging: $rel"
+                lipo -create -output "$arm_so" "$arm_so" "$x86_so"
+              fi
+            fi
+          done
+
+      - name: Build app bundle
+        run: pyinstaller --target-arch universal2 MacNCheese.spec
+
+      # Fail fast if any binary in the bundle isn't a fat binary
+      - name: Verify universal2
+        run: |
+          echo "=== Checking bundle for non-fat binaries ==="
+          BAD=0
+          while IFS= read -r f; do
+            if file "$f" | grep -q "Mach-O"; then
+              info=$(lipo -info "$f" 2>/dev/null || true)
+              if ! echo "$info" | grep -q "x86_64.*arm64\|arm64.*x86_64"; then
+                echo "NOT fat: $f"
+                echo "  $info"
+                BAD=1
+              fi
+            fi
+          done < <(find "dist/MacNCheese.app" -type f)
+          if [ "$BAD" -eq 1 ]; then
+            echo "Build contains non-universal2 binaries. Aborting."
+            exit 1
+          fi
+          echo "All Mach-O binaries are universal2. Good."
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          create-dmg \
+            --volname "MacNCheese" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "MacNCheese.app" 175 190 \
+            --hide-extension "MacNCheese.app" \
+            --app-drop-link 425 190 \
+            "MacNCheese-universal2.dmg" \
+            "dist/"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacNCheese-universal2
+          path: MacNCheese-universal2.dmg
+          retention-days: 7
+
+  release:
+    name: Publish Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MacNCheese-universal2
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/MacNCheese-universal2.dmg
+          generate_release_notes: true
