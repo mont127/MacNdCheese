@@ -11,9 +11,11 @@ import sys
 import time
 import urllib.request
 import webbrowser
-from dataclasses import dataclass
+import getpass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Any
+
 
 from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, pyqtSignal
 from PyQt6.QtGui import QAction
@@ -37,8 +39,406 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QVBoxLayout,
     QWidget,
+    QDialog,
+    QTabWidget,
 )
 
+# SettingsDialog class
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.resize(680, 520)
+        self._build_ui()
+        self.load_config_from_parent()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        self._tabs = QTabWidget()
+        layout.addWidget(self._tabs)
+
+        self._tabs.addTab(self._build_paths_tab(), "Paths")
+        self._tabs.addTab(self._build_setup_tab(), "Setup")
+        self._tabs.addTab(self._build_dev_tab(), "DEV UI")
+        self._tabs.addTab(self._build_logs_tab(), "Logs")
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.save_config_to_parent)
+        close_btn.clicked.connect(self.hide)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _build_paths_tab(self) -> QWidget:
+        widget = QWidget()
+        form = QFormLayout(widget)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+
+        self.prefix_combo = QComboBox()
+        self.prefix_combo.setEditable(True)
+        self.prefix_combo.addItems(self.load_prefixes())
+        self.prefix_combo.currentTextChanged.connect(self._save_current_prefixes)
+
+        self.dxvk_src_edit = QLineEdit(DEFAULT_DXVK_SRC)
+        self.dxvk_install_edit = QLineEdit(DEFAULT_DXVK_INSTALL)
+        self.dxvk_install32_edit = QLineEdit(DEFAULT_DXVK_INSTALL32)
+        self.steam_setup_edit = QLineEdit(DEFAULT_STEAM_SETUP)
+        self.mesa_dir_edit = QLineEdit(DEFAULT_MESA_DIR)
+
+        form.addRow("Wine prefix", self._build_prefix_row(self.prefix_combo))
+        form.addRow("DXVK source", self._browsable(self.dxvk_src_edit, dir=True))
+        form.addRow("DXVK install (64-bit)", self._browsable(self.dxvk_install_edit, dir=True))
+        form.addRow("DXVK install (32-bit)", self._browsable(self.dxvk_install32_edit, dir=True))
+        form.addRow("SteamSetup.exe", self._browsable(self.steam_setup_edit, dir=False))
+        form.addRow("Mesa x64 dir", self._browsable(self.mesa_dir_edit, dir=True))
+
+        return widget
+
+    def load_prefixes(self) -> list[str]:
+        path = Path.home() / ".macncheese_prefixes.json"
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+                if isinstance(data, list) and data:
+                    return data
+            except Exception:
+                pass
+        return [DEFAULT_PREFIX]
+
+    def _save_current_prefixes(self, *args) -> None:
+        current = self.prefix_combo.currentText()
+        items = [self.prefix_combo.itemText(i) for i in range(self.prefix_combo.count())]
+        if current and current not in items:
+            self.prefix_combo.insertItem(0, current)
+            self.prefix_combo.setCurrentIndex(0)
+            items.insert(0, current)
+        
+        path = Path.home() / ".macncheese_prefixes.json"
+        try:
+            path.write_text(json.dumps(items[:10]))
+        except Exception:
+            pass
+
+    def _build_prefix_row(self, combo: QComboBox) -> QWidget:
+        wrap = QWidget()
+        row = QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(combo, 1)
+
+        btn_remove = QPushButton("Remove")
+        btn_remove.clicked.connect(self._remove_prefix)
+        row.addWidget(btn_remove)
+
+        btn_browse = QPushButton("Browse")
+        btn_browse.clicked.connect(self._pick_prefix_dir)
+        row.addWidget(btn_browse)
+
+        return wrap
+
+    def _remove_prefix(self) -> None:
+        idx = self.prefix_combo.currentIndex()
+        if idx >= 0:
+            self.prefix_combo.removeItem(idx)
+        self._save_current_prefixes()
+
+    def _pick_prefix_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Select prefix folder", self.prefix_combo.currentText())
+        if chosen:
+            self.prefix_combo.setCurrentText(chosen)
+            self._save_current_prefixes()
+
+    def _build_setup_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        quick_box = QGroupBox("One-Click")
+        quick_layout = QVBoxLayout(quick_box)
+        self.quick_setup_btn = QPushButton("One Click Setup")
+        self.install_tools_btn = QPushButton("Install Tools")
+        self.install_wine_btn = QPushButton("Install Wine")
+        self.install_mesa_btn = QPushButton("Install Mesa")
+        self.build_dxvk_btn = QPushButton("Build DXVK (64-bit)")
+        self.build_dxvk32_btn = QPushButton("Build DXVK (32-bit)")
+        self.init_prefix_btn = QPushButton("Init Prefix")
+        self.install_steam_btn = QPushButton("Install Steam")
+        hint = QLabel("Installs tools, Wine, builds DXVK (64/32), then installs Mesa.")
+        hint.setWordWrap(True)
+        quick_layout.addWidget(self.quick_setup_btn)
+        quick_layout.addWidget(hint)
+        layout.addWidget(quick_box)
+
+        steps_box = QGroupBox("Individual Steps")
+        grid = QGridLayout(steps_box)
+        grid.addWidget(self.install_tools_btn, 0, 0)
+        grid.addWidget(self.install_wine_btn, 0, 1)
+        grid.addWidget(self.install_mesa_btn, 1, 0)
+        grid.addWidget(self.build_dxvk_btn, 1, 1)
+        grid.addWidget(self.build_dxvk32_btn, 2, 0)
+        grid.addWidget(self.init_prefix_btn, 2, 1)
+        grid.addWidget(self.install_steam_btn, 3, 0, 1, 2)
+        layout.addWidget(steps_box)
+        layout.addStretch()
+
+        return widget
+
+    def _build_dev_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        info = QPlainTextEdit()
+        info.setReadOnly(True)
+        try:
+            dev_text = Path("/tmp/dev_ui_text.txt").read_text()
+            info.setPlainText(dev_text)
+        except Exception:
+            info.setPlainText("Manual installation guide could not be loaded.")
+        
+        layout.addWidget(info)
+        return widget
+
+    def _build_logs_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        layout.addWidget(self.log_view)
+        return widget
+
+    def _browsable(self, field: QLineEdit, *, dir: bool) -> QWidget:
+        wrap = QWidget()
+        row = QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(field)
+        btn = QPushButton("Browse")
+        if dir:
+            btn.clicked.connect(lambda: self._pick_dir(field))
+        else:
+            btn.clicked.connect(lambda: self._pick_file(field))
+        row.addWidget(btn)
+        return wrap
+
+    def _pick_dir(self, target: QLineEdit) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Select folder", target.text())
+        if chosen:
+            target.setText(chosen)
+
+    def _pick_file(self, target: QLineEdit) -> None:
+        chosen, _ = QFileDialog.getOpenFileName(self, "Select file", target.text())
+        if chosen:
+            target.setText(chosen)
+
+    def load_config_from_parent(self) -> None:
+        parent = self.parent()
+        if parent is None:
+            return
+        if hasattr(parent, "prefix_combo"):
+            self.prefix_combo.setCurrentText(parent.prefix_combo.currentText())
+        if hasattr(parent, "dxvk_src_edit"):
+            self.dxvk_src_edit.setText(parent.dxvk_src_edit.text())
+        if hasattr(parent, "dxvk_install_edit"):
+            self.dxvk_install_edit.setText(parent.dxvk_install_edit.text())
+        if hasattr(parent, "dxvk_install32_edit"):
+            self.dxvk_install32_edit.setText(parent.dxvk_install32_edit.text())
+        if hasattr(parent, "steam_setup_edit"):
+            self.steam_setup_edit.setText(parent.steam_setup_edit.text())
+        if hasattr(parent, "mesa_dir_edit"):
+            self.mesa_dir_edit.setText(parent.mesa_dir_edit.text())
+
+    def save_config_to_parent(self) -> None:
+        parent = self.parent()
+        if parent is None:
+            return
+        if hasattr(parent, "prefix_combo"):
+            current = self.prefix_combo.currentText()
+            parent.prefix_combo.setCurrentText(current)
+            if current not in [parent.prefix_combo.itemText(i) for i in range(parent.prefix_combo.count())]:
+                parent.prefix_combo.insertItem(0, current)
+        if hasattr(parent, "dxvk_src_edit"):
+            parent.dxvk_src_edit.setText(self.dxvk_src_edit.text())
+        if hasattr(parent, "dxvk_install_edit"):
+            parent.dxvk_install_edit.setText(self.dxvk_install_edit.text())
+        if hasattr(parent, "dxvk_install32_edit"):
+            parent.dxvk_install32_edit.setText(self.dxvk_install32_edit.text())
+        if hasattr(parent, "steam_setup_edit"):
+            parent.steam_setup_edit.setText(self.steam_setup_edit.text())
+        if hasattr(parent, "mesa_dir_edit"):
+            parent.mesa_dir_edit.setText(self.mesa_dir_edit.text())
+
+    def log(self, message: str) -> None:
+        self.log_view.appendPlainText(message)
+
+
+MODERN_THEME = """
+QWidget {
+    background-color: #1E1E1E;
+    color: #E0E0E0;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow, QDialog {
+    background-color: #1E1E1E;
+}
+
+QGroupBox {
+    background-color: #252526;
+    border: 1px solid #333333;
+    border-radius: 6px;
+    margin-top: 18px; /* Room for title */
+    padding-top: 16px;
+    padding-bottom: 8px;
+    padding-left: 12px;
+    padding-right: 12px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top center;
+    padding: 0px 8px;
+    color: #9CDCFE;
+    font-size: 13px;
+    font-weight: bold;
+    background-color: #252526;
+    border-radius: 4px;
+}
+
+QPushButton {
+    background-color: #333333;
+    border: 1px solid #3C3C3C;
+    border-radius: 5px;
+    padding: 6px 16px;
+    color: #FFFFFF;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: #3C3C3C;
+    border-color: #4A4A4A;
+}
+
+QPushButton:pressed {
+    background-color: #0E639C;
+    border-color: #0E639C;
+    color: #FFFFFF;
+}
+
+QLineEdit, QComboBox, QPlainTextEdit, QListWidget {
+    background-color: #1E1E1E;
+    border: 1px solid #3C3C3C;
+    border-radius: 4px;
+    padding: 8px;
+    color: #E0E0E0;
+    selection-background-color: #264F78;
+    selection-color: #FFFFFF;
+}
+
+QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QListWidget:focus {
+    border: 1px solid #0E639C;
+    background-color: #1E1E1E;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 4px solid #9CDCFE;
+    margin-right: 8px;
+}
+
+QListWidget {
+    outline: none;
+}
+
+QListWidget::item {
+    padding: 8px;
+    border-radius: 4px;
+    margin-bottom: 2px;
+}
+
+QListWidget::item:selected {
+    background-color: #0E639C;
+    color: #FFFFFF;
+}
+
+QListWidget::item:hover:!selected {
+    background-color: #2D2D30;
+}
+
+QSplitter::handle {
+    background-color: transparent;
+}
+
+QSplitter::handle:hover {
+    background-color: #333333;
+}
+
+QScrollBar:vertical {
+    border: none;
+    background: transparent;
+    width: 10px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #424242;
+    min-height: 20px;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #4F4F4F;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    border: none;
+    background: none;
+}
+
+QTabWidget::pane {
+    border: 1px solid #333333;
+    border-radius: 6px;
+    background: #252526;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background: #1E1E1E;
+    border: 1px solid #333333;
+    border-bottom: none;
+    padding: 6px 14px;
+    margin-right: 2px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    color: #A1A1AA;
+}
+
+QTabBar::tab:selected {
+    background: #252526;
+    color: #9CDCFE;
+    font-weight: bold;
+    border-bottom: 2px solid #9CDCFE;
+}
+
+QTabBar::tab:hover:!selected {
+    background: #2D2D30;
+    color: #FFFFFF;
+}
+
+QLabel {
+    color: #CCCCCC;
+}
+
+QMessageBox {
+    background-color: #1E1E1E;
+}
+"""
 
 APP_NAME = "MacNCheese"
 APP_VERSION = "v2.0.0"
@@ -75,6 +475,294 @@ LAUNCH_BACKENDS = (
     ("Mesa zink (GPU, Vulkan)", LAUNCH_BACKEND_MESA_ZINK),
     ("Mesa swr (CPU rasterizer)", LAUNCH_BACKEND_MESA_SWR),
 )
+
+
+# ==== New architecture: LaunchProfile, PrefixModel, GameModel, Component, Backend, Registries ====
+@dataclass(frozen=True)
+class LaunchProfile:
+    launch_type: str = "direct_exe"
+    preferred_backend: Optional[str] = None
+    required_components: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PrefixModel:
+    path: Path
+
+    @property
+    def steam_dir(self) -> Path:
+        return self.path / "drive_c" / "Program Files (x86)" / "Steam"
+
+
+@dataclass(frozen=True)
+class GameModel:
+    name: str
+    appid: Optional[str]
+    install_path: Path
+    exe_path: Optional[Path]
+    launcher_type: str = "direct_exe"
+    preferred_backend: Optional[str] = None
+    required_components: tuple[str, ...] = ()
+
+
+class Component:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
+        raise NotImplementedError
+
+    def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        raise NotImplementedError
+
+    def repair(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        self.install(prefix, window)
+
+    def version(self, prefix: PrefixModel, window: "MainWindow") -> str:
+        return "unknown"
+
+    def required_env(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return {}
+
+    def required_dll_overrides(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return {}
+
+
+class WineComponent(Component):
+    def __init__(self) -> None:
+        super().__init__("wine")
+
+    def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
+        try:
+            return bool(window.wine_binary())
+        except Exception:
+            return False
+
+    def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        window.install_wine()
+
+    def version(self, prefix: PrefixModel, window: "MainWindow") -> str:
+        try:
+            out = subprocess.check_output([window.wine_binary(), "--version"], text=True, stderr=subprocess.STDOUT)
+            return out.strip()
+        except Exception:
+            return "unknown"
+
+
+class DxvkComponent(Component):
+    def __init__(self) -> None:
+        super().__init__("dxvk")
+
+    def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
+        return all((window.dxvk_install / "bin" / dll).exists() for dll in DXVK_DLLS)
+
+    def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        window.build_dxvk()
+
+    def required_dll_overrides(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return {"dxgi": "n,b", "d3d11": "n,b", "d3d10core": "n,b"}
+
+
+class Vkd3dProtonComponent(Component):
+    def __init__(self) -> None:
+        super().__init__("vkd3d-proton")
+
+    def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
+        return False
+
+    def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        raise NotImplementedError("VKD3D-Proton installation is not implemented yet")
+
+
+class MoltenVkComponent(Component):
+    def __init__(self) -> None:
+        super().__init__("moltenvk")
+
+    def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
+        return shutil.which("wine") is not None or shutil.which("wine64") is not None
+
+    def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        raise NotImplementedError("MoltenVK installation is not implemented yet")
+
+
+class WinetricksComponent(Component):
+    def __init__(self) -> None:
+        super().__init__("winetricks")
+
+    def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
+        return shutil.which("winetricks") is not None
+
+    def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        raise NotImplementedError("Winetricks installation is not implemented yet")
+
+
+class Backend:
+    backend_id = "base"
+    label = "Base"
+
+    def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
+        return True
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return env
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        return {}
+
+    def supports_game(self, game: GameModel) -> bool:
+        return True
+
+
+class WineBuiltinBackend(Backend):
+    backend_id = LAUNCH_BACKEND_WINE
+    label = "Wine builtin (no DXVK/Mesa)"
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = env.copy()
+        env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=b"
+        env.pop("DXVK_LOG_PATH", None)
+        env.pop("DXVK_LOG_LEVEL", None)
+        env.pop("GALLIUM_DRIVER", None)
+        env.pop("MESA_GLTHREAD", None)
+        return env
+
+
+class DxvkBackend(Backend):
+    backend_id = LAUNCH_BACKEND_DXVK
+    label = "DXVK (D3D11->Vulkan)"
+
+    def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
+        exe = game.exe_path
+        dxvk_bin = window.dxvk_bin_for_exe(exe) if exe is not None else (window.dxvk_install / "bin")
+        return all((dxvk_bin / dll).exists() for dll in DXVK_DLLS)
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        current = window.selected_game()
+        if current and current.appid == (game.appid or ""):
+            window.patch_selected_game()
+        return {"kind": "dxvk"}
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = env.copy()
+        env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=n,b"
+        env["DXVK_LOG_PATH"] = str(Path.home() / "dxvk-logs")
+        env["DXVK_LOG_LEVEL"] = "info"
+        env.pop("GALLIUM_DRIVER", None)
+        env.pop("MESA_GLTHREAD", None)
+        Path(env["DXVK_LOG_PATH"]).mkdir(parents=True, exist_ok=True)
+        return env
+
+
+class MesaBackend(Backend):
+    driver = MESA_DRIVER_LLVMPIPE
+
+    def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
+        return (window.mesa_dir / "opengl32.dll").exists()
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        current = window.selected_game()
+        if current and current.appid == (game.appid or "") and game.exe_path is not None:
+            applied_driver = window.patch_selected_game_with_mesa(current, game.exe_path, driver=self.driver)
+            return {"kind": "mesa", "driver": applied_driver}
+        return {"kind": "mesa", "driver": self.driver}
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = env.copy()
+        env["GALLIUM_DRIVER"] = self.driver
+        env["WINEDLLOVERRIDES"] = "opengl32=n,b"
+        env["MESA_GLTHREAD"] = "true"
+        env.pop("DXVK_LOG_PATH", None)
+        env.pop("DXVK_LOG_LEVEL", None)
+        return env
+
+
+class MesaLlvmpipeBackend(MesaBackend):
+    backend_id = LAUNCH_BACKEND_MESA_LLVMPIPE
+    label = "Mesa llvmpipe (CPU, safe)"
+    driver = MESA_DRIVER_LLVMPIPE
+
+
+class MesaZinkBackend(MesaBackend):
+    backend_id = LAUNCH_BACKEND_MESA_ZINK
+    label = "Mesa zink (GPU, Vulkan)"
+    driver = MESA_DRIVER_ZINK
+
+
+class MesaSwrBackend(MesaBackend):
+    backend_id = LAUNCH_BACKEND_MESA_SWR
+    label = "Mesa swr (CPU rasterizer)"
+    driver = MESA_DRIVER_SWR
+
+
+class Vkd3dProtonBackend(Backend):
+    backend_id = "vkd3d-proton"
+    label = "VKD3D-Proton (placeholder)"
+
+    def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
+        return False
+
+
+class DxmtBackend(Backend):
+    backend_id = "dxmt"
+    label = "DXMT (placeholder)"
+
+    def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
+        return False
+
+
+class AutoBackend(Backend):
+    backend_id = LAUNCH_BACKEND_AUTO
+    label = "Auto (recommended)"
+
+    def __init__(self, resolver: "BackendRegistry") -> None:
+        self._resolver = resolver
+
+    def supports_game(self, game: GameModel) -> bool:
+        return True
+
+    def resolve(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> Backend:
+        preferred = game.preferred_backend or window.auto_backend_for_game_model(game)
+        backend = self._resolver.get(preferred)
+        if backend and backend.is_available(prefix, game, window):
+            return backend
+        fallback = self._resolver.get(LAUNCH_BACKEND_WINE)
+        return fallback if fallback is not None else WineBuiltinBackend()
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        backend = self.resolve(prefix, game, window)
+        return backend.prepare_game(prefix, game, window)
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        backend = self.resolve(prefix, game, window)
+        return backend.apply_env(env, game, prefix, window)
+
+
+class ComponentRegistry:
+    def __init__(self) -> None:
+        self._components: dict[str, Component] = {}
+
+    def register(self, component: Component) -> None:
+        self._components[component.name] = component
+
+    def get(self, name: str) -> Optional[Component]:
+        return self._components.get(name)
+
+    def values(self) -> Iterable[Component]:
+        return self._components.values()
+
+
+class BackendRegistry:
+    def __init__(self) -> None:
+        self._backends: dict[str, Backend] = {}
+
+    def register(self, backend: Backend) -> None:
+        self._backends[backend.backend_id] = backend
+
+    def get(self, backend_id: str) -> Optional[Backend]:
+        return self._backends.get(backend_id)
+
+    def values(self) -> Iterable[Backend]:
+        return self._backends.values()
 
 
 @dataclass
@@ -166,6 +854,19 @@ class GameEntry:
 
     def display(self) -> str:
         return f"{self.name} [{self.appid}]"
+
+    def to_game_model(self, startup_exe: Optional[Path] = None) -> GameModel:
+        exe = startup_exe if startup_exe is not None else self.detect_exe()
+        launch_type = "steam" if bool(self.appid) else "direct_exe"
+        return GameModel(
+            name=self.name,
+            appid=self.appid,
+            install_path=self.game_dir,
+            exe_path=exe,
+            launcher_type=launch_type,
+            preferred_backend=None,
+            required_components=("wine", "dxvk") if launch_type == "steam" else ("wine",),
+        )
 
     def detect_exes(self) -> list[Path]:
         if not self.game_dir.exists():
@@ -393,17 +1094,89 @@ class MainWindow(QMainWindow):
         self.last_game_launch_ts: dict[str, float] = {}
         self.last_game_wine_log: dict[str, Path] = {}
         self.selected_startup_exes: dict[str, Path] = {}
+        self.settings = SettingsDialog(self)
         self.simple_ui_enabled: bool = False
         self.dev_ui_enabled: bool = False
+        self.interactive_install_in_progress: bool = False
+        self.interactive_install_action: Optional[str] = None
+        self.pending_post_install_action: Optional[str] = None
+
+        self.prefix_combo = self.settings.prefix_combo
+        self.dxvk_src_edit = self.settings.dxvk_src_edit
+        self.dxvk_install_edit = self.settings.dxvk_install_edit
+        self.dxvk_install32_edit = self.settings.dxvk_install32_edit
+        self.steam_setup_edit = self.settings.steam_setup_edit
+        self.mesa_dir_edit = self.settings.mesa_dir_edit
+
+        self.component_registry = ComponentRegistry()
+        self.backend_registry = BackendRegistry()
+        self._register_components()
+        self._register_backends()
 
         self._build_ui()
         self._build_menu()
         self.log(f"{APP_NAME} ready")
 
+    def _register_components(self) -> None:
+        for component in (
+            WineComponent(),
+            DxvkComponent(),
+            Vkd3dProtonComponent(),
+            MoltenVkComponent(),
+            WinetricksComponent(),
+        ):
+            self.component_registry.register(component)
+
+    def _register_backends(self) -> None:
+        for backend in (
+            WineBuiltinBackend(),
+            DxvkBackend(),
+            MesaLlvmpipeBackend(),
+            MesaZinkBackend(),
+            MesaSwrBackend(),
+            Vkd3dProtonBackend(),
+            DxmtBackend(),
+        ):
+            self.backend_registry.register(backend)
+        self.backend_registry.register(AutoBackend(self.backend_registry))
+
+    def current_prefix_model(self) -> PrefixModel:
+        return PrefixModel(path=self.prefix_path)
+
+    def selected_game_model(self, game: Optional[GameEntry] = None) -> Optional[GameModel]:
+        entry = game or self.selected_game()
+        if entry is None:
+            return None
+        startup_exe = self.selected_startup_exes.get(entry.appid)
+        return entry.to_game_model(startup_exe=startup_exe)
+
+    def auto_backend_for_game_model(self, game: GameModel) -> str:
+        token = f"{game.name} {game.install_path.name}".lower()
+        if "mewgenics" in token:
+            return LAUNCH_BACKEND_MESA_LLVMPIPE
+        return LAUNCH_BACKEND_DXVK
+
+    def resolve_backend(self, backend_id: str, game: GameModel, prefix: PrefixModel) -> Backend:
+        backend = self.backend_registry.get(backend_id)
+        if backend is None:
+            backend = self.backend_registry.get(LAUNCH_BACKEND_AUTO)
+        if backend is None:
+            return WineBuiltinBackend()
+        if backend.backend_id == LAUNCH_BACKEND_AUTO and isinstance(backend, AutoBackend):
+            return backend.resolve(prefix, game, self)
+        if backend.is_available(prefix, game, self):
+            return backend
+        fallback = self.backend_registry.get(LAUNCH_BACKEND_WINE)
+        return fallback if fallback is not None else WineBuiltinBackend()
+
     def _build_menu(self) -> None:
         check_updates_action = QAction("Check for Updates", self)
         check_updates_action.triggered.connect(self.check_for_updates)
         self.menuBar().addAction(check_updates_action)
+
+        settings_action = QAction("Settings", self)
+        settings_action.triggered.connect(self.settings.show)
+        self.menuBar().addAction(settings_action)
 
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
@@ -413,68 +1186,37 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(24, 24, 24, 24)
+        root_layout.setSpacing(16)
 
         splitter = QSplitter()
-        root_layout.addWidget(splitter)
+        root_layout.addWidget(splitter, 1)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 12, 0)
+        left_layout.setSpacing(16)
         splitter.addWidget(left)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(12, 0, 0, 0)
+        right_layout.setSpacing(16)
         splitter.addWidget(right)
-        splitter.setSizes([480, 620])
+        splitter.setSizes([400, 700])
 
-        paths_box = QGroupBox("Paths")
-        paths_form = QFormLayout(paths_box)
+        steam_box = QGroupBox("Steam")
+        steam_layout = QVBoxLayout(steam_box)
+        steam_row = QHBoxLayout()
+        self.launch_steam_btn = QPushButton("Install & Launch Steam")
+        self.launch_steam_btn.clicked.connect(self.unified_steam_action)
+        self.scan_games_btn = QPushButton("Scan Games")
+        self.scan_games_btn.clicked.connect(self.scan_games)
+        steam_row.addWidget(self.launch_steam_btn)
+        steam_row.addWidget(self.scan_games_btn)
+        steam_layout.addLayout(steam_row)
+        left_layout.addWidget(steam_box)
 
-        self.prefix_edit = QLineEdit(DEFAULT_PREFIX)
-        self.dxvk_src_edit = QLineEdit(DEFAULT_DXVK_SRC)
-        self.dxvk_install_edit = QLineEdit(DEFAULT_DXVK_INSTALL)
-        self.dxvk_install32_edit = QLineEdit(DEFAULT_DXVK_INSTALL32)
-        self.steam_setup_edit = QLineEdit(DEFAULT_STEAM_SETUP)
-        self.mesa_dir_edit = QLineEdit(DEFAULT_MESA_DIR)
-
-        browse_prefix = QPushButton("Browse")
-        browse_prefix.clicked.connect(lambda: self._pick_dir(self.prefix_edit))
-        browse_dxvk_src = QPushButton("Browse")
-        browse_dxvk_src.clicked.connect(lambda: self._pick_dir(self.dxvk_src_edit))
-        browse_dxvk_install = QPushButton("Browse")
-        browse_dxvk_install.clicked.connect(lambda: self._pick_dir(self.dxvk_install_edit))
-        browse_dxvk_install32 = QPushButton("Browse")
-        browse_dxvk_install32.clicked.connect(lambda: self._pick_dir(self.dxvk_install32_edit))
-        browse_steam_setup = QPushButton("Browse")
-        browse_steam_setup.clicked.connect(lambda: self._pick_file(self.steam_setup_edit))
-        browse_mesa_dir = QPushButton("Browse")
-        browse_mesa_dir.clicked.connect(lambda: self._pick_dir(self.mesa_dir_edit))
-
-        paths_form.addRow("Wine prefix", self._with_button(self.prefix_edit, browse_prefix))
-        paths_form.addRow("DXVK source", self._with_button(self.dxvk_src_edit, browse_dxvk_src))
-        paths_form.addRow("DXVK install", self._with_button(self.dxvk_install_edit, browse_dxvk_install))
-        paths_form.addRow("DXVK install (32-bit)", self._with_button(self.dxvk_install32_edit, browse_dxvk_install32))
-        paths_form.addRow("SteamSetup.exe", self._with_button(self.steam_setup_edit, browse_steam_setup))
-        paths_form.addRow("Mesa x64 dir", self._with_button(self.mesa_dir_edit, browse_mesa_dir))
-
-        left_layout.addWidget(paths_box)
-
-        ui_mode_box = QGroupBox("UI")
-        ui_mode_layout = QGridLayout(ui_mode_box)
-
-        self.simple_ui_btn = QPushButton("Simplified UI")
-        self.simple_ui_btn.setCheckable(True)
-        self.simple_ui_btn.clicked.connect(self.toggle_simplified_ui)
-
-        self.dev_ui_btn = QPushButton("Dev UI")
-        self.dev_ui_btn.setCheckable(True)
-        self.dev_ui_btn.clicked.connect(self.toggle_dev_ui)
-
-        ui_mode_layout.addWidget(self.simple_ui_btn, 0, 0)
-        ui_mode_layout.addWidget(self.dev_ui_btn, 0, 1)
-
-        left_layout.addWidget(ui_mode_box)
-
-        
         quick_box = QGroupBox("Quick Setup")
         quick_layout = QVBoxLayout(quick_box)
 
@@ -482,97 +1224,77 @@ class MainWindow(QMainWindow):
         self.quick_setup_btn.clicked.connect(self.quick_setup)
         quick_layout.addWidget(self.quick_setup_btn)
 
+        self.install_wine_btn = QPushButton("Install Wine")
+        self.install_wine_btn.clicked.connect(self.install_wine)
+        quick_layout.addWidget(self.install_wine_btn)
+
         self.check_updates_btn = QPushButton("Check for Updates")
         self.check_updates_btn.clicked.connect(self.check_for_updates)
         quick_layout.addWidget(self.check_updates_btn)
 
-        quick_hint = QLabel("Installs tools, Wine, builds DXVK (64/32), then installs Mesa")
-        quick_hint.setWordWrap(True)
-        quick_layout.addWidget(quick_hint)
-
         left_layout.addWidget(quick_box)
-        self._quick_setup_box = quick_box
 
-        self._paths_box = paths_box
+        prefix_box = QGroupBox("Fast Prefix Selector")
+        prefix_layout = QHBoxLayout(prefix_box)
+        
+        self.main_prefix_combo = QComboBox()
+        self.main_prefix_combo.addItems(self.settings.load_prefixes())
+        self.main_prefix_combo.setCurrentText(self.settings.prefix_combo.currentText())
+        self.main_prefix_combo.currentTextChanged.connect(self.on_main_prefix_changed)
+        prefix_layout.addWidget(self.main_prefix_combo, 1)
 
-        setup_box = QGroupBox("Setup")
-        setup_grid = QGridLayout(setup_box)
+        add_prefix_btn = QPushButton("+")
+        add_prefix_btn.setFixedWidth(32)
+        add_prefix_btn.clicked.connect(self.on_main_add_prefix_clicked)
+        prefix_layout.addWidget(add_prefix_btn)
+        
+        settings_btn = QPushButton("⚙ Settings")
+        settings_btn.clicked.connect(self.settings.show)
+        prefix_layout.addWidget(settings_btn)
+        
+        left_layout.addWidget(prefix_box)
 
-        self.install_tools_btn = QPushButton("Install Tools")
-        self.install_tools_btn.clicked.connect(self.install_tools)
+        game_box = QGroupBox("Selected Game")
+        game_layout = QVBoxLayout(game_box)
 
-        self.install_wine_btn = QPushButton("Install Wine")
-        self.install_wine_btn.clicked.connect(self.install_wine)
-
-        self.install_mesa_btn = QPushButton("Install Mesa")
-        self.install_mesa_btn.clicked.connect(self.install_mesa)
-
-        self.build_dxvk_btn = QPushButton("Build DXVK")
-        self.build_dxvk_btn.clicked.connect(self.build_dxvk)
-        self.build_dxvk32_btn = QPushButton("Build DXVK (32-bit)")
-        self.build_dxvk32_btn.clicked.connect(self.build_dxvk32)
-        self.init_prefix_btn = QPushButton("Init Prefix")
-        self.init_prefix_btn.clicked.connect(self.init_prefix)
-        self.install_steam_btn = QPushButton("Install Steam")
-        self.install_steam_btn.clicked.connect(self.install_steam)
-
-        setup_grid.addWidget(self.install_tools_btn, 0, 0)
-        setup_grid.addWidget(self.install_wine_btn, 0, 1)
-
-        setup_grid.addWidget(self.install_mesa_btn, 1, 0)
-        setup_grid.addWidget(self.build_dxvk_btn, 1, 1)
-
-        setup_grid.addWidget(self.build_dxvk32_btn, 2, 0)
-        setup_grid.addWidget(self.init_prefix_btn, 2, 1)
-
-        setup_grid.addWidget(self.install_steam_btn, 3, 0, 1, 2)
-        left_layout.addWidget(setup_box)
-        self._setup_box = setup_box
-
-        runtime_box = QGroupBox("Runtime")
-        runtime_grid = QGridLayout(runtime_box)
-
-        self.launch_steam_btn = QPushButton("Launch Steam")
-        self.launch_steam_btn.clicked.connect(self.launch_steam)
-        self.scan_games_btn = QPushButton("Scan Games")
-        self.scan_games_btn.clicked.connect(self.scan_games)
-        self.patch_dxvk_btn = QPushButton("Patch Selected Game")
+        action_row = QHBoxLayout()
+        self.patch_dxvk_btn = QPushButton("Patch Selected")
         self.patch_dxvk_btn.clicked.connect(self.patch_selected_game)
-        self.launch_game_btn = QPushButton("Launch Selected Game")
+        self.launch_game_btn = QPushButton("Launch Selected")
         self.launch_game_btn.clicked.connect(self.launch_selected_game)
+        action_row.addWidget(self.patch_dxvk_btn)
+        action_row.addWidget(self.launch_game_btn)
+        game_layout.addLayout(action_row)
+
         self.select_startup_exe_btn = QPushButton("Select Startup EXE")
         self.select_startup_exe_btn.clicked.connect(self.select_startup_exe_for_selected_game)
+        game_layout.addWidget(self.select_startup_exe_btn)
 
-        runtime_grid.addWidget(self.launch_steam_btn, 0, 0)
-        runtime_grid.addWidget(self.scan_games_btn, 0, 1)
-        runtime_grid.addWidget(self.patch_dxvk_btn, 1, 0)
-        runtime_grid.addWidget(self.launch_game_btn, 1, 1)
-        runtime_grid.addWidget(self.select_startup_exe_btn, 2, 0, 1, 2)
-
-        self.show_dxvk_log_btn = QPushButton("Show DXVK Log")
-        self.show_dxvk_log_btn.clicked.connect(self.show_dxvk_log_for_selected_game)
-        runtime_grid.addWidget(self.show_dxvk_log_btn, 3, 0, 1, 2)
-
-        self.game_args_edit = QLineEdit("")
-        self.game_args_edit.setPlaceholderText(
-            "Extra game args (optional). Example: -screen-fullscreen 0 -screen-width 1280 -screen-height 720"
-        )
-        runtime_grid.addWidget(QLabel("Game args"), 4, 0)
-        runtime_grid.addWidget(self.game_args_edit, 4, 1)
-
+        backend_row = QHBoxLayout()
+        backend_row.addWidget(QLabel("Backend"))
         self.launch_backend_combo = QComboBox()
         for label, value in LAUNCH_BACKENDS:
             self.launch_backend_combo.addItem(label, value)
         self.launch_backend_combo.setCurrentIndex(0)
-        runtime_grid.addWidget(QLabel("Launch backend"), 5, 0)
-        runtime_grid.addWidget(self.launch_backend_combo, 5, 1)
+        backend_row.addWidget(self.launch_backend_combo, 1)
+        game_layout.addLayout(backend_row)
 
-        self.show_player_log_btn = QPushButton("Show Unity Player.log")
+        self.game_args_edit = QLineEdit("")
+        self.game_args_edit.setPlaceholderText("Extra game args (optional)")
+        game_layout.addWidget(self.game_args_edit)
+
+        log_row = QHBoxLayout()
+        self.show_dxvk_log_btn = QPushButton("DXVK Log")
+        self.show_dxvk_log_btn.clicked.connect(self.show_dxvk_log_for_selected_game)
+        self.show_player_log_btn = QPushButton("Unity Log")
         self.show_player_log_btn.clicked.connect(self.show_unity_player_log_for_selected_game)
-        runtime_grid.addWidget(self.show_player_log_btn, 6, 0, 1, 2)
+        log_row.addWidget(self.show_dxvk_log_btn)
+        log_row.addWidget(self.show_player_log_btn)
+        game_layout.addLayout(log_row)
 
-        left_layout.addWidget(runtime_box)
-        self._runtime_box = runtime_box
+        left_layout.addWidget(game_box)
+
+        self._quick_setup_box = quick_box
 
         status_box = QGroupBox("Status")
         status_layout = QVBoxLayout(status_box)
@@ -580,7 +1302,6 @@ class MainWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         status_layout.addWidget(self.status_label)
         left_layout.addWidget(status_box)
-        self._status_box = status_box
 
         left_layout.addStretch(1)
 
@@ -589,11 +1310,25 @@ class MainWindow(QMainWindow):
         self.games_list = QListWidget()
         self.games_list.itemSelectionChanged.connect(self.update_selected_game_status)
         games_layout.addWidget(self.games_list)
-        right_layout.addWidget(games_box)
+        right_layout.addWidget(games_box, 1)
 
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        right_layout.addWidget(self.log_view, 1)
+        self._paths_box = None
+        self._setup_box = None
+        self._runtime_box = None
+        self._quick_setup_box = quick_box
+        self._status_box = status_box
+        self.simple_ui_btn = None
+        self.dev_ui_btn = None
+
+    def on_main_prefix_changed(self, text: str) -> None:
+        if text:
+            self.prefix_combo.setCurrentText(text)
+            self.settings.save_config_to_parent()
+
+    def on_main_add_prefix_clicked(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Add new prefix folder", self.main_prefix_combo.currentText())
+        if chosen:
+            self.main_prefix_combo.setCurrentText(chosen)
 
     def _with_button(self, field: QLineEdit, button: QPushButton) -> QWidget:
         wrap = QWidget()
@@ -614,7 +1349,7 @@ class MainWindow(QMainWindow):
             target.setText(chosen)
 
     def log(self, message: str) -> None:
-        self.log_view.appendPlainText(message)
+        self.settings.log(message)
 
     def set_status(self, message: str) -> None:
         self.status_label.setText(message)
@@ -635,9 +1370,14 @@ class MainWindow(QMainWindow):
         self.apply_ui_modes()
 
     def apply_ui_modes(self) -> None:
+        setup_box = getattr(self, "_setup_box", None)
+        quick_setup_box = getattr(self, "_quick_setup_box", None)
+
         if getattr(self, "simple_ui_enabled", False):
-            self._setup_box.setVisible(False)
-            self._quick_setup_box.setVisible(True)
+            if setup_box is not None:
+                setup_box.setVisible(False)
+            if quick_setup_box is not None:
+                quick_setup_box.setVisible(True)
             if hasattr(self, "dxvk_src_edit"):
                 self.dxvk_src_edit.setVisible(False)
             if hasattr(self, "dxvk_install_edit"):
@@ -650,8 +1390,10 @@ class MainWindow(QMainWindow):
             return
 
         if getattr(self, "dev_ui_enabled", False):
-            self._setup_box.setVisible(True)
-            self._quick_setup_box.setVisible(False)
+            if setup_box is not None:
+                setup_box.setVisible(True)
+            if quick_setup_box is not None:
+                quick_setup_box.setVisible(False)
             if hasattr(self, "dxvk_src_edit"):
                 self.dxvk_src_edit.setVisible(True)
             if hasattr(self, "dxvk_install_edit"):
@@ -663,8 +1405,10 @@ class MainWindow(QMainWindow):
             self.set_status("Dev UI enabled")
             return
 
-        self._setup_box.setVisible(True)
-        self._quick_setup_box.setVisible(False)
+        if setup_box is not None:
+            setup_box.setVisible(True)
+        if quick_setup_box is not None:
+            quick_setup_box.setVisible(False)
         if hasattr(self, "dxvk_src_edit"):
             self.dxvk_src_edit.setVisible(True)
         if hasattr(self, "dxvk_install_edit"):
@@ -677,7 +1421,7 @@ class MainWindow(QMainWindow):
 
     @property
     def prefix_path(self) -> Path:
-        return Path(self.prefix_edit.text()).expanduser()
+        return Path(self.prefix_combo.currentText()).expanduser()
 
     @property
     def steam_dir(self) -> Path:
@@ -766,8 +1510,59 @@ class MainWindow(QMainWindow):
 
     def on_worker_finished(self, ok: bool, message: str) -> None:
         self.set_status(message if ok else f"Failed: {message}")
+
+        state = getattr(self, "_unified_state", 0)
+        self._unified_state = 0
+        if not self.missing_core_tools():
+            self.interactive_install_in_progress = False
+            self.interactive_install_action = None
+            self.pending_post_install_action = None
         if not ok:
+            lower = message.lower()
+            if "xcode command line tools" in lower or "clt install" in lower:
+                QMessageBox.warning(
+                    self,
+                    APP_NAME,
+                    "Xcode Command Line Tools are required before setup can continue. Run 'xcode-select --install', finish the installer, then reopen MacNCheese.",
+                )
+                self.set_status("Xcode Command Line Tools required")
+                return
+            if "need sudo access on macos" in lower:
+                QMessageBox.warning(
+                    self,
+                    APP_NAME,
+                    "MacNCheese needs an Administrator macOS account for setup. Open Terminal and run 'sudo -v'. If that fails, switch to an admin account and try again.",
+                )
+                self.set_status("Administrator account required")
+                return
+            if "password was rejected" in lower:
+                QMessageBox.warning(
+                    self,
+                    APP_NAME,
+                    "The macOS password was rejected. Enter the same password you use to sign in to macOS, then try setup again.",
+                )
+                self.set_status("Incorrect macOS password")
+                return
             QMessageBox.warning(self, APP_NAME, message)
+            return
+
+        from PyQt6.QtCore import QTimer
+
+        if state == 1:
+            self.log("Unified Setup: Prerequisites installed. Checking Steam...")
+            QTimer.singleShot(500, self.unified_steam_action)
+        elif state == 15:
+            self.log("Unified Setup: SteamSetup.exe downloaded. Starting installation...")
+            QTimer.singleShot(500, self.unified_steam_action)
+        elif state == 2:
+            self.log("Unified Setup: Steam installer executed.")
+            QTimer.singleShot(500, self.unified_steam_action)
+
+    def has_wine(self) -> bool:
+        try:
+            return bool(self.wine_binary())
+        except Exception:
+            return False
 
     def ensure_wine(self) -> Optional[str]:
         try:
@@ -799,52 +1594,6 @@ class MainWindow(QMainWindow):
         env["MNC_SUDO_PASSWORD"] = password
         return env
 
-    def installer_script_path(self) -> Path:
-        if getattr(sys, "frozen", False):
-            exe_dir = Path(sys.executable).resolve().parent
-            candidates = [
-                exe_dir / "installer.sh",
-                exe_dir.parent / "Frameworks" / "installer.sh",
-                exe_dir.parent / "Resources" / "installer.sh",
-                Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
-            ]
-            for candidate in candidates:
-                if candidate and candidate.exists():
-                    return candidate
-            return exe_dir / "installer.sh"
-        return Path(__file__).resolve().with_name("installer.sh")
-
-    def run_installer_action(self, action: str) -> None:
-        env = self.request_admin_env()
-        if env is None:
-            return
-        script = self.installer_script_path()
-        if not script.exists():
-            candidates = []
-            if getattr(sys, "frozen", False):
-                exe_dir = Path(sys.executable).resolve().parent
-                candidates = [
-                    exe_dir / "installer.sh",
-                    exe_dir.parent / "Frameworks" / "installer.sh",
-                    exe_dir.parent / "Resources" / "installer.sh",
-                    Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
-                ]
-            checked = "\n".join(str(p) for p in candidates if p is not None)
-            QMessageBox.warning(self, APP_NAME, f"installer.sh not found. Checked:\n{checked or script}")
-            return
-        self.log(f"Using installer script: {script}")
-        args = [
-            "bash",
-            str(script),
-            action,
-            str(self.prefix_path),
-            str(self.dxvk_src),
-            str(self.dxvk_install),
-            str(self.dxvk_install32),
-            str(self.mesa_dir),
-            DEFAULT_MESA_URL,
-        ]
-        self.run_commands([args], env=env, cwd=str(script.parent))
 
 
     def _version_tuple(self, value: str) -> tuple[int, ...]:
@@ -885,22 +1634,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"Update check failed: {exc}")
 
     def install_tools(self) -> None:
-        self.run_installer_action("install_tools")
+        self.run_installer_action_in_terminal("install_tools")
 
     def install_wine(self) -> None:
-        self.run_installer_action("install_wine")
+        self.run_installer_action_in_terminal("install_wine")
 
     def install_mesa(self) -> None:
-        self.run_installer_action("install_mesa")
+        self.run_installer_action_in_terminal("install_mesa")
 
     def quick_setup(self) -> None:
-        self.run_installer_action("quick_setup")
+        self.run_installer_action_in_terminal("quick_setup")
 
     def _build_dxvk(self, *, arch: str) -> None:
-        wine = self.ensure_wine()
-        if not wine:
-            return
-        self.run_installer_action("build_dxvk64" if arch == "win64" else "build_dxvk32")
+        action = "build_dxvk64" if arch == "win64" else "build_dxvk32"
+        self.run_installer_action_in_terminal(action)
 
     def build_dxvk(self) -> None:
         self._build_dxvk(arch="win64")
@@ -937,11 +1684,7 @@ class MainWindow(QMainWindow):
         return backend.split(":", 1)[1] if ":" in backend else MESA_DRIVER_LLVMPIPE
 
     def auto_backend_for_game(self, game: GameEntry) -> str:
-      
-        token = f"{game.name} {game.install_dir_name}".lower()
-        if "mewgenics" in token:
-            return LAUNCH_BACKEND_MESA_LLVMPIPE
-        return LAUNCH_BACKEND_DXVK
+        return self.auto_backend_for_game_model(game.to_game_model(self.selected_startup_exes.get(game.appid)))
 
     def mesa_runtime_dlls_for_driver(self, driver: str) -> tuple[str, ...]:
         
@@ -1052,6 +1795,65 @@ class MainWindow(QMainWindow):
         self.steam_process.started.connect(lambda: self.set_status("Steam started"))
         self.steam_process.errorOccurred.connect(lambda e: self.set_status(f"Steam error: {e}"))
         self.steam_process.start()
+
+    def unified_steam_action(self) -> None:
+        if self.steam_process and self.steam_process.state() != QProcess.ProcessState.NotRunning:
+            self.set_status("Steam is already running")
+            return
+
+        wine_ok = self.has_wine()
+        dxvk_ok = (self.dxvk_install / "bin" / "dxgi.dll").exists()
+        mesa_ok = (self.mesa_dir / "opengl32.dll").exists()
+
+        steam_installed = (self.steam_dir / "steam.exe").exists()
+
+        if not (wine_ok and dxvk_ok and mesa_ok):
+            missing = self.missing_core_tools()
+
+            if self.interactive_install_in_progress:
+                self.set_status("Finish the installer in Terminal, then try Launch Steam again")
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    "MacNCheese already opened an interactive installer Terminal for the missing tools. Finish setup there, then click Launch Steam again.",
+                )
+                return
+
+            clt_ok, clt_msg = self.check_clt_installed()
+            if not clt_ok:
+                QMessageBox.warning(self, APP_NAME, clt_msg)
+                self.set_status("Xcode Command Line Tools required")
+                return
+
+            self.set_status(f"Missing prerequisites ({', '.join(missing)}). Opening installer Terminal...")
+            self._unified_state = 1
+            self.run_installer_action_in_terminal("quick_setup", post_action="launch_steam")
+            return
+
+        elif not steam_installed:
+            self.set_status("Steam not installed in prefix. Launching installer...")
+
+            if not self.steam_setup.exists():
+                self.log("SteamSetup.exe missing. Downloading it to Downloads folder...")
+                self._unified_state = 15
+                self.steam_setup.parent.mkdir(parents=True, exist_ok=True)
+                self.run_commands([
+                    [
+                        "curl",
+                        "-L",
+                        "-o",
+                        str(self.steam_setup),
+                        "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
+                    ]
+                ])
+            else:
+                self._unified_state = 2
+                self.install_steam()
+
+            return
+
+        # Everything is ready
+        self.launch_steam()
 
     def _drain_process(self, proc: QProcess | None) -> None:
         if not proc:
@@ -1316,7 +2118,6 @@ class MainWindow(QMainWindow):
             return
         exe = self.selected_game_exe(game)
         if not exe:
-            
             try:
                 root_exes = sorted(game.game_dir.glob('*.exe'))
                 sub_exes = sorted(list(game.game_dir.glob('*/*.exe')) + list(game.game_dir.glob('*/*/*.exe')))
@@ -1334,24 +2135,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, "Steam must be running first.")
             return
 
-        backend = self.selected_launch_backend()
-        if backend == LAUNCH_BACKEND_AUTO:
-            backend = self.auto_backend_for_game(game)
+        game_model = self.selected_game_model(game)
+        if game_model is None:
+            QMessageBox.warning(self, APP_NAME, "Select a game first.")
+            return
+        prefix_model = self.current_prefix_model()
 
-        effective_backend = backend
-        effective_mesa_driver = ""
+        backend_id = self.selected_launch_backend()
+        resolved_backend = self.resolve_backend(backend_id, game_model, prefix_model)
 
         try:
-            if self.backend_is_mesa(effective_backend):
-                effective_mesa_driver = self.mesa_driver_from_backend(effective_backend)
-                effective_mesa_driver = self.patch_selected_game_with_mesa(game, exe, driver=effective_mesa_driver)
-            elif effective_backend == LAUNCH_BACKEND_DXVK:
-                self.patch_selected_game()
-            else:
-                pass
+            prepare_info = resolved_backend.prepare_game(prefix_model, game_model, self)
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
+
+        effective_backend = resolved_backend.backend_id
+        effective_mesa_driver = ""
+        if isinstance(prepare_info, dict):
+            effective_backend = str(prepare_info.get("kind", effective_backend)) if prepare_info.get("kind") in {"dxvk", "mesa"} else effective_backend
+            effective_mesa_driver = str(prepare_info.get("driver", ""))
+            if prepare_info.get("kind") == "dxvk":
+                effective_backend = LAUNCH_BACKEND_DXVK
+            elif prepare_info.get("kind") == "mesa":
+                if effective_mesa_driver == MESA_DRIVER_ZINK:
+                    effective_backend = LAUNCH_BACKEND_MESA_ZINK
+                elif effective_mesa_driver == MESA_DRIVER_SWR:
+                    effective_backend = LAUNCH_BACKEND_MESA_SWR
+                else:
+                    effective_backend = LAUNCH_BACKEND_MESA_LLVMPIPE
 
         if self.game_process and self.game_process.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.warning(self, APP_NAME, "A game process is already running.")
@@ -1359,21 +2171,9 @@ class MainWindow(QMainWindow):
 
         self.game_process = QProcess(self)
         env = self.wine_env()
-        if self.backend_is_mesa(effective_backend):
-            env["GALLIUM_DRIVER"] = effective_mesa_driver
-            env["WINEDLLOVERRIDES"] = "opengl32=n,b"
-            env["MESA_GLTHREAD"] = "true"
-            env.pop("DXVK_LOG_PATH", None)
-            env.pop("DXVK_LOG_LEVEL", None)
-        elif effective_backend == LAUNCH_BACKEND_DXVK:
-            env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=n,b"
-            env["DXVK_LOG_PATH"] = str(Path.home() / "dxvk-logs")
-            env["DXVK_LOG_LEVEL"] = "info"
-            Path(env["DXVK_LOG_PATH"]).mkdir(parents=True, exist_ok=True)
-        else:
-            env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=b"
-            env.pop("DXVK_LOG_PATH", None)
-            env.pop("DXVK_LOG_LEVEL", None)
+        env = resolved_backend.apply_env(env, game_model, prefix_model, self)
+        if self.backend_is_mesa(effective_backend) and not effective_mesa_driver:
+            effective_mesa_driver = self.mesa_driver_from_backend(effective_backend)
 
         qenv = QProcessEnvironment.systemEnvironment()
         for key, value in env.items():
@@ -1452,6 +2252,8 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setStyleSheet(MODERN_THEME)
     win = MainWindow()
     win.show()
     win.apply_ui_modes()
@@ -1460,3 +2262,175 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    def missing_core_tools(self) -> list[str]:
+        missing: list[str] = []
+        if not self.has_wine():
+            missing.append("Wine")
+        if not (self.dxvk_install / "bin" / "dxgi.dll").exists():
+            missing.append("DXVK")
+        if not (self.mesa_dir / "opengl32.dll").exists():
+            missing.append("Mesa")
+        return missing
+
+    def installer_terminal_command(self, action: str) -> str:
+        script = self.installer_script_path()
+        args = [
+            "bash",
+            str(script),
+            action,
+            str(self.prefix_path),
+            str(self.dxvk_src),
+            str(self.dxvk_install),
+            str(self.dxvk_install32),
+            str(self.mesa_dir),
+            DEFAULT_MESA_URL,
+        ]
+        command = " ".join(shlex.quote(part) for part in args)
+        return (
+            f"cd {shlex.quote(str(script.parent))}; "
+            f"echo 'Running MacNCheese installer in interactive Terminal mode'; "
+            f"{command}; "
+            f"status=$?; "
+            f"echo; "
+            f"echo 'Installer finished with exit code:' $status; "
+            f"echo 'You can run extra commands in this terminal if needed.'; "
+            f"exec bash"
+        )
+
+    def run_installer_action_in_terminal(self, action: str, *, post_action: Optional[str] = None) -> None:
+        script = self.installer_script_path()
+        if not script.exists():
+            QMessageBox.warning(self, APP_NAME, f"installer.sh not found at {script}")
+            return
+
+        if self.interactive_install_in_progress:
+            current_missing = self.missing_core_tools()
+            if current_missing:
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    "The MacNCheese installer terminal is already open. Finish the installation there, then return here and try again.",
+                )
+                self.set_status("Installer terminal already open")
+                return
+            self.interactive_install_in_progress = False
+            self.interactive_install_action = None
+            self.pending_post_install_action = None
+
+        applescript = (
+            'tell application "Terminal"\n'
+            'activate\n'
+            f'do script {json.dumps(self.installer_terminal_command(action))}\n'
+            'end tell\n'
+        )
+
+        try:
+            subprocess.run(["osascript", "-e", applescript], check=True)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Failed to open Terminal for installation: {exc}")
+            return
+
+        self.interactive_install_in_progress = True
+        self.interactive_install_action = action
+        self.pending_post_install_action = post_action
+        self.log(f"Opened Terminal for installer action: {action}")
+        self.set_status(f"Installer opened in Terminal for {action}")
+
+    def _run_shell_check(self, command: str, *, env: dict[str, str] | None = None) -> tuple[int, str]:
+        try:
+            proc = subprocess.run(
+                ["bash", "-lc", command],
+                capture_output=True,
+                text=True,
+                env=env or os.environ.copy(),
+            )
+            output = (proc.stdout or "") + (proc.stderr or "")
+            return proc.returncode, output.strip()
+        except Exception as exc:
+            return 1, str(exc)
+
+    def check_clt_installed(self) -> tuple[bool, str]:
+        rc, out = self._run_shell_check("xcode-select -p")
+        if rc == 0 and out:
+            return True, out
+        return False, "Xcode Command Line Tools are required before setup can continue. Run 'xcode-select --install', finish the macOS installer, then reopen MacNCheese."
+
+    def check_admin_access(self, password: str) -> tuple[bool, str]:
+        env = os.environ.copy()
+        env["MNC_SUDO_PASSWORD"] = password
+        rc, out = self._run_shell_check("printf '%s\\n' \"$MNC_SUDO_PASSWORD\" | sudo -S -k -v", env=env)
+        if rc == 0:
+            return True, ""
+        user_name = getpass.getuser()
+        groups_rc, groups_out = self._run_shell_check("id -Gn")
+        if groups_rc == 0 and "admin" not in groups_out.split():
+            return False, f"The macOS account '{user_name}' is not an Administrator account. Use an admin account, then try again."
+        return False, "The macOS password was rejected or sudo is unavailable. Enter the same password you use to sign in to macOS, then try again."
+
+    def prepare_installer_env(self) -> Optional[dict[str, str]]:
+        clt_ok, clt_msg = self.check_clt_installed()
+        if not clt_ok:
+            QMessageBox.warning(self, APP_NAME, clt_msg)
+            self.set_status("Xcode Command Line Tools required")
+            return None
+
+        env = self.request_admin_env()
+        if env is None:
+            self.set_status("Setup cancelled")
+            return None
+
+        password = env.get("MNC_SUDO_PASSWORD", "")
+        admin_ok, admin_msg = self.check_admin_access(password)
+        if not admin_ok:
+            QMessageBox.warning(self, APP_NAME, admin_msg)
+            self.set_status(admin_msg)
+            return None
+
+        return env
+
+    def installer_script_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates = [
+                exe_dir / "installer.sh",
+                exe_dir.parent / "Frameworks" / "installer.sh",
+                exe_dir.parent / "Resources" / "installer.sh",
+                Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
+            ]
+            for candidate in candidates:
+                if candidate and candidate.exists():
+                    return candidate
+            return exe_dir / "installer.sh"
+        return Path(__file__).resolve().with_name("installer.sh")
+
+    def run_installer_action(self, action: str) -> None:
+        env = self.prepare_installer_env()
+        if env is None:
+            return
+        script = self.installer_script_path()
+        if not script.exists():
+            candidates = []
+            if getattr(sys, "frozen", False):
+                exe_dir = Path(sys.executable).resolve().parent
+                candidates = [
+                    exe_dir / "installer.sh",
+                    exe_dir.parent / "Frameworks" / "installer.sh",
+                    exe_dir.parent / "Resources" / "installer.sh",
+                    Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
+                ]
+            checked = "\n".join(str(p) for p in candidates if p is not None)
+            QMessageBox.warning(self, APP_NAME, f"installer.sh not found. Checked:\n{checked or script}")
+            return
+        self.log(f"Using installer script: {script}")
+        args = [
+            "bash",
+            str(script),
+            action,
+            str(self.prefix_path),
+            str(self.dxvk_src),
+            str(self.dxvk_install),
+            str(self.dxvk_install32),
+            str(self.mesa_dir),
+            DEFAULT_MESA_URL,
+        ]
+        self.run_commands([args], env=env, cwd=str(script.parent))
