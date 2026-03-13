@@ -1215,13 +1215,10 @@ class GameEntry:
 
         sub_exes: list[Path] = []
         patterns = [
+            "*.exe",
             "*/*.exe",
             "*/*/*.exe",
-            "**.exe",
             "**/*.exe",
-            "**/*/*.exe",
-            "***.exe",
-            "***/*.exe",
         ]
         for pat in patterns:
             for exe in self.game_dir.glob(pat):
@@ -1329,13 +1326,10 @@ class GameEntry:
             pass
 
         patterns = [
+            "*.exe",
             "*/*.exe",
             "*/*/*.exe",
-            "**.exe",
             "**/*.exe",
-            "**/*/*.exe",
-            "***.exe",
-            "***/*.exe",
         ]
         sub_exes: list[Path] = []
         for pat in patterns:
