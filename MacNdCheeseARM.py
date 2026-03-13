@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import ssl
 import subprocess
 import sys
 import time
@@ -17,8 +18,8 @@ from pathlib import Path
 from typing import Iterable, Optional, Any
 
 
-from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QPixmap, QPainter, QIcon
+from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, pyqtSignal, QPoint, QRect, QSize, Qt, QEvent, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -41,9 +42,99 @@ from PyQt6.QtWidgets import (
     QWidget,
     QDialog,
     QTabWidget,
+    QFrame,
+    QStackedWidget,
+    QScrollArea,
+    QMenu,
+    QWidgetAction,
+    QLayout,
+    QSizePolicy,
+    QButtonGroup,
 )
 
-# SettingsDialog class
+class FlowLayout(QLayout):
+    def __init__(self, parent=None, margin=-1, hSpacing=-1, vSpacing=-1):
+        super().__init__(parent)
+        self._item_list = []
+        self._h_space = hSpacing
+        self._v_space = vSpacing
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item):
+        self._item_list.append(item)
+
+    def horizontalSpacing(self):
+        if self._h_space >= 0:
+            return self._h_space
+        return 0
+
+    def verticalSpacing(self):
+        if self._v_space >= 0:
+            return self._v_space
+        return 0
+
+    def count(self):
+        return len(self._item_list)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._item_list:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        x = rect.x()
+        y = rect.y()
+        line_height = 0
+
+        for item in self._item_list:
+            space_x = self.horizontalSpacing()
+            space_y = self.verticalSpacing()
+            next_x = x + item.sizeHint().width() + space_x
+            if next_x - space_x > rect.right() and line_height > 0:
+                x = rect.x()
+                y = y + line_height + space_y
+                next_x = x + item.sizeHint().width() + space_x
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+
+            x = next_x
+            line_height = max(line_height, item.sizeHint().height())
+
+        return y + line_height - rect.y()
+
+
+                      
 class SettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -86,6 +177,8 @@ class SettingsDialog(QDialog):
         self.dxvk_install32_edit = QLineEdit(DEFAULT_DXVK_INSTALL32)
         self.steam_setup_edit = QLineEdit(DEFAULT_STEAM_SETUP)
         self.mesa_dir_edit = QLineEdit(DEFAULT_MESA_DIR)
+        self.dxmt_dir_edit = QLineEdit(DEFAULT_DXMT_DIR)
+        self.vkd3d_dir_edit = QLineEdit(DEFAULT_VKD3D_DIR)
 
         form.addRow("Wine prefix", self._build_prefix_row(self.prefix_combo))
         form.addRow("DXVK source", self._browsable(self.dxvk_src_edit, dir=True))
@@ -93,6 +186,9 @@ class SettingsDialog(QDialog):
         form.addRow("DXVK install (32-bit)", self._browsable(self.dxvk_install32_edit, dir=True))
         form.addRow("SteamSetup.exe", self._browsable(self.steam_setup_edit, dir=False))
         form.addRow("Mesa x64 dir", self._browsable(self.mesa_dir_edit, dir=True))
+        form.addRow("DXMT dir", self._browsable(self.dxmt_dir_edit, dir=True))
+        form.addRow("VKD3D-Proton dir", self._browsable(self.vkd3d_dir_edit, dir=True))
+
 
         return widget
 
@@ -245,7 +341,13 @@ class SettingsDialog(QDialog):
             self.steam_setup_edit.setText(parent.steam_setup_edit.text())
         if hasattr(parent, "mesa_dir_edit"):
             self.mesa_dir_edit.setText(parent.mesa_dir_edit.text())
+        if hasattr(parent, "dxmt_dir_edit"):
+            self.dxmt_dir_edit.setText(parent.dxmt_dir_edit.text())
+        if hasattr(parent, "vkd3d_dir_edit"):
+            self.vkd3d_dir_edit.setText(parent.vkd3d_dir_edit.text())
 
+
+            
     def save_config_to_parent(self) -> None:
         parent = self.parent()
         if parent is None:
@@ -265,6 +367,10 @@ class SettingsDialog(QDialog):
             parent.steam_setup_edit.setText(self.steam_setup_edit.text())
         if hasattr(parent, "mesa_dir_edit"):
             parent.mesa_dir_edit.setText(self.mesa_dir_edit.text())
+        if hasattr(parent, "dxmt_dir_edit"):
+            parent.dxmt_dir_edit.setText(self.dxmt_dir_edit.text())
+        if hasattr(parent, "vkd3d_dir_edit"):
+            parent.vkd3d_dir_edit.setText(self.vkd3d_dir_edit.text())
 
     def log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
@@ -272,171 +378,369 @@ class SettingsDialog(QDialog):
 
 MODERN_THEME = """
 QWidget {
-    background-color: #1E1E1E;
-    color: #E0E0E0;
-    font-family: Arial, Helvetica, sans-serif;
+    background-color: #283141;
+    color: #FFFFFF;
+    font-family: "Inter", "Segoe UI", Arial, sans-serif;
     font-size: 13px;
 }
 
 QMainWindow, QDialog {
-    background-color: #1E1E1E;
+    background-color: #283141;
 }
 
-QGroupBox {
-    background-color: #252526;
-    border: 1px solid #333333;
-    border-radius: 6px;
-    margin-top: 18px; /* Room for title */
-    padding-top: 16px;
-    padding-bottom: 8px;
-    padding-left: 12px;
-    padding-right: 12px;
+/* ── Sidebar ── */
+#Sidebar {
+    background-color: #1F2633;
+    border-right: 1px solid #161D29;
 }
 
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top center;
-    padding: 0px 8px;
-    color: #9CDCFE;
-    font-size: 13px;
+#SidebarButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 4px 4px 4px;
+    margin: 2px 6px;
+    color: #A0AABF;
+    font-size: 10px;
+}
+#SidebarButton:hover {
+    background-color: #2B384E;
+    color: #FFFFFF;
+}
+#SidebarButton:checked {
+    background-color: #FF6600;
+    color: #FFFFFF;
+}
+
+#AddContainerButton {
+    background-color: transparent;
+    border: 2px solid #3B4B68;
+    border-radius: 22px;
+    color: #A0AABF;
+    font-size: 22px;
     font-weight: bold;
-    background-color: #252526;
+    padding: 0px;
+    margin: 4px 8px;
+}
+#AddContainerButton:hover {
+    border-color: #00D8D6;
+    color: #00D8D6;
+    background-color: rgba(0,216,214,0.08);
+}
+#AddContainerButton::menu-indicator {
+    image: none;
+}
+/* ── Topbar ── */
+#Topbar {
+    background-color: #1F2633;
+    border-bottom: 1px solid #161D29;
+}
+
+#LogoText {
+    color: #00D8D6;
+    font-size: 18px;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+#LogoM {
+    background-color: transparent;
+    color: #1A202D;
+    border-radius: 6px;
+    border: none;
+}
+
+/* Search bar */
+QLineEdit#SearchBar {
+    background-color: #283141;
+    border: 1px solid #3B4B68;
+    border-radius: 8px;
+    padding: 7px 12px;
+    color: #A0AABF;
+    font-size: 13px;
+    min-width: 260px;
+}
+QLineEdit#SearchBar:focus {
+    border: 1px solid #00D8D6;
+    color: #FFFFFF;
+}
+
+/* Topbar icon buttons */
+#TopBarBtn {
+    background-color: transparent;
+    border: none;
+    color: #A0AABF;
+    font-size: 18px;
+    padding: 4px 6px;
     border-radius: 4px;
 }
+#TopBarBtn:hover {
+    color: #00D8D6;
+    background-color: rgba(0,216,214,0.08);
+}
 
-QPushButton {
-    background-color: #333333;
-    border: 1px solid #3C3C3C;
-    border-radius: 5px;
-    padding: 6px 16px;
+/* ── Game Cards ── */
+#GameCard {
+    background-color: #1A202D;
+    border-radius: 6px;
+    border: 2px solid transparent;
+}
+#GameCard:hover {
+    border: 2px solid #FFFFFF;
+}
+
+#GameCoverLabel {
+    background-color: #131920;
+    border-radius: 6px;
+}
+
+#HoursLabel {
+    color: #CCCCCC;
+    font-size: 10px;
+    background-color: rgba(0,0,0,0.6);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+/* ── Launch Popup / Dialogs ── */
+#LaunchDialog {
+    background-color: #2D3848;
+    border-radius: 8px;
+}
+
+#DialogTitle {
+    font-size: 18px;
+    font-weight: bold;
     color: #FFFFFF;
-    font-weight: 500;
 }
 
-QPushButton:hover {
-    background-color: #3C3C3C;
-    border-color: #4A4A4A;
-}
-
-QPushButton:pressed {
-    background-color: #0E639C;
-    border-color: #0E639C;
+#PlayBtn {
+    background-color: transparent;
+    border: 2px solid #FFFFFF;
+    border-radius: 20px;
     color: #FFFFFF;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 8px 28px;
+    min-width: 100px;
+}
+#PlayBtn:hover {
+    background-color: rgba(255,255,255,0.08);
+    border-color: #00D8D6;
+    color: #00D8D6;
 }
 
-QLineEdit, QComboBox, QPlainTextEdit, QListWidget {
-    background-color: #1E1E1E;
-    border: 1px solid #3C3C3C;
+#InstallBtn {
+    background-color: transparent;
+    border: 2px solid #FFFFFF;
+    border-radius: 20px;
+    color: #FFFFFF;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 8px 28px;
+    min-width: 120px;
+}
+#InstallBtn:hover {
+    background-color: rgba(255,255,255,0.08);
+    border-color: #00D8D6;
+    color: #00D8D6;
+}
+
+/* ── Combo boxes ── */
+QComboBox {
+    background-color: #3B4B68;
+    border: none;
     border-radius: 4px;
-    padding: 8px;
-    color: #E0E0E0;
-    selection-background-color: #264F78;
-    selection-color: #FFFFFF;
+    padding: 5px 10px;
+    color: #FFFFFF;
+    font-size: 13px;
+    min-width: 200px;
 }
-
-QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QListWidget:focus {
-    border: 1px solid #0E639C;
-    background-color: #1E1E1E;
-}
-
 QComboBox::drop-down {
     border: none;
     width: 20px;
 }
-
-QComboBox::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 4px solid #9CDCFE;
-    margin-right: 8px;
-}
-
-QListWidget {
-    outline: none;
-}
-
-QListWidget::item {
-    padding: 8px;
-    border-radius: 4px;
-    margin-bottom: 2px;
-}
-
-QListWidget::item:selected {
-    background-color: #0E639C;
+QComboBox QAbstractItemView {
+    background-color: #2B384E;
+    border: 1px solid #1F2633;
+    selection-background-color: #3B4B68;
     color: #FFFFFF;
 }
 
-QListWidget::item:hover:!selected {
-    background-color: #2D2D30;
+/* Line edits inside dialogs */
+QLineEdit {
+    background-color: #3B4B68;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 10px;
+    color: #FFFFFF;
+    font-size: 13px;
+}
+QLineEdit:focus {
+    border: 1px solid #00D8D6;
 }
 
-QSplitter::handle {
+/* ── Generic Buttons ── */
+QPushButton {
+    background-color: #3B4B68;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    color: #FFFFFF;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #4C6085;
+}
+QPushButton:pressed {
+    background-color: #00D8D6;
+    color: #1F2633;
+}
+
+/* ── Context Menu ── */
+QMenu {
+    background-color: #2B384E;
+    border: 1px solid #1F2633;
+    border-radius: 8px;
+    padding: 4px;
+}
+QMenu::item {
+    background-color: transparent;
+    padding: 8px 24px;
+    color: #FFFFFF;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background-color: #3B4B68;
+}
+
+/* ── Scroll Area ── */
+QScrollArea {
+    border: none;
     background-color: transparent;
 }
-
-QSplitter::handle:hover {
-    background-color: #333333;
-}
-
 QScrollBar:vertical {
     border: none;
-    background: transparent;
-    width: 10px;
-    margin: 0px;
+    background: #1F2633;
+    width: 8px;
+    border-radius: 4px;
 }
-
 QScrollBar::handle:vertical {
-    background: #424242;
+    background: #3B4B68;
     min-height: 20px;
-    border-radius: 5px;
+    border-radius: 4px;
 }
-
 QScrollBar::handle:vertical:hover {
-    background: #4F4F4F;
+    background: #4C6085;
 }
-
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    border: none;
+    background: none;
+}
+QScrollBar:horizontal {
+    border: none;
+    background: #1F2633;
+    height: 8px;
+    border-radius: 4px;
+}
+QScrollBar::handle:horizontal {
+    background: #3B4B68;
+    min-width: 20px;
+    border-radius: 4px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     border: none;
     background: none;
 }
 
-QTabWidget::pane {
-    border: 1px solid #333333;
-    border-radius: 6px;
-    background: #252526;
-    top: -1px;
+/* ── Status bar ── */
+#StatusBar {
+    background-color: #1A202D;
+    border-top: 1px solid #161D29;
 }
-
-QTabBar::tab {
-    background: #1E1E1E;
-    border: 1px solid #333333;
-    border-bottom: none;
-    padding: 6px 14px;
-    margin-right: 2px;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-    color: #A1A1AA;
-}
-
-QTabBar::tab:selected {
-    background: #252526;
-    color: #9CDCFE;
+#LogBtn {
+    background-color: transparent;
+    border: none;
+    color: #A0AABF;
+    font-size: 12px;
     font-weight: bold;
-    border-bottom: 2px solid #9CDCFE;
+    padding: 0px 6px;
+}
+#LogBtn:hover {
+    color: #00D8D6;
+}
+#StatusText {
+    color: #A0AABF;
+    font-size: 11px;
+}
+#VersionLabel {
+    color: #A0AABF;
+    font-size: 11px;
 }
 
-QTabBar::tab:hover:!selected {
-    background: #2D2D30;
+/* ── Icon selector buttons (Create Bottle) ── */
+#IconSelectorBtn {
+    background-color: #3B4B68;
+    border: 2px solid transparent;
+    border-radius: 24px;
+    padding: 4px;
+}
+#IconSelectorBtn:checked {
+    border: 2px solid #00D8D6;
+    background-color: #2B384E;
+}
+#IconSelectorBtn:hover {
+    border: 2px solid #A0AABF;
+}
+
+/* Steam landing page */
+#SteamTitle {
+    color: #FFFFFF;
+    font-size: 48px;
+    font-weight: bold;
+    letter-spacing: 4px;
+}
+
+/* Tab widget */
+QTabWidget::pane {
+    border: 1px solid #1F2633;
+    background-color: #283141;
+}
+QTabBar::tab {
+    background-color: #1F2633;
+    color: #A0AABF;
+    padding: 8px 16px;
+    border: none;
+}
+QTabBar::tab:selected {
+    background-color: #283141;
+    color: #00D8D6;
+    border-bottom: 2px solid #00D8D6;
+}
+QTabBar::tab:hover {
     color: #FFFFFF;
 }
 
-QLabel {
-    color: #CCCCCC;
+QPlainTextEdit {
+    background-color: #1A202D;
+    color: #A0AABF;
+    border: none;
+    font-family: monospace;
+    font-size: 12px;
 }
 
-QMessageBox {
-    background-color: #1E1E1E;
+QGroupBox {
+    border: 1px solid #3B4B68;
+    border-radius: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    color: #A0AABF;
+    font-weight: bold;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 4px;
 }
 """
 
@@ -451,6 +755,8 @@ DEFAULT_DXVK_INSTALL = str(Path.home() / "dxvk-release")
 DEFAULT_DXVK_INSTALL32 = str(Path.home() / "dxvk-release-32")
 DEFAULT_STEAM_SETUP = str(Path.home() / "Downloads" / "SteamSetup.exe")
 DEFAULT_MESA_DIR = str(Path.home() / "mesa" / "x64")
+DEFAULT_DXMT_DIR = str(Path.home() / "dxmt")
+DEFAULT_VKD3D_DIR = str(Path.home() / "vkd3d-proton")
 DXVK_DLLS = ("dxgi.dll", "d3d11.dll", "d3d10core.dll")
 
 DEFAULT_MESA_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
@@ -459,9 +765,11 @@ DEFAULT_MESA_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/2
 LAUNCH_BACKEND_AUTO = "auto"
 LAUNCH_BACKEND_WINE = "wine"
 LAUNCH_BACKEND_DXVK = "dxvk"
+LAUNCH_BACKEND_DXMT = "dxmt"
 LAUNCH_BACKEND_MESA_LLVMPIPE = "mesa:llvmpipe"
 LAUNCH_BACKEND_MESA_ZINK = "mesa:zink"
 LAUNCH_BACKEND_MESA_SWR = "mesa:swr"
+LAUNCH_BACKEND_VKD3D = "vkd3d-proton"
 
 MESA_DRIVER_LLVMPIPE = "llvmpipe"
 MESA_DRIVER_ZINK = "zink"
@@ -471,13 +779,15 @@ LAUNCH_BACKENDS = (
     ("Auto (recommended)", LAUNCH_BACKEND_AUTO),
     ("Wine builtin (no DXVK/Mesa)", LAUNCH_BACKEND_WINE),
     ("DXVK (D3D11->Vulkan)", LAUNCH_BACKEND_DXVK),
+    ("DXMT (experimental)", LAUNCH_BACKEND_DXMT),
+    ("VKD3D-Proton (D3D12)", LAUNCH_BACKEND_VKD3D),
     ("Mesa llvmpipe (CPU, safe)", LAUNCH_BACKEND_MESA_LLVMPIPE),
     ("Mesa zink (GPU, Vulkan)", LAUNCH_BACKEND_MESA_ZINK),
     ("Mesa swr (CPU rasterizer)", LAUNCH_BACKEND_MESA_SWR),
 )
 
 
-# ==== New architecture: LaunchProfile, PrefixModel, GameModel, Component, Backend, Registries ====
+
 @dataclass(frozen=True)
 class LaunchProfile:
     launch_type: str = "direct_exe"
@@ -568,11 +878,25 @@ class Vkd3dProtonComponent(Component):
         super().__init__("vkd3d-proton")
 
     def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
-        return False
+        if not window.vkd3d_dir.exists() or not window.vkd3d_dir.is_dir():
+            return False
+        required = ("d3d12.dll", "d3d12core.dll")
+        return all((window.vkd3d_dir / name).exists() for name in required)
 
     def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
-        raise NotImplementedError("VKD3D-Proton installation is not implemented yet")
+        window.install_vkd3d()
 
+    def required_env(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return {
+            "VKD3D_PROTON_PATH": str(window.vkd3d_dir),
+        }
+
+    def required_dll_overrides(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return {
+            "d3d12": "n,b",
+            "d3d12core": "n,b",
+            "dxgi": "n,b",
+        }
 
 class MoltenVkComponent(Component):
     def __init__(self) -> None:
@@ -584,6 +908,28 @@ class MoltenVkComponent(Component):
     def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
         raise NotImplementedError("MoltenVK installation is not implemented yet")
 
+class DxmtComponent(Component):
+    def __init__(self) -> None:
+        super().__init__("dxmt")
+
+    def is_installed(self, prefix: PrefixModel, window: "MainWindow") -> bool:
+        if not window.dxmt_dir.exists() or not window.dxmt_dir.is_dir():
+            return False
+        return all((window.dxmt_dir / name).exists() for name in ("d3d11.dll", "dxgi.dll"))
+
+    def install(self, prefix: PrefixModel, window: "MainWindow") -> None:
+        window.install_dxmt()
+
+    def required_env(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return {
+            "DXMT_PATH": str(window.dxmt_dir),
+        }
+
+    def required_dll_overrides(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        return {
+            "dxgi": "n,b",
+            "d3d11": "n,b",
+        }
 
 class WinetricksComponent(Component):
     def __init__(self) -> None:
@@ -695,19 +1041,66 @@ class MesaSwrBackend(MesaBackend):
 
 
 class Vkd3dProtonBackend(Backend):
-    backend_id = "vkd3d-proton"
-    label = "VKD3D-Proton (placeholder)"
+    backend_id = LAUNCH_BACKEND_VKD3D
+    label = "VKD3D-Proton (D3D12)"
 
     def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
-        return False
+        component = window.component_registry.get("vkd3d-proton")
+        return bool(component and component.is_installed(prefix, window))
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        component = window.component_registry.get("vkd3d-proton")
+        if not component or not component.is_installed(prefix, window):
+            raise RuntimeError("VKD3D-Proton is not installed. Install VKD3D-Proton first, then try again.")
+        return {"kind": "vkd3d-proton"}
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = env.copy()
+        vkd3d_path = str(window.vkd3d_dir)
+
+        env["VKD3D_PROTON_PATH"] = vkd3d_path
+        env["WINEDLLOVERRIDES"] = "d3d12,d3d12core,dxgi=n,b"
+
+        existing_winepath = env.get("WINEPATH", "")
+        env["WINEPATH"] = vkd3d_path if not existing_winepath else f"{vkd3d_path};{existing_winepath}"
+
+        env.pop("DXVK_LOG_PATH", None)
+        env.pop("DXVK_LOG_LEVEL", None)
+        env.pop("GALLIUM_DRIVER", None)
+        env.pop("MESA_GLTHREAD", None)
+        env.setdefault("VKD3D_CONFIG", "")
+        return env
 
 
 class DxmtBackend(Backend):
-    backend_id = "dxmt"
-    label = "DXMT (placeholder)"
+    backend_id = LAUNCH_BACKEND_DXMT
+    label = "DXMT (experimental)"
 
     def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
-        return False
+        component = window.component_registry.get("dxmt")
+        return bool(component and component.is_installed(prefix, window))
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        component = window.component_registry.get("dxmt")
+        if not component or not component.is_installed(prefix, window):
+            raise RuntimeError("DXMT is not installed. Install DXMT first, then try again.")
+        return {"kind": "dxmt"}
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = env.copy()
+        dxmt_path = str(window.dxmt_dir)
+
+        env["DXMT_PATH"] = dxmt_path
+        env["WINEDLLOVERRIDES"] = "dxgi,d3d11=n,b"
+
+        existing_winepath = env.get("WINEPATH", "")
+        env["WINEPATH"] = dxmt_path if not existing_winepath else f"{dxmt_path};{existing_winepath}"
+
+        env.pop("DXVK_LOG_PATH", None)
+        env.pop("DXVK_LOG_LEVEL", None)
+        env.pop("GALLIUM_DRIVER", None)
+        env.pop("MESA_GLTHREAD", None)
+        return env
 
 
 class AutoBackend(Backend):
@@ -1003,6 +1396,53 @@ class CommandWorker(QObject):
             self.finished.emit(False, str(exc))
 
 
+class CoverFetcher(QThread):
+                                                                                                  
+    cover_bytes_ready = pyqtSignal(str, bytes)                          
+
+    def __init__(self, appid: str, local_path: Optional[Path] = None) -> None:
+        super().__init__()
+        self.appid = appid
+        self.local_path = local_path
+
+    def run(self) -> None:
+        if self.local_path and self.local_path.exists():
+            try:
+                data = self.local_path.read_bytes()
+                if data:
+                    self.cover_bytes_ready.emit(self.appid, data)
+                    return
+            except Exception:
+                pass
+
+        local_cache_dir = Path.home() / ".cache" / "macncheese" / "covers"
+        local_cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = local_cache_dir / f"{self.appid}.jpg"
+
+        if cached.exists():
+            try:
+                data = cached.read_bytes()
+                if data:
+                    self.cover_bytes_ready.emit(self.appid, data)
+                    return
+            except Exception:
+                pass
+
+        cdn_url = f"https://cdn.akamai.steamstatic.com/steam/apps/{self.appid}/library_600x900.jpg"
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(cdn_url, headers={"User-Agent": "MacNCheese"})
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                data = resp.read()
+            if data:
+                cached.write_bytes(data)
+                self.cover_bytes_ready.emit(self.appid, data)
+        except Exception:
+            pass
+
+
 class SteamScanner:
     APPMANIFEST_RE = re.compile(r'"(?P<key>[^"]+)"\s+"(?P<value>[^"]*)"')
 
@@ -1080,6 +1520,305 @@ class SteamScanner:
         return games
 
 
+
+class CreateBottleDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create a Bottle")
+        self.setObjectName("LaunchDialog")
+        self.setFixedSize(480, 520)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(24)
+        
+        title = QLabel("Create a Bottle")
+        title.setObjectName("DialogTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        
+        form_layout = QVBoxLayout()
+        form_layout.setSpacing(16)
+        
+              
+        name_group = QVBoxLayout()
+        name_group.setSpacing(8)
+        name_lbl = QLabel("Bottle Name")
+        name_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; font-weight: bold;")
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g. My Awesome Game")
+        name_group.addWidget(name_lbl)
+        name_group.addWidget(self.name_edit)
+        form_layout.addLayout(name_group)
+        
+                     
+        path_group = QVBoxLayout()
+        path_group.setSpacing(8)
+        path_lbl = QLabel("Bottle Prefix (Path)")
+        path_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; font-weight: bold;")
+        
+        path_row = QHBoxLayout()
+        self.path_edit = QLineEdit()
+        self.path_edit.setText(str(Path.home() / "Games" / "MacNCheese"))
+        btn_browse = QPushButton("...")
+        btn_browse.setFixedSize(32, 32)
+        btn_browse.clicked.connect(self._browse_path)
+        path_row.addWidget(self.path_edit)
+        path_row.addWidget(btn_browse)
+        
+        path_group.addWidget(path_lbl)
+        path_group.addLayout(path_row)
+        form_layout.addLayout(path_group)
+        
+                        
+        exe_group = QVBoxLayout()
+        exe_group.setSpacing(8)
+        exe_lbl = QLabel("Installer .exe (Optional)")
+        exe_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; font-weight: bold;")
+        
+        exe_row = QHBoxLayout()
+        self.exe_edit = QLineEdit()
+        self.exe_edit.setPlaceholderText("Select setup.exe or similar...")
+        btn_browse_exe = QPushButton("...")
+        btn_browse_exe.setFixedSize(32, 32)
+        btn_browse_exe.clicked.connect(self._browse_exe)
+        exe_row.addWidget(self.exe_edit)
+        exe_row.addWidget(btn_browse_exe)
+        
+        exe_group.addWidget(exe_lbl)
+        exe_group.addLayout(exe_row)
+        form_layout.addLayout(exe_group)
+        
+                         
+        win_group = QVBoxLayout()
+        win_group.setSpacing(8)
+        win_lbl = QLabel("Windows Version")
+        win_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; font-weight: bold;")
+        self.win_combo = QComboBox()
+        for v in ["Windows 10", "Windows 11", "Windows 7", "Windows 8.1"]:
+            self.win_combo.addItem(v)
+        win_group.addWidget(win_lbl)
+        win_group.addWidget(self.win_combo)
+        form_layout.addLayout(win_group)
+        
+               
+        icons_group = QVBoxLayout()
+        icons_group.setSpacing(8)
+        icons_lbl = QLabel("Platform")
+        icons_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; font-weight: bold;")
+        
+        icons_row = QHBoxLayout()
+        self.icon_group = QButtonGroup(self)
+        self.icon_group.setExclusive(True)
+        
+        for i, icon_text in enumerate(["⊞", "🎮", "E", "EA", "U"]):
+            btn = QPushButton(icon_text)
+            btn.setObjectName("IconSelectorBtn")
+            btn.setCheckable(True)
+            btn.setFixedSize(48, 48)
+            btn.setStyleSheet("font-size: 20px;" if i < 2 else "font-size: 16px; font-weight: bold;")
+            if i == 0:
+                btn.setChecked(True)
+            self.icon_group.addButton(btn)
+            icons_row.addWidget(btn)
+            
+        icons_row.addStretch()
+        icons_group.addWidget(icons_lbl)
+        icons_group.addLayout(icons_row)
+        form_layout.addLayout(icons_group)
+        
+        layout.addLayout(form_layout)
+        layout.addStretch()
+        
+                       
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        install_btn = QPushButton("↓ Install")
+        install_btn.setObjectName("InstallBtn")
+        install_btn.clicked.connect(self.accept)
+        btn_row.addWidget(install_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+    def _browse_path(self):
+        d = QFileDialog.getExistingDirectory(self, "Select Prefix Directory", self.path_edit.text())
+        if d:
+            self.path_edit.setText(d)
+
+    def _browse_exe(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select Installer Executable", str(Path.home()), "Executables (*.exe *.bat *.msi);;All Files (*)")
+        if f:
+            self.exe_edit.setText(f)
+
+
+class GameLaunchDialog(QDialog):
+    def __init__(self, game: "GameEntry", parent=None):
+        super().__init__(parent)
+        self.game = game
+        self.parent_window = parent
+        self.detected_exes = game.detect_exes()
+        self.selected_exe: Optional[Path] = None
+        self.setWindowTitle(game.name)
+        self.setObjectName("LaunchDialog")
+        self.setFixedSize(560, 320)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(24)
+        
+                              
+        cover_lbl = QLabel()
+        cover_lbl.setObjectName("GameCoverLabel")
+        cover_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cover_lbl.setFixedSize(160, 240)
+        cover_lbl.setScaledContents(False)
+        cover_lbl.setStyleSheet("background-color: #131920; border-radius: 8px;")
+        
+        if hasattr(parent, "_cover_cache") and game.appid in parent._cover_cache:
+            try:
+                pix = QPixmap()
+                pix.loadFromData(parent._cover_cache[game.appid])
+                if not pix.isNull():
+                    scaled = pix.scaled(160, 240, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                        Qt.TransformationMode.SmoothTransformation)
+                    x_off = max(0, (scaled.width() - 160) // 2)
+                    y_off = max(0, (scaled.height() - 240) // 2)
+                    cropped = scaled.copy(x_off, y_off, 160, 240)
+                    cover_lbl.setPixmap(cropped)
+            except RuntimeError:
+                pass
+                
+        layout.addWidget(cover_lbl)
+        
+                                         
+        right_layout = QVBoxLayout()
+        right_layout.setSpacing(16)
+        
+        title = QLabel(game.name)
+        title.setObjectName("DialogTitle")
+        title.setWordWrap(True)
+        right_layout.addWidget(title)
+        
+                      
+        info_lbl = QLabel("0.0 hours played \nLast played: Never")
+        info_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; line-height: 1.5;")
+        right_layout.addWidget(info_lbl)
+        
+        right_layout.addStretch()
+        
+                     
+        form_layout = QVBoxLayout()
+        form_layout.setSpacing(12)
+        
+                          
+        back_row = QHBoxLayout()
+        back_lbl = QLabel("Backend:")
+        back_lbl.setStyleSheet("color: #A0AABF; font-size: 13px; font-weight: bold; width: 60px;")
+        self.backend_combo = QComboBox()
+        for label, value in LAUNCH_BACKENDS:
+            self.backend_combo.addItem(label, value)
+        back_row.addWidget(back_lbl)
+        back_row.addWidget(self.backend_combo, 1)
+        form_layout.addLayout(back_row)
+
+        exe_row = QHBoxLayout()
+        exe_lbl = QLabel("EXE:")
+        exe_lbl.setStyleSheet("color: #A0AABF; font-size: 13px; font-weight: bold; width: 60px;")
+        self.exe_combo = QComboBox()
+        self.exe_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.exe_combo.setToolTip("Select which executable to launch")
+        self.exe_combo.addItem("Auto-detect", "")
+
+        current_selected = None
+        if self.parent_window and hasattr(self.parent_window, "selected_startup_exes"):
+            current_selected = self.parent_window.selected_startup_exes.get(game.appid)
+
+        for exe_path in self.detected_exes:
+            try:
+                rel = exe_path.relative_to(game.game_dir)
+                label = str(rel)
+            except Exception:
+                label = exe_path.name
+            self.exe_combo.addItem(label, str(exe_path))
+
+        if current_selected:
+            for i in range(self.exe_combo.count()):
+                if self.exe_combo.itemData(i) == str(current_selected):
+                    self.exe_combo.setCurrentIndex(i)
+                    break
+
+        btn_browse_exe = QPushButton("...")
+        btn_browse_exe.setFixedSize(32, 32)
+        btn_browse_exe.setToolTip("Browse for executable")
+        btn_browse_exe.clicked.connect(self._browse_exe)
+
+        exe_row.addWidget(exe_lbl)
+        exe_row.addWidget(self.exe_combo, 1)
+        exe_row.addWidget(btn_browse_exe)
+        form_layout.addLayout(exe_row)
+        
+                    
+        args_row = QHBoxLayout()
+        args_lbl = QLabel("Args:")
+        args_lbl.setStyleSheet("color: #A0AABF; font-size: 13px; font-weight: bold; width: 60px;")
+        self.args_edit = QLineEdit()
+        self.args_edit.setPlaceholderText("Optional game arguments...")
+        args_row.addWidget(args_lbl)
+        args_row.addWidget(self.args_edit, 1)
+        form_layout.addLayout(args_row)
+        
+        right_layout.addLayout(form_layout)
+        
+        right_layout.addSpacing(16)
+        
+                     
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.play_btn = QPushButton("▶ PLAY")
+        self.play_btn.setObjectName("PlayBtn")
+        self.play_btn.clicked.connect(self._on_play)
+        btn_row.addWidget(self.play_btn)
+        right_layout.addLayout(btn_row)
+        
+        layout.addLayout(right_layout, 1)
+
+    def _browse_exe(self):
+        start_dir = str(self.game.game_dir) if self.game.game_dir.exists() else str(Path.home())
+        f, _ = QFileDialog.getOpenFileName(self, "Select game executable", start_dir, "Executables (*.exe);;All Files (*)")
+        if not f:
+            return
+        path = Path(f)
+        label = path.name
+        try:
+            label = str(path.relative_to(self.game.game_dir))
+        except Exception:
+            pass
+        existing_index = -1
+        for i in range(self.exe_combo.count()):
+            if self.exe_combo.itemData(i) == str(path):
+                existing_index = i
+                break
+        if existing_index >= 0:
+            self.exe_combo.setCurrentIndex(existing_index)
+        else:
+            self.exe_combo.addItem(label, str(path))
+            self.exe_combo.setCurrentIndex(self.exe_combo.count() - 1)
+
+    def _on_play(self):
+        p = self.parent_window
+        selected_exe_data = self.exe_combo.currentData()
+        if p and hasattr(p, "selected_startup_exes"):
+            if selected_exe_data:
+                p.selected_startup_exes[self.game.appid] = Path(selected_exe_data)
+            else:
+                p.selected_startup_exes.pop(self.game.appid, None)
+
+        if p and hasattr(p, "launch_selected_game"):
+            backend_id = self.backend_combo.currentData()
+            args = self.args_edit.text()
+            p.launch_selected_game(self.game, backend_id=backend_id, extra_args=args)
+        self.accept()
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -1107,6 +1846,13 @@ class MainWindow(QMainWindow):
         self.dxvk_install32_edit = self.settings.dxvk_install32_edit
         self.steam_setup_edit = self.settings.steam_setup_edit
         self.mesa_dir_edit = self.settings.mesa_dir_edit
+        self.dxmt_dir_edit = self.settings.dxmt_dir_edit
+        self.vkd3d_dir_edit = self.settings.vkd3d_dir_edit
+
+
+        self._cover_cache: dict[str, bytes] = {}      
+        self._cover_failed: set[str] = set()            
+        self._active_fetchers: list[CoverFetcher] = [] 
 
         self.component_registry = ComponentRegistry()
         self.backend_registry = BackendRegistry()
@@ -1121,6 +1867,7 @@ class MainWindow(QMainWindow):
         for component in (
             WineComponent(),
             DxvkComponent(),
+            DxmtComponent(),
             Vkd3dProtonComponent(),
             MoltenVkComponent(),
             WinetricksComponent(),
@@ -1152,8 +1899,16 @@ class MainWindow(QMainWindow):
 
     def auto_backend_for_game_model(self, game: GameModel) -> str:
         token = f"{game.name} {game.install_path.name}".lower()
+        exe_name = game.exe_path.name.lower() if game.exe_path else ""
+
         if "mewgenics" in token:
             return LAUNCH_BACKEND_MESA_LLVMPIPE
+        if "detroit" in token or "unreal" in token:
+            return LAUNCH_BACKEND_DXMT
+        if "enlisted" in token or exe_name == "enlisted.exe" or exe_name == "enlisted-min-cpu.exe":
+            return LAUNCH_BACKEND_VKD3D
+        if (game.install_path / "D3D12").exists():
+            return LAUNCH_BACKEND_VKD3D
         return LAUNCH_BACKEND_DXVK
 
     def resolve_backend(self, backend_id: str, game: GameModel, prefix: PrefixModel) -> Backend:
@@ -1168,6 +1923,47 @@ class MainWindow(QMainWindow):
             return backend
         fallback = self.backend_registry.get(LAUNCH_BACKEND_WINE)
         return fallback if fallback is not None else WineBuiltinBackend()
+
+    def _asset_path(self, filename: str) -> Optional[Path]:
+        candidates = [
+            Path(__file__).resolve().with_name(filename),
+            Path(__file__).resolve().parent / filename,
+            Path.cwd() / filename,
+        ]
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates.extend([
+                exe_dir / filename,
+                exe_dir.parent / "Resources" / filename,
+                Path(getattr(sys, "_MEIPASS", "")) / filename if getattr(sys, "_MEIPASS", None) else None,
+            ])
+        for candidate in candidates:
+            if candidate and candidate.exists():
+                return candidate
+        return None
+
+    def _set_button_icon_from_asset(self, button: QPushButton, filename: str, *, size: int = 20) -> bool:
+        asset = self._asset_path(filename)
+        if asset is None:
+            return False
+        icon = QIcon(str(asset))
+        if icon.isNull():
+            return False
+        button.setText("")
+        button.setIcon(icon)
+        button.setIconSize(QSize(size, size))
+        return True
+
+    def _set_label_pixmap_from_asset(self, label: QLabel, filename: str, *, width: int, height: int) -> bool:
+        asset = self._asset_path(filename)
+        if asset is None:
+            return False
+        pix = QPixmap(str(asset))
+        if pix.isNull():
+            return False
+        scaled = pix.scaled(width, height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        label.setPixmap(scaled)
+        return True
 
     def _build_menu(self) -> None:
         check_updates_action = QAction("Check for Updates", self)
@@ -1185,158 +1981,485 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         self.setCentralWidget(root)
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(24, 24, 24, 24)
-        root_layout.setSpacing(16)
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        splitter = QSplitter()
-        root_layout.addWidget(splitter, 1)
+                         
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(64)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 8, 0, 8)
+        sidebar_layout.setSpacing(4)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 12, 0)
-        left_layout.setSpacing(16)
-        splitter.addWidget(left)
+                                                     
+        self.sidebar_group = QButtonGroup(self)
+        self.sidebar_group.setExclusive(True)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(12, 0, 0, 0)
-        right_layout.setSpacing(16)
-        splitter.addWidget(right)
-        splitter.setSizes([400, 700])
+                                                                           
+        self._sidebar_containers_layout = QVBoxLayout()
+        self._sidebar_containers_layout.setContentsMargins(0, 0, 0, 0)
+        self._sidebar_containers_layout.setSpacing(4)
+        sidebar_layout.addLayout(self._sidebar_containers_layout)
 
-        steam_box = QGroupBox("Steam")
-        steam_layout = QVBoxLayout(steam_box)
-        steam_row = QHBoxLayout()
-        self.launch_steam_btn = QPushButton("Install & Launch Steam")
-        self.launch_steam_btn.clicked.connect(self.unified_steam_action)
-        self.scan_games_btn = QPushButton("Scan Games")
-        self.scan_games_btn.clicked.connect(self.scan_games)
-        steam_row.addWidget(self.launch_steam_btn)
-        steam_row.addWidget(self.scan_games_btn)
-        steam_layout.addLayout(steam_row)
-        left_layout.addWidget(steam_box)
+        sidebar_layout.addStretch()
 
-        quick_box = QGroupBox("Quick Setup")
-        quick_layout = QVBoxLayout(quick_box)
+                                  
+        self.btn_add_container = QPushButton("+")
+        self.btn_add_container.setObjectName("AddContainerButton")
+        self.btn_add_container.setFixedSize(44, 44)
+        self.btn_add_container.setToolTip("Create a new Wine container (bottle)")
+        self.btn_add_container.clicked.connect(self._open_create_bottle_dialog)
+        self._set_button_icon_from_asset(self.btn_add_container, "Add.png", size=22)
+        sidebar_layout.addWidget(self.btn_add_container, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        self.quick_setup_btn = QPushButton("One Click Setup")
-        self.quick_setup_btn.clicked.connect(self.quick_setup)
-        quick_layout.addWidget(self.quick_setup_btn)
+        root_layout.addWidget(sidebar, 0)
 
-        self.install_wine_btn = QPushButton("Install Wine")
-        self.install_wine_btn.clicked.connect(self.install_wine)
-        quick_layout.addWidget(self.install_wine_btn)
 
-        self.check_updates_btn = QPushButton("Check for Updates")
-        self.check_updates_btn.clicked.connect(self.check_for_updates)
-        quick_layout.addWidget(self.check_updates_btn)
+                           
+        main_area = QWidget()
+        main_layout = QVBoxLayout(main_area)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        left_layout.addWidget(quick_box)
+                
+        topbar = QFrame()
+        topbar.setObjectName("Topbar")
+        topbar.setFixedHeight(60)
+        topbar_layout = QHBoxLayout(topbar)
+        topbar_layout.setContentsMargins(16, 0, 16, 0)
 
-        prefix_box = QGroupBox("Fast Prefix Selector")
-        prefix_layout = QHBoxLayout(prefix_box)
+        logo_layout = QHBoxLayout()
+        logo_layout.setSpacing(8)
+        lbl_m = QLabel()
+        lbl_m.setObjectName("LogoM")
+        lbl_m.setFixedSize(32, 32)
+        if not self._set_label_pixmap_from_asset(lbl_m, "Wine.png", width=28, height=28):
+            lbl_m.setText("M")
+            lbl_m.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_text = QLabel("MacNCheese")
+        lbl_text.setObjectName("LogoText")
+        logo_layout.addWidget(lbl_m)
+        logo_layout.addWidget(lbl_text)
+        topbar_layout.addLayout(logo_layout)
+
+        topbar_layout.addSpacing(32)
+
+        self.search_bar = QLineEdit()
+        self.search_bar.setObjectName("SearchBar")
+        self.search_bar.setPlaceholderText("Search games...")
+        self.search_bar.setFixedWidth(280)
+        self.search_bar.textChanged.connect(self._filter_games)
+        topbar_layout.addWidget(self.search_bar)
+
+        btn_list = QPushButton("☰")
+        btn_list.setObjectName("TopBarBtn")
+        btn_list.setFixedSize(32, 32)
+        btn_list.setToolTip("List view")
         
-        self.main_prefix_combo = QComboBox()
-        self.main_prefix_combo.addItems(self.settings.load_prefixes())
-        self.main_prefix_combo.setCurrentText(self.settings.prefix_combo.currentText())
-        self.main_prefix_combo.currentTextChanged.connect(self.on_main_prefix_changed)
-        prefix_layout.addWidget(self.main_prefix_combo, 1)
+        btn_grid = QPushButton("⊞")
+        btn_grid.setObjectName("TopBarBtn")
+        btn_grid.setFixedSize(32, 32)
+        btn_grid.setToolTip("Grid view")
 
-        add_prefix_btn = QPushButton("+")
-        add_prefix_btn.setFixedWidth(32)
-        add_prefix_btn.clicked.connect(self.on_main_add_prefix_clicked)
-        prefix_layout.addWidget(add_prefix_btn)
+        btn_refresh = QPushButton("↻")
+        btn_refresh.setObjectName("TopBarBtn")
+        btn_refresh.setFixedSize(32, 32)
+        btn_refresh.setToolTip("Refresh library")
+        btn_refresh.clicked.connect(self.scan_games)
+
+        btn_settings = QPushButton("⚙")
+        btn_settings.setObjectName("TopBarBtn")
+        btn_settings.setFixedSize(32, 32)
+        btn_settings.setToolTip("Settings")
+        btn_settings.clicked.connect(self.settings.show)
+        self._set_button_icon_from_asset(btn_settings, "Setting.png", size=18)
+
+        topbar_layout.addWidget(btn_list)
+        topbar_layout.addWidget(btn_grid)
+        topbar_layout.addSpacing(16)
+        topbar_layout.addWidget(btn_refresh)
+        topbar_layout.addWidget(btn_settings)
+
+        main_layout.addWidget(topbar)
+
+                                  
+        self.stacked_widget = QStackedWidget()
+        main_layout.addWidget(self.stacked_widget, 1)
+
+                            
+        self.games_scroll = QScrollArea()
+        self.games_scroll.setWidgetResizable(True)
+        self.games_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        settings_btn = QPushButton("⚙ Settings")
-        settings_btn.clicked.connect(self.settings.show)
-        prefix_layout.addWidget(settings_btn)
+        self.games_container = QWidget()
+        self.games_flow_layout = FlowLayout(self.games_container, margin=24, hSpacing=16, vSpacing=16)
+        self.games_scroll.setWidget(self.games_container)
+        self.stacked_widget.addWidget(self.games_scroll)
+
+                                  
+        self.steam_view = QWidget()
+        steam_layout = QVBoxLayout(self.steam_view)
+        steam_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        left_layout.addWidget(prefix_box)
+                                
+        steam_logo_lbl = QLabel("STEAM")
+        steam_logo_lbl.setStyleSheet("font-size: 64px; font-weight: bold; color: #FFFFFF;")
+        steam_logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        steam_buttons_layout = QHBoxLayout()
+        self.btn_install_steam = QPushButton("Install Steam")
+        self.btn_install_steam.setStyleSheet("padding: 12px 24px; font-size: 16px; background-color: transparent; border: 2px solid #FFFFFF; border-radius: 4px;")
+        self.btn_install_steam.clicked.connect(self.unified_steam_action)
+        
+        self.btn_launch_steam = QPushButton("▶")
+        self.btn_launch_steam.setStyleSheet("padding: 12px; font-size: 16px; background-color: transparent; border: 2px solid #FFFFFF; border-radius: 4px;")
+        self.btn_launch_steam.clicked.connect(self.launch_steam)
+        
+        steam_buttons_layout.addWidget(self.btn_install_steam)
+        steam_buttons_layout.addWidget(self.btn_launch_steam)
+        
+        steam_layout.addWidget(steam_logo_lbl)
+        steam_layout.addSpacing(24)
+        steam_layout.addLayout(steam_buttons_layout)
+        
+        self.stacked_widget.addWidget(self.games_scroll)           
 
-        game_box = QGroupBox("Selected Game")
-        game_layout = QVBoxLayout(game_box)
+                                                                                               
+        self._build_steam_landing_view()            
 
-        action_row = QHBoxLayout()
-        self.patch_dxvk_btn = QPushButton("Patch Selected")
-        self.patch_dxvk_btn.clicked.connect(self.patch_selected_game)
-        self.launch_game_btn = QPushButton("Launch Selected")
-        self.launch_game_btn.clicked.connect(self.launch_selected_game)
-        action_row.addWidget(self.patch_dxvk_btn)
-        action_row.addWidget(self.launch_game_btn)
-        game_layout.addLayout(action_row)
+                                 
+        status_bar = QFrame()
+        status_bar.setObjectName("StatusBar")
+        status_bar.setFixedHeight(26)
+        status_layout = QHBoxLayout(status_bar)
+        status_layout.setContentsMargins(6, 0, 12, 0)
+        status_layout.setSpacing(0)
 
-        self.select_startup_exe_btn = QPushButton("Select Startup EXE")
-        self.select_startup_exe_btn.clicked.connect(self.select_startup_exe_for_selected_game)
-        game_layout.addWidget(self.select_startup_exe_btn)
+        
+        btn_log = QPushButton("Settings")
+        btn_log.setObjectName("LogBtn")
+        btn_log.setFixedHeight(26)
+        btn_log.clicked.connect(self.settings.show)
+        status_layout.addWidget(btn_log)
 
-        backend_row = QHBoxLayout()
-        backend_row.addWidget(QLabel("Backend"))
-        self.launch_backend_combo = QComboBox()
-        for label, value in LAUNCH_BACKENDS:
-            self.launch_backend_combo.addItem(label, value)
-        self.launch_backend_combo.setCurrentIndex(0)
-        backend_row.addWidget(self.launch_backend_combo, 1)
-        game_layout.addLayout(backend_row)
+        status_layout.addSpacing(8)
 
-        self.game_args_edit = QLineEdit("")
-        self.game_args_edit.setPlaceholderText("Extra game args (optional)")
-        game_layout.addWidget(self.game_args_edit)
+                       
+        self.status_label = QLabel("Logs: Idle")
+        self.status_label.setObjectName("StatusText")
+        status_layout.addWidget(self.status_label, 1)
 
-        log_row = QHBoxLayout()
-        self.show_dxvk_log_btn = QPushButton("DXVK Log")
-        self.show_dxvk_log_btn.clicked.connect(self.show_dxvk_log_for_selected_game)
-        self.show_player_log_btn = QPushButton("Unity Log")
-        self.show_player_log_btn.clicked.connect(self.show_unity_player_log_for_selected_game)
-        log_row.addWidget(self.show_dxvk_log_btn)
-        log_row.addWidget(self.show_player_log_btn)
-        game_layout.addLayout(log_row)
+        version_label = QLabel(f"version: {APP_VERSION}")
+        version_label.setObjectName("VersionLabel")
+        status_layout.addWidget(version_label)
 
-        left_layout.addWidget(game_box)
+        main_layout.addWidget(status_bar)
+        root_layout.addWidget(main_area, 1)
 
-        self._quick_setup_box = quick_box
-
-        status_box = QGroupBox("Status")
-        status_layout = QVBoxLayout(status_box)
-        self.status_label = QLabel("Idle")
-        self.status_label.setWordWrap(True)
-        status_layout.addWidget(self.status_label)
-        left_layout.addWidget(status_box)
-
-        left_layout.addStretch(1)
-
-        games_box = QGroupBox("Installed Games")
-        games_layout = QVBoxLayout(games_box)
+                                                                 
         self.games_list = QListWidget()
+        self.games_list.hide()
         self.games_list.itemSelectionChanged.connect(self.update_selected_game_status)
-        games_layout.addWidget(self.games_list)
-        right_layout.addWidget(games_box, 1)
 
+        self._quick_setup_box = None
         self._paths_box = None
         self._setup_box = None
         self._runtime_box = None
-        self._quick_setup_box = quick_box
-        self._status_box = status_box
+        self._status_box = None
         self.simple_ui_btn = None
         self.dev_ui_btn = None
 
-    def on_main_prefix_changed(self, text: str) -> None:
-        if text:
-            self.prefix_combo.setCurrentText(text)
-            self.settings.save_config_to_parent()
+                                                        
+        self.stacked_widget.setCurrentIndex(0)
 
-    def on_main_add_prefix_clicked(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(self, "Add new prefix folder", self.main_prefix_combo.currentText())
-        if chosen:
-            self.main_prefix_combo.setCurrentText(chosen)
+        self.scan_timer = QTimer(self)
+        self.scan_timer.timeout.connect(self.scan_games)
+        self.scan_timer.start(3000)
 
-    def _with_button(self, field: QLineEdit, button: QPushButton) -> QWidget:
-        wrap = QWidget()
-        layout = QHBoxLayout(wrap)
+    def _build_steam_landing_view(self) -> None:
+                                                                                                     
+        self.steam_view = QWidget()
+        self.steam_view.setStyleSheet("background-color: #283141;")
+        steam_layout = QVBoxLayout(self.steam_view)
+        steam_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        steam_layout.setSpacing(0)
+
+                          
+        steam_logo_lbl = QLabel()
+        steam_logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if not self._set_label_pixmap_from_asset(steam_logo_lbl, "Steam.png", width=120, height=120):
+            steam_logo_lbl.setText("🎮")
+            steam_logo_lbl.setStyleSheet("font-size: 80px;")
+
+                       
+        steam_title = QLabel("STEAM")
+        steam_title.setObjectName("SteamTitle")
+        steam_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        steam_layout.addWidget(steam_title)
+
+        steam_layout.addSpacing(24)
+
+                                                                  
+        launch_row = QHBoxLayout()
+        launch_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.btn_install_steam = QPushButton("Launch")
+        self.btn_install_steam.setObjectName("PlayBtn")
+        self.btn_install_steam.setFixedWidth(160)
+        self.btn_install_steam.clicked.connect(self.unified_steam_action)
+        launch_row.addWidget(self.btn_install_steam)
+
+                                     
+        btn_play_icon = QPushButton("▶")
+        btn_play_icon.setObjectName("PlayBtn")
+        btn_play_icon.setFixedSize(40, 36)
+        btn_play_icon.clicked.connect(self.unified_steam_action)
+        launch_row.addWidget(btn_play_icon)
+
+        steam_layout.addLayout(launch_row)
+
+        self.stacked_widget.addWidget(self.steam_view)           
+
+    def switch_view(self, view_name: str) -> None:
+        if view_name == "steam":
+            self.stacked_widget.setCurrentIndex(1)
+        elif view_name == "games":
+            self.stacked_widget.setCurrentIndex(0)
+        else:
+            self.stacked_widget.setCurrentIndex(0)
+
+    def _open_create_bottle_dialog(self) -> None:
+        dlg = CreateBottleDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            path_str = dlg.path_edit.text().strip()
+            if not path_str:
+                return
+
+            p = Path(path_str)
+            p.mkdir(parents=True, exist_ok=True)
+
+            items = [self.prefix_combo.itemText(i) for i in range(self.prefix_combo.count())]
+            if str(p) not in items:
+                self.prefix_combo.insertItem(0, str(p))
+            
+            self.prefix_combo.setCurrentText(str(p))
+            if hasattr(self.settings, "_save_current_prefixes"):
+                self.settings._save_current_prefixes()
+
+            name = dlg.name_edit.text().strip() or "Bottle"
+            icon_text = "📦"
+            if hasattr(dlg, "icon_group") and dlg.icon_group.checkedButton():
+                icon_text = dlg.icon_group.checkedButton().text()
+
+            btn = self._add_sidebar_container(name)
+            
+                                                                                    
+            btn.clicked.connect(lambda _, path=str(p): self._switch_to_bottle(path))
+                                                                             
+            btn.setChecked(True)
+
+            exe_path = dlg.exe_edit.text().strip()
+            if exe_path:
+                self.run_installer_action_in_terminal(f"wine '{exe_path}'")
+            else:
+                self.run_installer_action("wineboot")
+            
+            self.set_status(f"Created bottle '{name}' at {p}")
+            self.scan_games()
+
+    def _filter_games(self, text: str) -> None:
+                                                        
+        text = text.strip().lower()
+        for i in range(self.games_flow_layout.count()):
+            item = self.games_flow_layout.itemAt(i)
+            if item and item.widget():
+                card = item.widget()
+                game_name = getattr(card, "_game_name", "").lower()
+                card.setVisible(not text or text in game_name)
+
+    def _add_sidebar_container(self, name: str, icon_path: Optional[Path] = None) -> QPushButton:
+                                                                  
+        btn = QPushButton()
+        btn.setObjectName("SidebarButton")
+        btn.setCheckable(True)
+        btn.setFixedSize(52, 56)
+        btn.setToolTip(name)
+
+                                                     
+        btn_layout = QVBoxLayout(btn)
+        btn_layout.setContentsMargins(2, 4, 2, 2)
+        btn_layout.setSpacing(1)
+        btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        icon_lbl = QLabel()
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setFixedSize(32, 32)
+        icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        if icon_path and icon_path.exists():
+            pix = QPixmap(str(icon_path))
+            if not pix.isNull():
+                pix = pix.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+                icon_lbl.setPixmap(pix)
+            else:
+                icon_lbl.setText("📦")
+                icon_lbl.setStyleSheet("font-size: 18px;")
+        else:
+            icon_lbl.setText("📦")
+            icon_lbl.setStyleSheet("font-size: 18px;")
+
+        text_lbl = QLabel(name)
+        text_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        text_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        text_lbl.setStyleSheet("font-size: 9px; color: inherit; background: transparent;")
+
+        btn_layout.addWidget(icon_lbl)
+        btn_layout.addWidget(text_lbl)
+
+        self._sidebar_containers_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.sidebar_group.addButton(btn)
+        return btn
+
+
+    def create_game_card(self, game: "GameEntry") -> "QWidget":
+                                                                             
+        card = QFrame()
+        card.setObjectName("GameCard")
+        card.setFixedSize(150, 225)
+        card._game_name = game.name
+
+        layout = QVBoxLayout(card)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(field)
-        layout.addWidget(button)
-        return wrap
+        layout.setSpacing(0)
+
+        cover_lbl = QLabel()
+        cover_lbl.setObjectName("GameCoverLabel")
+        cover_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cover_lbl.setFixedSize(150, 200)
+        cover_lbl.setScaledContents(False)
+        cover_lbl.setStyleSheet("background-color: #131920; border-radius: 6px;")
+
+        def _apply_pixmap(data: bytes, lbl: QLabel = cover_lbl) -> None:
+            try:
+                pix = QPixmap()
+                pix.loadFromData(data)
+                if pix.isNull():
+                    return
+                scaled = pix.scaled(150, 200, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                    Qt.TransformationMode.SmoothTransformation)
+                x_off = max(0, (scaled.width() - 150) // 2)
+                y_off = max(0, (scaled.height() - 200) // 2)
+                cropped = scaled.copy(x_off, y_off, 150, 200)
+                lbl.setPixmap(cropped)
+                lbl.setStyleSheet("border-radius: 6px;")
+            except RuntimeError:
+                pass
+
+        if game.appid in self._cover_cache:
+            _apply_pixmap(self._cover_cache[game.appid])
+        elif game.appid not in self._cover_failed:
+            librarycache_dir = self.steam_dir / "appcache" / "librarycache"
+            local_candidates = [
+                librarycache_dir / f"p{game.appid}_library_600x900.jpg",
+                librarycache_dir / f"{game.appid}_library_600x900.jpg",
+            ]
+            local_path = next((p for p in local_candidates if p.exists()), None)
+            cached_path = Path.home() / ".cache" / "macncheese" / "covers" / f"{game.appid}.jpg"
+            if local_path is None and cached_path.exists():
+                local_path = cached_path
+
+            already_fetching = any(f.appid == game.appid and f.isRunning() for f in self._active_fetchers)
+            if not already_fetching:
+                fetcher = CoverFetcher(game.appid, local_path)
+
+                def _on_fetched(appid: str, data: bytes, lbl=cover_lbl):
+                    self._cover_cache[appid] = data
+                    _apply_pixmap(data, lbl)
+                    self._active_fetchers[:] = [f for f in self._active_fetchers if f.isRunning()]
+
+                def _on_finished(fetcher_ref=None, appid=game.appid):
+                    if appid not in self._cover_cache:
+                        self._cover_failed.add(appid)
+
+                fetcher.cover_bytes_ready.connect(_on_fetched)
+                fetcher.finished.connect(_on_finished)
+                self._active_fetchers.append(fetcher)
+                fetcher.start()
+
+        layout.addWidget(cover_lbl)
+
+       
+        hours_lbl = QLabel("0.0 h")
+        hours_lbl.setObjectName("HoursLabel")
+        hours_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hours_lbl.setFixedHeight(25)
+        layout.addWidget(hours_lbl)
+
+       
+        def _select_game():
+            for i in range(self.games_list.count()):
+                if self.games_list.item(i).data(256) == game:
+                    self.games_list.setCurrentRow(i)
+                    break
+
+       
+        def _on_click(checked=False, g=game):
+            _select_game()
+            dlg = GameLaunchDialog(g, self)
+            dlg.exec()
+
+        card.mousePressEvent = lambda e: _on_click()
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        
+        card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        card.customContextMenuRequested.connect(
+            lambda pos: self.show_game_context_menu(card, game, pos)
+        )
+
+        return card
+
+    def show_game_context_menu(self, card_widget, game: "GameEntry", pos: "QPoint"):
+        for i in range(self.games_list.count()):
+            if self.games_list.item(i).data(256) == game:
+                self.games_list.setCurrentRow(i)
+                break
+
+        menu = QMenu(self)
+        action_mesa = menu.addAction("Install Mesa")
+        action_dxmt = menu.addAction("Install DXMT")
+        action_vkd3d = menu.addAction("Install VKD3D-Proton")
+        action_dxvk64 = menu.addAction("Build DXVK (64bit)")
+        action_dxvk32 = menu.addAction("Build DXVK (32bit)")
+        action_wine = menu.addAction("Install Wine")
+        action_steam = menu.addAction("Install Steam")
+
+        menu.addSeparator()
+        action_setup_btn = QWidgetAction(menu)
+        setup_btn = QPushButton("One Click SetUp")
+        setup_btn.setStyleSheet("background-color: #FF6600; font-weight: bold; border-radius: 4px; padding: 6px;")
+        setup_btn.clicked.connect(self.quick_setup)
+        setup_btn.clicked.connect(menu.close)
+        container = QWidget()
+        cl = QHBoxLayout(container)
+        cl.setContentsMargins(20, 4, 20, 4)
+        cl.addWidget(setup_btn)
+        action_setup_btn.setDefaultWidget(container)
+        menu.addAction(action_setup_btn)
+
+        action_mesa.triggered.connect(self.install_mesa)
+        action_dxmt.triggered.connect(self.install_dxmt)
+        action_vkd3d.triggered.connect(self.install_vkd3d)
+        action_dxvk64.triggered.connect(self.build_dxvk)
+        action_dxvk32.triggered.connect(self.build_dxvk32)
+        action_wine.triggered.connect(self.install_wine)
+        action_steam.triggered.connect(self.install_steam)
+        menu.exec(card_widget.mapToGlobal(pos))
+
+
 
     def _pick_dir(self, target: QLineEdit) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Select folder", target.text())
@@ -1446,6 +2569,15 @@ class MainWindow(QMainWindow):
     @property
     def mesa_dir(self) -> Path:
         return Path(self.mesa_dir_edit.text()).expanduser()
+
+    @property
+    def dxmt_dir(self) -> Path:
+        return Path(self.dxmt_dir_edit.text()).expanduser()
+
+    @property
+    def vkd3d_dir(self) -> Path:
+        return Path(self.vkd3d_dir_edit.text()).expanduser()
+
 
     def wine_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -1581,18 +2713,192 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, msg)
             return None
 
+
+    def missing_core_tools(self) -> list[str]:
+        missing: list[str] = []
+        if not self.has_wine():
+            missing.append("Wine")
+        if not (self.dxvk_install / "bin" / "dxgi.dll").exists():
+            missing.append("DXVK")
+        if not (self.mesa_dir / "opengl32.dll").exists():
+            missing.append("Mesa")
+        return missing
+
+    def installer_script_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates = [
+                exe_dir / "installer.sh",
+                exe_dir.parent / "Frameworks" / "installer.sh",
+                exe_dir.parent / "Resources" / "installer.sh",
+                Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
+            ]
+            for candidate in candidates:
+                if candidate and candidate.exists():
+                    return candidate
+            return exe_dir / "installer.sh"
+        return Path(__file__).resolve().with_name("installer.sh")
+
+    def installer_terminal_command(self, action: str) -> str:
+        script = self.installer_script_path()
+        args = [
+            "bash",
+            str(script),
+            action,
+            str(self.prefix_path),
+            str(self.dxvk_src),
+            str(self.dxvk_install),
+            str(self.dxvk_install32),
+            str(self.mesa_dir),
+            DEFAULT_MESA_URL,
+        ]
+        command = " ".join(shlex.quote(part) for part in args)
+        return (
+            f"cd {shlex.quote(str(script.parent))}; "
+            f"echo 'Running MacNCheese installer in interactive Terminal mode'; "
+            f"{command}; "
+            f"status=$?; "
+            f"echo; "
+            f"echo 'Installer finished with exit code:' $status; "
+            f"echo 'You can run extra commands in this terminal if needed.'; "
+            f"exec bash"
+        )
+
+    def run_installer_action_in_terminal(self, action: str, *, post_action: Optional[str] = None) -> None:
+        script = self.installer_script_path()
+        if not script.exists():
+            QMessageBox.warning(self, APP_NAME, f"installer.sh not found at {script}")
+            return
+
+        if self.interactive_install_in_progress:
+            current_missing = self.missing_core_tools()
+            if current_missing:
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    "The MacNCheese installer terminal is already open. Finish the installation there, then return here and try again.",
+                )
+                self.set_status("Installer terminal already open")
+                return
+            self.interactive_install_in_progress = False
+            self.interactive_install_action = None
+            self.pending_post_install_action = None
+
+        applescript = (
+            'tell application "Terminal"\n'
+            'activate\n'
+            f'do script {json.dumps(self.installer_terminal_command(action))}\n'
+            'end tell\n'
+        )
+
+        try:
+            subprocess.run(["osascript", "-e", applescript], check=True)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Failed to open Terminal for installation: {exc}")
+            return
+
+        self.interactive_install_in_progress = True
+        self.interactive_install_action = action
+        self.pending_post_install_action = post_action
+        self.log(f"Opened Terminal for installer action: {action}")
+        self.set_status(f"Installer opened in Terminal for {action}")
+
+    def _run_shell_check(self, command: str, *, env: dict[str, str] | None = None) -> tuple[int, str]:
+        try:
+            proc = subprocess.run(
+                ["bash", "-lc", command],
+                capture_output=True,
+                text=True,
+                env=env or os.environ.copy(),
+            )
+            output = (proc.stdout or "") + (proc.stderr or "")
+            return proc.returncode, output.strip()
+        except Exception as exc:
+            return 1, str(exc)
+
+    def check_clt_installed(self) -> tuple[bool, str]:
+        rc, out = self._run_shell_check("xcode-select -p")
+        if rc == 0 and out:
+            return True, out
+        return False, "Xcode Command Line Tools are required before setup can continue. Run 'xcode-select --install', finish the macOS installer, then reopen MacNCheese."
+
+    def check_admin_access(self, password: str) -> tuple[bool, str]:
+        env = os.environ.copy()
+        env["MNC_SUDO_PASSWORD"] = password
+        rc, out = self._run_shell_check("printf '%s\\n' \"$MNC_SUDO_PASSWORD\" | sudo -S -k -v", env=env)
+        if rc == 0:
+            return True, ""
+        user_name = getpass.getuser()
+        groups_rc, groups_out = self._run_shell_check("id -Gn")
+        if groups_rc == 0 and "admin" not in groups_out.split():
+            return False, f"The macOS account '{user_name}' is not an Administrator account. Use an admin account, then try again."
+        return False, "The macOS password was rejected or sudo is unavailable. Enter the same password you use to sign in to macOS, then try again."
+
     def request_admin_env(self) -> Optional[dict[str, str]]:
         password, ok = QInputDialog.getText(
             self,
             APP_NAME,
-            "Enter your macOS password for installation tasks",
+            "Enter macOS Administrator password for setup:",
             QLineEdit.EchoMode.Password,
         )
-        if not ok:
+        if ok and password:
+            env = os.environ.copy()
+            env["MNC_SUDO_PASSWORD"] = password
+            return env
+        return None
+
+    def prepare_installer_env(self) -> Optional[dict[str, str]]:
+        clt_ok, clt_msg = self.check_clt_installed()
+        if not clt_ok:
+            QMessageBox.warning(self, APP_NAME, clt_msg)
+            self.set_status("Xcode Command Line Tools required")
             return None
-        env = os.environ.copy()
-        env["MNC_SUDO_PASSWORD"] = password
+
+        env = self.request_admin_env()
+        if env is None:
+            self.set_status("Setup cancelled")
+            return None
+
+        password = env.get("MNC_SUDO_PASSWORD", "")
+        admin_ok, admin_msg = self.check_admin_access(password)
+        if not admin_ok:
+            QMessageBox.warning(self, APP_NAME, admin_msg)
+            self.set_status(admin_msg)
+            return None
+
         return env
+
+    def run_installer_action(self, action: str) -> None:
+        env = self.prepare_installer_env()
+        if env is None:
+            return
+        script = self.installer_script_path()
+        if not script.exists():
+            candidates = []
+            if getattr(sys, "frozen", False):
+                exe_dir = Path(sys.executable).resolve().parent
+                candidates = [
+                    exe_dir / "installer.sh",
+                    exe_dir.parent / "Frameworks" / "installer.sh",
+                    exe_dir.parent / "Resources" / "installer.sh",
+                    Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
+                ]
+            checked = "\n".join(str(p) for p in candidates if p is not None)
+            QMessageBox.warning(self, APP_NAME, f"installer.sh not found. Checked:\n{checked or script}")
+            return
+        self.log(f"Using installer script: {script}")
+        args = [
+            "bash",
+            str(script),
+            action,
+            str(self.prefix_path),
+            str(self.dxvk_src),
+            str(self.dxvk_install),
+            str(self.dxvk_install32),
+            str(self.mesa_dir),
+            DEFAULT_MESA_URL,
+        ]
+        self.run_commands([args], env=env, cwd=str(script.parent))
 
 
 
@@ -1641,7 +2947,10 @@ class MainWindow(QMainWindow):
 
     def install_mesa(self) -> None:
         self.run_installer_action_in_terminal("install_mesa")
-
+    def install_dxmt(self) -> None:
+        self.run_installer_action_in_terminal("install_dxmt")
+    def install_vkd3d(self) -> None:
+        self.run_installer_action_in_terminal("install_vkd3d")
     def quick_setup(self) -> None:
         self.run_installer_action_in_terminal("quick_setup")
 
@@ -1852,7 +3161,7 @@ class MainWindow(QMainWindow):
 
             return
 
-        # Everything is ready
+        
         self.launch_steam()
 
     def _drain_process(self, proc: QProcess | None) -> None:
@@ -1983,11 +3292,43 @@ class MainWindow(QMainWindow):
         games = SteamScanner.scan_games(self.prefix_path, self.steam_dir)
         self.games = games
         self.games_list.clear()
+
+        while self.games_flow_layout.count():
+            item = self.games_flow_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+       
+        if not hasattr(self, "_steam_sidebar_btn") or self._steam_sidebar_btn is None:
+            steam_icon = Path(__file__).resolve().with_name("Steam.png")
+            self._steam_sidebar_btn = self._add_sidebar_container("Steam", steam_icon)
+            self._steam_sidebar_btn.clicked.connect(lambda: self._on_steam_container_clicked())
+            self._steam_sidebar_btn.setChecked(True)
+
         for game in games:
             item = QListWidgetItem(game.display())
             item.setData(256, game)
             self.games_list.addItem(item)
+            card = self.create_game_card(game)
+            self.games_flow_layout.addWidget(card)
+
+        if games:
+            self.stacked_widget.setCurrentIndex(0)
+        else:
+            self.stacked_widget.setCurrentIndex(1)
+
         self.set_status(f"Found {len(games)} installed game(s)")
+
+    def _on_steam_container_clicked(self) -> None:
+        if self.games:
+            self.stacked_widget.setCurrentIndex(0)
+        else:
+            self.stacked_widget.setCurrentIndex(1)
+            
+    def _switch_to_bottle(self, path: str) -> None:
+        self.prefix_combo.setCurrentText(path)
+        self.scan_games()
 
     def selected_game(self) -> Optional[GameEntry]:
         item = self.games_list.currentItem()
@@ -2094,13 +3435,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        try:
-            for p in game.game_dir.glob("WindowsNoEditor/**/Binaries/Win64"):
-                if p.is_dir():
-                    target_dirs.add(p)
-        except Exception:
-            pass
-
         for tdir in sorted(target_dirs):
             for dll in DXVK_DLLS:
                 shutil.copy2(dxvk_bin / dll, tdir / dll)
@@ -2108,8 +3442,8 @@ class MainWindow(QMainWindow):
 
         self.set_status(f"Patched {game.name} with local DXVK")
 
-    def launch_selected_game(self) -> None:
-        game = self.selected_game()
+    def launch_selected_game(self, game: Optional["GameEntry"] = None, backend_id: Optional[str] = None, extra_args: str = "") -> None:
+        game = game or self.selected_game()
         if not game:
             QMessageBox.warning(self, APP_NAME, "Select a game first.")
             return
@@ -2131,17 +3465,29 @@ class MainWindow(QMainWindow):
             return
         self.log(f"Launching EXE: {exe} (cwd={exe.parent})")
         self.log(f"EXE architecture: {'32-bit' if self.exe_is_32bit(exe) else '64-bit'}")
-        if not self.steam_process or self.steam_process.state() == QProcess.ProcessState.NotRunning:
-            QMessageBox.warning(self, APP_NAME, "Steam must be running first.")
-            return
+        is_steam_game = bool(game.appid)
+        if is_steam_game:
+            if not self.steam_process or self.steam_process.state() == QProcess.ProcessState.NotRunning:
+                self.log("Steam is not running but required for this game. Launching Steam first...")
+                self.launch_steam()
+  
 
         game_model = self.selected_game_model(game)
         if game_model is None:
-            QMessageBox.warning(self, APP_NAME, "Select a game first.")
+            QMessageBox.warning(self, APP_NAME, "Failed to build game model.")
             return
         prefix_model = self.current_prefix_model()
 
-        backend_id = self.selected_launch_backend()
+        if sender := self.sender():
+            if isinstance(sender, QAction):
+                backend_id = sender.data() or backend_id
+            elif isinstance(sender, QPushButton) and sender.parent():
+                overlay = sender.parent()
+                for child in overlay.children():
+                    if isinstance(child, QComboBox):
+                        backend_id = child.currentData() or backend_id
+                        break
+
         resolved_backend = self.resolve_backend(backend_id, game_model, prefix_model)
 
         try:
@@ -2164,6 +3510,10 @@ class MainWindow(QMainWindow):
                     effective_backend = LAUNCH_BACKEND_MESA_SWR
                 else:
                     effective_backend = LAUNCH_BACKEND_MESA_LLVMPIPE
+            elif prepare_info.get("kind") == "dxmt":
+                effective_backend = LAUNCH_BACKEND_DXMT
+            elif prepare_info.get("kind") == "vkd3d-proton":
+                effective_backend = LAUNCH_BACKEND_VKD3D
 
         if self.game_process and self.game_process.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.warning(self, APP_NAME, "A game process is already running.")
@@ -2213,7 +3563,7 @@ class MainWindow(QMainWindow):
         self.game_process.readyReadStandardError.connect(lambda: self._drain_process(self.game_process))
         self.game_process.started.connect(
             lambda: self.set_status(
-                f"Started {game.name} ({'Mesa ' + effective_mesa_driver if self.backend_is_mesa(effective_backend) else ('DXVK' if effective_backend == LAUNCH_BACKEND_DXVK else 'Wine builtin')})"
+                f"Started {game.name} ({'Mesa ' + effective_mesa_driver if self.backend_is_mesa(effective_backend) else ('VKD3D-Proton' if effective_backend == LAUNCH_BACKEND_VKD3D else ('DXMT' if effective_backend == LAUNCH_BACKEND_DXMT else ('DXVK' if effective_backend == LAUNCH_BACKEND_DXVK else 'Wine builtin')))})"
             )
         )
         self.game_process.errorOccurred.connect(lambda e: self.set_status(f"Game error: {e}"))
@@ -2262,175 +3612,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-    def missing_core_tools(self) -> list[str]:
-        missing: list[str] = []
-        if not self.has_wine():
-            missing.append("Wine")
-        if not (self.dxvk_install / "bin" / "dxgi.dll").exists():
-            missing.append("DXVK")
-        if not (self.mesa_dir / "opengl32.dll").exists():
-            missing.append("Mesa")
-        return missing
-
-    def installer_terminal_command(self, action: str) -> str:
-        script = self.installer_script_path()
-        args = [
-            "bash",
-            str(script),
-            action,
-            str(self.prefix_path),
-            str(self.dxvk_src),
-            str(self.dxvk_install),
-            str(self.dxvk_install32),
-            str(self.mesa_dir),
-            DEFAULT_MESA_URL,
-        ]
-        command = " ".join(shlex.quote(part) for part in args)
-        return (
-            f"cd {shlex.quote(str(script.parent))}; "
-            f"echo 'Running MacNCheese installer in interactive Terminal mode'; "
-            f"{command}; "
-            f"status=$?; "
-            f"echo; "
-            f"echo 'Installer finished with exit code:' $status; "
-            f"echo 'You can run extra commands in this terminal if needed.'; "
-            f"exec bash"
-        )
-
-    def run_installer_action_in_terminal(self, action: str, *, post_action: Optional[str] = None) -> None:
-        script = self.installer_script_path()
-        if not script.exists():
-            QMessageBox.warning(self, APP_NAME, f"installer.sh not found at {script}")
-            return
-
-        if self.interactive_install_in_progress:
-            current_missing = self.missing_core_tools()
-            if current_missing:
-                QMessageBox.information(
-                    self,
-                    APP_NAME,
-                    "The MacNCheese installer terminal is already open. Finish the installation there, then return here and try again.",
-                )
-                self.set_status("Installer terminal already open")
-                return
-            self.interactive_install_in_progress = False
-            self.interactive_install_action = None
-            self.pending_post_install_action = None
-
-        applescript = (
-            'tell application "Terminal"\n'
-            'activate\n'
-            f'do script {json.dumps(self.installer_terminal_command(action))}\n'
-            'end tell\n'
-        )
-
-        try:
-            subprocess.run(["osascript", "-e", applescript], check=True)
-        except Exception as exc:
-            QMessageBox.warning(self, APP_NAME, f"Failed to open Terminal for installation: {exc}")
-            return
-
-        self.interactive_install_in_progress = True
-        self.interactive_install_action = action
-        self.pending_post_install_action = post_action
-        self.log(f"Opened Terminal for installer action: {action}")
-        self.set_status(f"Installer opened in Terminal for {action}")
-
-    def _run_shell_check(self, command: str, *, env: dict[str, str] | None = None) -> tuple[int, str]:
-        try:
-            proc = subprocess.run(
-                ["bash", "-lc", command],
-                capture_output=True,
-                text=True,
-                env=env or os.environ.copy(),
-            )
-            output = (proc.stdout or "") + (proc.stderr or "")
-            return proc.returncode, output.strip()
-        except Exception as exc:
-            return 1, str(exc)
-
-    def check_clt_installed(self) -> tuple[bool, str]:
-        rc, out = self._run_shell_check("xcode-select -p")
-        if rc == 0 and out:
-            return True, out
-        return False, "Xcode Command Line Tools are required before setup can continue. Run 'xcode-select --install', finish the macOS installer, then reopen MacNCheese."
-
-    def check_admin_access(self, password: str) -> tuple[bool, str]:
-        env = os.environ.copy()
-        env["MNC_SUDO_PASSWORD"] = password
-        rc, out = self._run_shell_check("printf '%s\\n' \"$MNC_SUDO_PASSWORD\" | sudo -S -k -v", env=env)
-        if rc == 0:
-            return True, ""
-        user_name = getpass.getuser()
-        groups_rc, groups_out = self._run_shell_check("id -Gn")
-        if groups_rc == 0 and "admin" not in groups_out.split():
-            return False, f"The macOS account '{user_name}' is not an Administrator account. Use an admin account, then try again."
-        return False, "The macOS password was rejected or sudo is unavailable. Enter the same password you use to sign in to macOS, then try again."
-
-    def prepare_installer_env(self) -> Optional[dict[str, str]]:
-        clt_ok, clt_msg = self.check_clt_installed()
-        if not clt_ok:
-            QMessageBox.warning(self, APP_NAME, clt_msg)
-            self.set_status("Xcode Command Line Tools required")
-            return None
-
-        env = self.request_admin_env()
-        if env is None:
-            self.set_status("Setup cancelled")
-            return None
-
-        password = env.get("MNC_SUDO_PASSWORD", "")
-        admin_ok, admin_msg = self.check_admin_access(password)
-        if not admin_ok:
-            QMessageBox.warning(self, APP_NAME, admin_msg)
-            self.set_status(admin_msg)
-            return None
-
-        return env
-
-    def installer_script_path(self) -> Path:
-        if getattr(sys, "frozen", False):
-            exe_dir = Path(sys.executable).resolve().parent
-            candidates = [
-                exe_dir / "installer.sh",
-                exe_dir.parent / "Frameworks" / "installer.sh",
-                exe_dir.parent / "Resources" / "installer.sh",
-                Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
-            ]
-            for candidate in candidates:
-                if candidate and candidate.exists():
-                    return candidate
-            return exe_dir / "installer.sh"
-        return Path(__file__).resolve().with_name("installer.sh")
-
-    def run_installer_action(self, action: str) -> None:
-        env = self.prepare_installer_env()
-        if env is None:
-            return
-        script = self.installer_script_path()
-        if not script.exists():
-            candidates = []
-            if getattr(sys, "frozen", False):
-                exe_dir = Path(sys.executable).resolve().parent
-                candidates = [
-                    exe_dir / "installer.sh",
-                    exe_dir.parent / "Frameworks" / "installer.sh",
-                    exe_dir.parent / "Resources" / "installer.sh",
-                    Path(getattr(sys, "_MEIPASS", "")) / "installer.sh" if getattr(sys, "_MEIPASS", None) else None,
-                ]
-            checked = "\n".join(str(p) for p in candidates if p is not None)
-            QMessageBox.warning(self, APP_NAME, f"installer.sh not found. Checked:\n{checked or script}")
-            return
-        self.log(f"Using installer script: {script}")
-        args = [
-            "bash",
-            str(script),
-            action,
-            str(self.prefix_path),
-            str(self.dxvk_src),
-            str(self.dxvk_install),
-            str(self.dxvk_install32),
-            str(self.mesa_dir),
-            DEFAULT_MESA_URL,
-        ]
-        self.run_commands([args], env=env, cwd=str(script.parent))
