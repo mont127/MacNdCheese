@@ -8,11 +8,11 @@ Security matters because the project downloads and runs external components such
 
 Security fixes are provided for the latest released version only.
 
-Current supported release line is MacNdCheese v2.x.
+Current supported release line is MacNdCheese v3.x+.
 
 Older releases such as v1.2.0 v1.1.0 and v1.0.0 are not supported for security fixes.
 
-If you are using an older release please upgrade to the latest v2.x release before reporting a security issue.
+If you are using an older release please upgrade to the latest v3.x+ release before reporting a security issue.
 
 ## Reporting a vulnerability
 
