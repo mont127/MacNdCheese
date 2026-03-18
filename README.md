@@ -28,10 +28,10 @@ Maybe. It is not the main target and it may need more manual setup, but you can 
 
 As a general rule:
 
-- **DXVK** for most DirectX 10 and 11 games
-- **DXMT** if you want to test an experimental DirectX 11 path
-- **VKD3D-Proton** for DirectX 12 games
-- **Mesa** for fallback cases or debugging
+- DXVK for most DirectX 10 and 11 games
+- DXMT if you want to test an experimental DirectX 11 path
+- VKD3D-Proton for DirectX 12 games
+- Mesa for fallback cases or debugging
 
 ### Why do some games say DirectX 11 is missing?
 
