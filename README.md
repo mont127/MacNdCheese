@@ -2,6 +2,49 @@
 (ty spacedoutt for contributing) 
 MacNCheese manages Wine alongside custom graphics dependencies (ex. MoltenVK, D3D11, Vulkan, etc..) to make installing and running Wine games easier on macOS.
 
+## FAQ
+
+### Is this a replacement for CrossOver?
+
+No. MacNCheese is not trying to be a full commercial compatibility suite. It is more of a focused launcher for Steam and Wine environments on macOS.
+
+### Is this just another Wine wrapper?
+
+Not really. It does still rely on Wine, but the point is to make backend switching and Wine based launching less annoying to manage.
+
+### Does it support anti cheat games?
+
+Usually no. Games with anti cheat systems such as VAC or kernel level anti cheat are generally not expected to work.
+
+### Why Apple Silicon only?
+
+Because that is the main target for the project and most of the graphics backend testing is being done around Apple Silicon and Metal.
+
+### Can Intel work?
+
+Maybe. It is not the main target and it may need more manual setup, but you can still try running it from source.
+
+### What backend should I use?
+
+As a general rule:
+
+- **DXVK** for most DirectX 10 and 11 games
+- **DXMT** if you want to test an experimental DirectX 11 path
+- **VKD3D-Proton** for DirectX 12 games
+- **Mesa** for fallback cases or debugging
+
+### Why do some games say DirectX 11 is missing?
+
+That usually means the selected backend failed to initialize properly, or the translation layer does not support something the game expects.
+
+### Does Steam have to be launched inside the same Wine prefix?
+
+Yes. Steam and the game should generally live in the same prefix if you want Steam integration to behave correctly.
+
+### Why not just do everything in Terminal?
+
+You can. The point of MacNCheese is to make the workflow less repetitive and easier to manage without rebuilding the same setup every time.
+
 ## Requirements
 
 > [!WARNING]  
