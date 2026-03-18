@@ -13,7 +13,8 @@ No. MacNCheese is not trying to be a full commercial compatibility suite. It is 
 Not really. It does still rely on Wine, but the point is to make backend switching and Wine based launching less annoying to manage.
 
 ## Why make this or what motived you to make this?
-To be honest my friend wanted to play mewgenics on his mac so i built this for him 
+
+>>To be honest my friend wanted to play mewgenics on his mac so i built this for him 
 
 
 ### Does it support anti cheat games?
