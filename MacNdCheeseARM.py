@@ -1656,31 +1656,23 @@ class CreateBottleDialog(QDialog):
         win_group.addWidget(self.win_combo)
         form_layout.addLayout(win_group)
         
-               
-        icons_group = QVBoxLayout()
-        icons_group.setSpacing(8)
-        icons_lbl = QLabel("Platform")
-        icons_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; font-weight: bold;")
-        
-        icons_row = QHBoxLayout()
-        self.icon_group = QButtonGroup(self)
-        self.icon_group.setExclusive(True)
-        
-        for i, icon_text in enumerate(["⊞", "🎮", "E", "EA", "U"]):
-            btn = QPushButton(icon_text)
-            btn.setObjectName("IconSelectorBtn")
-            btn.setCheckable(True)
-            btn.setFixedSize(48, 48)
-            btn.setStyleSheet("font-size: 20px;" if i < 2 else "font-size: 16px; font-weight: bold;")
-            if i == 0:
-                btn.setChecked(True)
-            self.icon_group.addButton(btn)
-            icons_row.addWidget(btn)
-            
-        icons_row.addStretch()
-        icons_group.addWidget(icons_lbl)
-        icons_group.addLayout(icons_row)
-        form_layout.addLayout(icons_group)
+        icon_group_box = QVBoxLayout()
+        icon_group_box.setSpacing(8)
+        icon_lbl = QLabel("Bottle Icon (PNG)")
+        icon_lbl.setStyleSheet("color: #A0AABF; font-size: 12px; font-weight: bold;")
+
+        icon_row = QHBoxLayout()
+        self.icon_path_edit = QLineEdit()
+        self.icon_path_edit.setPlaceholderText("Select a custom PNG icon...")
+        btn_browse_icon = QPushButton("...")
+        btn_browse_icon.setFixedSize(32, 32)
+        btn_browse_icon.clicked.connect(self._browse_icon)
+        icon_row.addWidget(self.icon_path_edit)
+        icon_row.addWidget(btn_browse_icon)
+
+        icon_group_box.addWidget(icon_lbl)
+        icon_group_box.addLayout(icon_row)
+        form_layout.addLayout(icon_group_box)
         
         layout.addLayout(form_layout)
         layout.addStretch()
@@ -1704,6 +1696,11 @@ class CreateBottleDialog(QDialog):
         f, _ = QFileDialog.getOpenFileName(self, "Select Installer Executable", str(Path.home()), "Executables (*.exe *.bat *.msi);;All Files (*)")
         if f:
             self.exe_edit.setText(f)
+
+    def _browse_icon(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select Bottle Icon", str(Path.home()), "PNG Images (*.png);;All Files (*)")
+        if f:
+            self.icon_path_edit.setText(f)
 
 
 class GameLaunchDialog(QDialog):
@@ -2091,13 +2088,16 @@ class MainWindow(QMainWindow):
         if not self._set_label_pixmap_from_asset(lbl_m, "Wine.png", width=28, height=28):
             lbl_m.setText("M")
             lbl_m.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_text = QLabel("MacNCheese")
+        lbl_text = QLabel("MacNCheese library")
         lbl_text.setObjectName("LogoText")
         logo_layout.addWidget(lbl_m)
         logo_layout.addWidget(lbl_text)
         topbar_layout.addLayout(logo_layout)
 
         topbar_layout.addSpacing(32)
+
+
+
 
         self.search_bar = QLineEdit()
         self.search_bar.setObjectName("SearchBar")
@@ -2106,34 +2106,7 @@ class MainWindow(QMainWindow):
         self.search_bar.textChanged.connect(self._filter_games)
         topbar_layout.addWidget(self.search_bar)
 
-        btn_list = QPushButton("☰")
-        btn_list.setObjectName("TopBarBtn")
-        btn_list.setFixedSize(32, 32)
-        btn_list.setToolTip("List view")
-        
-        btn_grid = QPushButton("⊞")
-        btn_grid.setObjectName("TopBarBtn")
-        btn_grid.setFixedSize(32, 32)
-        btn_grid.setToolTip("Grid view")
 
-        btn_refresh = QPushButton("↻")
-        btn_refresh.setObjectName("TopBarBtn")
-        btn_refresh.setFixedSize(32, 32)
-        btn_refresh.setToolTip("Refresh library")
-        btn_refresh.clicked.connect(self.scan_games)
-
-        btn_settings = QPushButton("⚙")
-        btn_settings.setObjectName("TopBarBtn")
-        btn_settings.setFixedSize(32, 32)
-        btn_settings.setToolTip("Settings")
-        btn_settings.clicked.connect(self.settings.show)
-        self._set_button_icon_from_asset(btn_settings, "Setting.png", size=18)
-
-        topbar_layout.addWidget(btn_list)
-        topbar_layout.addWidget(btn_grid)
-        topbar_layout.addSpacing(16)
-        topbar_layout.addWidget(btn_refresh)
-        topbar_layout.addWidget(btn_settings)
 
         main_layout.addWidget(topbar)
 
@@ -2302,11 +2275,13 @@ class MainWindow(QMainWindow):
                 self.settings._save_current_prefixes()
 
             name = dlg.name_edit.text().strip() or "Bottle"
-            icon_text = "📦"
-            if hasattr(dlg, "icon_group") and dlg.icon_group.checkedButton():
-                icon_text = dlg.icon_group.checkedButton().text()
+            icon_path = None
+            if hasattr(dlg, "icon_path_edit"):
+                icon_value = dlg.icon_path_edit.text().strip()
+                if icon_value:
+                    icon_path = Path(icon_value).expanduser()
 
-            btn = self._add_sidebar_container(name)
+            btn = self._add_sidebar_container(name, icon_path=icon_path)
             
                                                                                     
             btn.clicked.connect(lambda _, path=str(p): self._switch_to_bottle(path))
