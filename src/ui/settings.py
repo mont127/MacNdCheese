@@ -20,7 +20,6 @@ import config
 from constants import (
     DEFAULT_DXVK_INSTALL,
     DEFAULT_DXVK_INSTALL32,
-    DEFAULT_DXVK_SRC,
     DEFAULT_MESA_DIR,
     DEFAULT_PREFIX,
     DEFAULT_STEAM_SETUP,
@@ -59,14 +58,12 @@ class SettingsDialog(QDialog):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self.prefix_edit = QLineEdit(DEFAULT_PREFIX)
-        self.dxvk_src_edit = QLineEdit(DEFAULT_DXVK_SRC)
         self.dxvk_install_edit = QLineEdit(DEFAULT_DXVK_INSTALL)
         self.dxvk_install32_edit = QLineEdit(DEFAULT_DXVK_INSTALL32)
         self.steam_setup_edit = QLineEdit(DEFAULT_STEAM_SETUP)
         self.mesa_dir_edit = QLineEdit(DEFAULT_MESA_DIR)
 
         form.addRow("Wine prefix", self._browsable(self.prefix_edit, dir=True))
-        form.addRow("DXVK source", self._browsable(self.dxvk_src_edit, dir=True))
         form.addRow("DXVK install (64-bit)", self._browsable(self.dxvk_install_edit, dir=True))
         form.addRow("DXVK install (32-bit)", self._browsable(self.dxvk_install32_edit, dir=True))
         form.addRow("SteamSetup.exe", self._browsable(self.steam_setup_edit, dir=False))
@@ -81,7 +78,7 @@ class SettingsDialog(QDialog):
         quick_box = QGroupBox("One-Click")
         quick_layout = QVBoxLayout(quick_box)
         self.quick_setup_btn = QPushButton("One Click Setup")
-        hint = QLabel("Installs tools, Wine, clones DXVK-macOS, builds DXVK (64/32), then installs Mesa.")
+        hint = QLabel("Installs Wine, downloads prebuilt DXVK, then installs Mesa.")
         hint.setWordWrap(True)
         quick_layout.addWidget(self.quick_setup_btn)
         quick_layout.addWidget(hint)
@@ -92,21 +89,17 @@ class SettingsDialog(QDialog):
 
         self.install_tools_btn = QPushButton("Install Tools")
         self.install_wine_btn = QPushButton("Install Wine")
-        self.clone_dxvk_btn = QPushButton("Clone DXVK")
+        self.install_dxvk_btn = QPushButton("Install DXVK")
         self.install_mesa_btn = QPushButton("Install Mesa")
-        self.build_dxvk_btn = QPushButton("Build DXVK (64-bit)")
-        self.build_dxvk32_btn = QPushButton("Build DXVK (32-bit)")
         self.init_prefix_btn = QPushButton("Init Prefix")
         self.install_steam_btn = QPushButton("Install Steam")
 
         grid.addWidget(self.install_tools_btn, 0, 0)
         grid.addWidget(self.install_wine_btn, 0, 1)
-        grid.addWidget(self.clone_dxvk_btn, 1, 0)
+        grid.addWidget(self.install_dxvk_btn, 1, 0)
         grid.addWidget(self.install_mesa_btn, 1, 1)
-        grid.addWidget(self.build_dxvk_btn, 2, 0)
-        grid.addWidget(self.build_dxvk32_btn, 2, 1)
-        grid.addWidget(self.init_prefix_btn, 3, 0)
-        grid.addWidget(self.install_steam_btn, 3, 1)
+        grid.addWidget(self.init_prefix_btn, 2, 0)
+        grid.addWidget(self.install_steam_btn, 2, 1)
 
         layout.addWidget(steps_box)
         layout.addStretch()
@@ -147,7 +140,6 @@ class SettingsDialog(QDialog):
     def load_config(self) -> None:
         cfg = config.load()
         self.prefix_edit.setText(cfg["prefix"])
-        self.dxvk_src_edit.setText(cfg["dxvk_src"])
         self.dxvk_install_edit.setText(cfg["dxvk_install"])
         self.dxvk_install32_edit.setText(cfg["dxvk_install32"])
         self.steam_setup_edit.setText(cfg["steam_setup"])
@@ -156,7 +148,6 @@ class SettingsDialog(QDialog):
     def save_config(self) -> None:
         config.save({
             "prefix": self.prefix_edit.text(),
-            "dxvk_src": self.dxvk_src_edit.text(),
             "dxvk_install": self.dxvk_install_edit.text(),
             "dxvk_install32": self.dxvk_install32_edit.text(),
             "steam_setup": self.steam_setup_edit.text(),

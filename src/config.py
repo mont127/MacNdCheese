@@ -6,7 +6,6 @@ from constants import (
     CONFIG_PATH,
     DEFAULT_DXVK_INSTALL,
     DEFAULT_DXVK_INSTALL32,
-    DEFAULT_DXVK_SRC,
     DEFAULT_MESA_DIR,
     DEFAULT_PREFIX,
     DEFAULT_STEAM_SETUP,
@@ -14,7 +13,6 @@ from constants import (
 
 _DEFAULTS: dict[str, str] = {
     "prefix": DEFAULT_PREFIX,
-    "dxvk_src": DEFAULT_DXVK_SRC,
     "dxvk_install": DEFAULT_DXVK_INSTALL,
     "dxvk_install32": DEFAULT_DXVK_INSTALL32,
     "steam_setup": DEFAULT_STEAM_SETUP,
