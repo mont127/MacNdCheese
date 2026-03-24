@@ -1,0 +1,65 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.0)'
+        required: true
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyinstaller PyQt6
+
+      - name: Build .app
+        run: pyinstaller MacNCheese.spec
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Package .dmg
+        run: |
+          create-dmg \
+            --volname "MacNCheese" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 128 \
+            --icon "MacNCheese.app" 180 185 \
+            --hide-extension "MacNCheese.app" \
+            --app-drop-link 480 185 \
+            "MacNCheese-${{ steps.version.outputs.tag }}.dmg" \
+            "dist/MacNCheese.app"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: MacNCheese ${{ steps.version.outputs.tag }}
+          files: MacNCheese-${{ steps.version.outputs.tag }}.dmg
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

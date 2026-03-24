@@ -39,7 +39,6 @@ a = Analysis(
         'pydoc',
         'doctest',
         'difflib',
-        'pickle',
         'ftplib',
         'imaplib',
         'smtplib',
@@ -88,7 +87,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='MacNCheese.app',
-    # icon='MacNCheese.icns',  # uncomment when icon is available
+    icon='icon.icns',
     bundle_identifier='com.macncheese.app',
     info_plist={
         'CFBundleName': 'MacNCheese',
