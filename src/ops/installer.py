@@ -195,8 +195,11 @@ class InstallerOps:
             [ninja, "-C", str(build_dir), "install"],
         ]
 
+        env = os.environ.copy()
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "")
+
         self.log(f"Building DXVK ({arch}) in: {build_dir}")
-        self.run_commands(commands, cwd=str(src.parent))
+        self.run_commands(commands, env=env, cwd=str(src.parent))
 
     def build_dxvk(self) -> None:
         self._build_dxvk(arch="win64")
