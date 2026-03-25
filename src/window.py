@@ -55,10 +55,8 @@ class MainWindow(InstallerOps, RuntimeOps, QMainWindow):
         s = self.settings
         s.install_tools_btn.clicked.connect(self.install_tools)
         s.install_wine_btn.clicked.connect(self.install_wine)
-        s.clone_dxvk_btn.clicked.connect(self.clone_dxvk)
+        s.install_dxvk_btn.clicked.connect(self.install_dxvk)
         s.install_mesa_btn.clicked.connect(self.install_mesa)
-        s.build_dxvk_btn.clicked.connect(self.build_dxvk)
-        s.build_dxvk32_btn.clicked.connect(self.build_dxvk32)
         s.init_prefix_btn.clicked.connect(self.init_prefix)
         s.install_steam_btn.clicked.connect(self.install_steam)
         s.quick_setup_btn.clicked.connect(self.quick_setup)
@@ -175,10 +173,6 @@ class MainWindow(InstallerOps, RuntimeOps, QMainWindow):
     @property
     def steam_dir(self) -> Path:
         return self.prefix_path / "drive_c" / "Program Files (x86)" / "Steam"
-
-    @property
-    def dxvk_src(self) -> Path:
-        return Path(self.settings.dxvk_src_edit.text()).expanduser()
 
     @property
     def dxvk_install(self) -> Path:

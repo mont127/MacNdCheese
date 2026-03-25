@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import QMessageBox
 
-from constants import APP_NAME, DEFAULT_MESA_URL, DXVK_MACOS_REPO
+from constants import APP_NAME, DEFAULT_MESA_URL, DXVK_PREBUILT_URL
 
 
 class InstallerOps:
@@ -87,48 +87,57 @@ class InstallerOps:
         ]
         self.run_commands(commands)
 
-    def clone_dxvk(self) -> None:
-        src = self.dxvk_src
-        src.parent.mkdir(parents=True, exist_ok=True)
+    def install_dxvk(self) -> None:
+        install64 = self.dxvk_install
+        install32 = self.dxvk_install32
+        bin64 = install64 / "bin"
+        bin32 = install32 / "bin"
+        deps_dir = install64.parent.parent / "deps"
+        archive = deps_dir / "dxvk.tar.gz"
+        extract_dir = deps_dir / "dxvk-prebuilt"
+
         script = (
-            f"if [ -d {shlex.quote(str(src / '.git'))} ]; then "
-            f"  git -C {shlex.quote(str(src))} pull; "
-            f"else "
-            f"  git clone {shlex.quote(DXVK_MACOS_REPO)} {shlex.quote(str(src))}; "
-            f"fi"
+            "set -euo pipefail; "
+            f"mkdir -p {shlex.quote(str(deps_dir))} {shlex.quote(str(bin64))} {shlex.quote(str(bin32))}; "
+            f"curl -L -o {shlex.quote(str(archive))} {shlex.quote(DXVK_PREBUILT_URL)}; "
+            f"rm -rf {shlex.quote(str(extract_dir))}; "
+            f"mkdir -p {shlex.quote(str(extract_dir))}; "
+            f"tar -xzf {shlex.quote(str(archive))} -C {shlex.quote(str(extract_dir))} --strip-components=1; "
+            f"cp {shlex.quote(str(extract_dir))}/x64/*.dll {shlex.quote(str(bin64))}/; "
+            f"cp {shlex.quote(str(extract_dir))}/x32/*.dll {shlex.quote(str(bin32))}/; "
+            f"rm -rf {shlex.quote(str(archive))} {shlex.quote(str(extract_dir))}"
         )
         self.run_commands([["bash", "-lc", script]])
 
     def quick_setup(self) -> None:
-        src = self.dxvk_src
-        cross64 = src / "build-win64.txt"
-        cross32 = src / "build-win32.txt"
+        env = self._prompt_admin_env()
+        if env is None:
+            return
+
         install64 = self.dxvk_install
         install32 = self.dxvk_install32
+        bin64 = install64 / "bin"
+        bin32 = install32 / "bin"
         mesa_dir = self.mesa_dir
         mesa_base = mesa_dir.parent
         mesa_archive = mesa_base.parent / "mesa.7z"
-
-        src.parent.mkdir(parents=True, exist_ok=True)
+        deps_dir = install64.parent.parent / "deps"
+        dxvk_archive = deps_dir / "dxvk.tar.gz"
+        dxvk_extract = deps_dir / "dxvk-prebuilt"
 
         script = (
             "set -euo pipefail; "
-            "brew install git meson ninja mingw-w64 glslang p7zip winetricks || true; "
+            "brew install p7zip winetricks || true; "
             "brew install --cask xquartz || true; "
             "brew install --cask wine-stable || brew install wine-stable || true; "
-            f"if [ -d {shlex.quote(str(src / '.git'))} ]; then "
-            f"  git -C {shlex.quote(str(src))} pull; "
-            f"else "
-            f"  git clone {shlex.quote(DXVK_MACOS_REPO)} {shlex.quote(str(src))}; "
-            f"fi; "
-            f"mkdir -p {shlex.quote(str(install64))} {shlex.quote(str(install32))}; "
-            f"rm -rf {shlex.quote(str(install64 / 'build.64'))} {shlex.quote(str(install32 / 'build.32'))}; "
-            f"meson setup {shlex.quote(str(install64 / 'build.64'))} {shlex.quote(str(src))} --cross-file {shlex.quote(str(cross64))} --prefix {shlex.quote(str(install64))} --buildtype release -Denable_d3d9=false; "
-            f"ninja -C {shlex.quote(str(install64 / 'build.64'))}; "
-            f"ninja -C {shlex.quote(str(install64 / 'build.64'))} install; "
-            f"meson setup {shlex.quote(str(install32 / 'build.32'))} {shlex.quote(str(src))} --cross-file {shlex.quote(str(cross32))} --prefix {shlex.quote(str(install32))} --buildtype release -Denable_d3d9=false; "
-            f"ninja -C {shlex.quote(str(install32 / 'build.32'))}; "
-            f"ninja -C {shlex.quote(str(install32 / 'build.32'))} install; "
+            f"mkdir -p {shlex.quote(str(deps_dir))} {shlex.quote(str(bin64))} {shlex.quote(str(bin32))}; "
+            f"curl -L -o {shlex.quote(str(dxvk_archive))} {shlex.quote(DXVK_PREBUILT_URL)}; "
+            f"rm -rf {shlex.quote(str(dxvk_extract))}; "
+            f"mkdir -p {shlex.quote(str(dxvk_extract))}; "
+            f"tar -xzf {shlex.quote(str(dxvk_archive))} -C {shlex.quote(str(dxvk_extract))} --strip-components=1; "
+            f"cp {shlex.quote(str(dxvk_extract))}/x64/*.dll {shlex.quote(str(bin64))}/; "
+            f"cp {shlex.quote(str(dxvk_extract))}/x32/*.dll {shlex.quote(str(bin32))}/; "
+            f"rm -rf {shlex.quote(str(dxvk_archive))} {shlex.quote(str(dxvk_extract))}; "
             f"rm -rf {shlex.quote(str(mesa_base))} {shlex.quote(str(mesa_archive))}; "
             f"mkdir -p {shlex.quote(str(mesa_base))}; "
             f"curl -L -o {shlex.quote(str(mesa_archive))} {shlex.quote(DEFAULT_MESA_URL)}; "
@@ -140,71 +149,7 @@ class InstallerOps:
             f"  fi; "
             f"fi"
         )
-
-        self.run_commands([["bash", "-lc", script]], env=None, cwd=str(src.parent))
-
-    def _build_dxvk(self, *, arch: str) -> None:
-        wine = self.ensure_wine()
-        if not wine:
-            return
-
-        src = self.dxvk_src
-        if arch == "win64":
-            install = self.dxvk_install
-            cross_file = src / "build-win64.txt"
-            build_dir = install / "build.64"
-        else:
-            install = self.dxvk_install32
-            cross_file = src / "build-win32.txt"
-            build_dir = install / "build.32"
-
-        install.mkdir(parents=True, exist_ok=True)
-        src.parent.mkdir(parents=True, exist_ok=True)
-        coredata = build_dir / "meson-private" / "coredata.dat"
-
-        clone_script = (
-            f"if [ -d {shlex.quote(str(src / '.git'))} ]; then "
-            f"  git -C {shlex.quote(str(src))} pull; "
-            f"else "
-            f"  git clone {shlex.quote(DXVK_MACOS_REPO)} {shlex.quote(str(src))}; "
-            f"fi"
-        )
-
-        meson_args = [
-            "meson",
-            "setup",
-            str(build_dir),
-            str(src),
-            "--cross-file",
-            str(cross_file),
-            "--prefix",
-            str(install),
-            "--buildtype",
-            "release",
-            "-Denable_d3d9=false",
-        ]
-
-        if build_dir.exists():
-            if coredata.exists():
-                meson_args.append("--reconfigure")
-            else:
-                meson_args.append("--wipe")
-
-        commands = [
-            ["bash", "-lc", clone_script],
-            meson_args,
-            ["ninja", "-C", str(build_dir)],
-            ["ninja", "-C", str(build_dir), "install"],
-        ]
-
-        self.log(f"Building DXVK ({arch}) in: {build_dir}")
-        self.run_commands(commands, cwd=str(src.parent))
-
-    def build_dxvk(self) -> None:
-        self._build_dxvk(arch="win64")
-
-    def build_dxvk32(self) -> None:
-        self._build_dxvk(arch="win32")
+        self.run_commands([["bash", "-lc", script]], env=env)
 
     def init_prefix(self) -> None:
         wine = self.ensure_wine()

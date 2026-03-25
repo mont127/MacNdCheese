@@ -8,15 +8,14 @@ CONFIG_PATH = MNC_DIR / "config" / "config.json"
 LOGS_DIR = MNC_DIR / "logs"
 
 DEFAULT_PREFIX = str(MNC_DIR / "wine")
-DEFAULT_DXVK_SRC = str(MNC_DIR / "deps" / "DXVK-macOS")
 DEFAULT_DXVK_INSTALL = str(MNC_DIR / "libs" / "dxvk64")
 DEFAULT_DXVK_INSTALL32 = str(MNC_DIR / "libs" / "dxvk32")
 DEFAULT_STEAM_SETUP = str(Path.home() / "Downloads" / "SteamSetup.exe")
 DEFAULT_MESA_DIR = str(MNC_DIR / "deps" / "mesa" / "x64")
-DXVK_DLLS = ("dxgi.dll", "d3d11.dll", "d3d10core.dll")
+DXVK_DLLS = ("d3d11.dll", "d3d10core.dll")
 
 DEFAULT_MESA_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
-DXVK_MACOS_REPO = "https://github.com/Gcenx/DXVK-macOS"
+DXVK_PREBUILT_URL = "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz"
 
 
 LAUNCH_BACKEND_AUTO = "auto"
