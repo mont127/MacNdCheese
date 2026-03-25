@@ -82,6 +82,7 @@ app = BUNDLE(
         'CFBundleVersion': '0.1.0',
         'CFBundleShortVersionString': '0.1.0',
         'NSHighResolutionCapable': True,
+        'NSMicrophoneUsageDescription': 'MacNCheese requests microphone access for game audio compatibility.',
         'NSRequiresAquaSystemAppearance': False,  # allows dark mode
         'LSMinimumSystemVersion': '11.0',
         # Suppress the "damaged app" prompt on first launch for
