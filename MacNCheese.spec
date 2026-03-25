@@ -19,7 +19,9 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=[
-        # if we ever ship binaries manually add them here
+        *([('Add.png', '.')] if __import__('os').path.exists('Add.png') else []),
+        *([('Wine.png', '.')] if __import__('os').path.exists('Wine.png') else []),
+        *([('Steam.png', '.')] if __import__('os').path.exists('Steam.png') else []),
     ],
     hiddenimports=[
         # PyQt6 sometimes needs these nudged explicitly
