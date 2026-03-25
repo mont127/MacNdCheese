@@ -24,7 +24,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pyinstaller PyQt6
+        run: pip install pyinstaller PyQt6 pyobjc
 
       - name: Build .app
         run: pyinstaller MacNCheese.spec
