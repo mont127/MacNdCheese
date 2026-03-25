@@ -19,6 +19,7 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=[
+        ('installer.sh', '.'),
         *([('Add.png', '.')] if __import__('os').path.exists('Add.png') else []),
         *([('Wine.png', '.')] if __import__('os').path.exists('Wine.png') else []),
         *([('Steam.png', '.')] if __import__('os').path.exists('Steam.png') else []),
