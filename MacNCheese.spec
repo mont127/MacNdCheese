@@ -32,7 +32,6 @@ a = Analysis(
         # runner doesn't have these
         'tkinter',
         'unittest',
-        'email',
         'html',
         'http',
         'xml',
