@@ -2346,6 +2346,13 @@ class MainWindow(QMainWindow):
         self._btn_debug_steam_silent.clicked.connect(self._debug_launch_steam_silent)
         topbar_layout.addWidget(self._btn_debug_steam_silent)
 
+        # DEBUG: query Steam ActiveProcess registry key
+        self._btn_debug_steam_reg = QPushButton("🔍 Steam reg")
+        self._btn_debug_steam_reg.setObjectName("TopBarBtn")
+        self._btn_debug_steam_reg.setToolTip("[DEBUG] Query HKCU\\Software\\Valve\\Steam\\ActiveProcess")
+        self._btn_debug_steam_reg.clicked.connect(self._debug_query_steam_registry)
+        topbar_layout.addWidget(self._btn_debug_steam_reg)
+
         self.search_bar = QLineEdit()
         self.search_bar.setObjectName("SearchBar")
         self.search_bar.setPlaceholderText("Search games...")
@@ -2745,6 +2752,7 @@ class MainWindow(QMainWindow):
         action_dxvk32.triggered.connect(self.build_dxvk32)
         action_wine.triggered.connect(self.install_wine)
         action_steam.triggered.connect(self.install_steam)
+
         menu.exec(card_widget.mapToGlobal(pos))
 
 
@@ -3545,6 +3553,39 @@ class MainWindow(QMainWindow):
         ))
         fallback.start(120_000)
 
+    def _close_steam_window_via_wine(self) -> None:
+        """Use wscript.exe inside Wine to close the Steam main window.
+        WScript.Shell.AppActivate finds the window by title and SendKeys Alt+F4
+        sends it to the tray — all within Wine, no macOS permissions needed."""
+        wine = self.wine_binary()
+        if not wine:
+            return
+
+        vbs = (
+            'Set oShell = CreateObject("WScript.Shell")\r\n'
+            'If oShell.AppActivate("Steam") Then\r\n'
+            '    oShell.SendKeys "%{F4}"\r\n'
+            'End If\r\n'
+        )
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(suffix=".vbs", delete=False, mode="w")
+        tmp.write(vbs)
+        tmp.close()
+
+        # Convert host path to a Wine path (Z: drive maps to /)
+        wine_path = "Z:" + tmp.name.replace("/", "\\")
+
+        proc = QProcess(self)
+        env = self.wine_env()
+        qenv = QProcessEnvironment.systemEnvironment()
+        for key, value in env.items():
+            qenv.insert(key, value)
+        proc.setProcessEnvironment(qenv)
+        proc.setProgram(wine)
+        proc.setArguments(["wscript.exe", "//nologo", wine_path])
+        proc.finished.connect(lambda: os.unlink(tmp.name))
+        proc.start()
+
     def _ensure_steam_silent(self) -> bool:
         """If Steam is installed but not running, start it silently in the background.
 
@@ -3597,6 +3638,31 @@ class MainWindow(QMainWindow):
         proc.started.connect(lambda: self.set_status("[DEBUG] Steam -silent started"))
         proc.errorOccurred.connect(lambda e: self.set_status(f"[DEBUG] error: {e}"))
         proc.start()
+
+    def _debug_query_steam_registry(self) -> None:
+        """DEBUG: run 'wine reg query HKCU\\Software\\Valve\\Steam\\ActiveProcess'
+        and dump the raw output to the log so we can see what Wine actually returns."""
+        import subprocess
+        wine = self.wine_binary()
+        if not wine:
+            self.log("[DEBUG] Wine not found")
+            return
+        env = self.wine_env()
+        self.log("[DEBUG] Querying HKCU\\Software\\Valve\\Steam\\ActiveProcess …")
+        try:
+            result = subprocess.run(
+                [wine, "reg", "query",
+                 r"HKCU\Software\Valve\Steam\ActiveProcess"],
+                env=env, capture_output=True, timeout=10,
+            )
+            stdout = result.stdout.decode(errors="replace").strip()
+            stderr = result.stderr.decode(errors="replace").strip()
+            self.log(f"[DEBUG] exit code: {result.returncode}")
+            self.log(f"[DEBUG] stdout:\n{stdout if stdout else '(empty)'}")
+            if stderr:
+                self.log(f"[DEBUG] stderr:\n{stderr}")
+        except Exception as exc:
+            self.log(f"[DEBUG] exception: {exc}")
 
     def launch_steam(self) -> None:
         wine = self.ensure_wine()
@@ -3967,6 +4033,7 @@ class MainWindow(QMainWindow):
 
         self.set_status(f"Patched {game.name} with local DXVK")
 
+
     def launch_selected_game(self, game: Optional["GameEntry"] = None, backend_id: Optional[str] = None, extra_args: str = "") -> None:
         game = game or self.selected_game()
         if not game:
@@ -4067,14 +4134,6 @@ class MainWindow(QMainWindow):
         exe_dir = exe.parent
         self.game_process.setWorkingDirectory(str(exe_dir))
 
-        # Official Steamworks method: drop steam_appid.txt next to the exe so the
-        # game skips launching Steam on its own (reads this instead of calling Steam).
-        if game_model.appid:
-            try:
-                (exe_dir / "steam_appid.txt").write_text(game_model.appid)
-            except Exception:
-                pass
-
         args = [exe.name]
 
         extra = ""
@@ -4138,6 +4197,10 @@ class MainWindow(QMainWindow):
             self._wait_for_steam_then_launch(self.game_process)
         else:
             self.game_process.start()
+
+        # After the game starts, give Steam a few seconds to show its window,
+        # then close it via wscript inside Wine (no macOS permissions needed).
+        QTimer.singleShot(6000, self._close_steam_window_via_wine)
 
     def closeEvent(self, event) -> None:
         for proc in (self.game_process, self.steam_process):
