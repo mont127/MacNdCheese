@@ -4067,6 +4067,14 @@ class MainWindow(QMainWindow):
         exe_dir = exe.parent
         self.game_process.setWorkingDirectory(str(exe_dir))
 
+        # Official Steamworks method: drop steam_appid.txt next to the exe so the
+        # game skips launching Steam on its own (reads this instead of calling Steam).
+        if game_model.appid:
+            try:
+                (exe_dir / "steam_appid.txt").write_text(game_model.appid)
+            except Exception:
+                pass
+
         args = [exe.name]
 
         extra = ""
