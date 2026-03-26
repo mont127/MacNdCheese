@@ -2339,6 +2339,13 @@ class MainWindow(QMainWindow):
         self.btn_top_launch_steam.clicked.connect(self.launch_steam)
         topbar_layout.addWidget(self.btn_top_launch_steam)
 
+        # DEBUG: temporary button to start Steam silently
+        self._btn_debug_steam_silent = QPushButton("🔇 Steam silent")
+        self._btn_debug_steam_silent.setObjectName("TopBarBtn")
+        self._btn_debug_steam_silent.setToolTip("[DEBUG] Start Steam with -silent")
+        self._btn_debug_steam_silent.clicked.connect(self._debug_launch_steam_silent)
+        topbar_layout.addWidget(self._btn_debug_steam_silent)
+
         self.search_bar = QLineEdit()
         self.search_bar.setObjectName("SearchBar")
         self.search_bar.setPlaceholderText("Search games...")
@@ -3567,6 +3574,29 @@ class MainWindow(QMainWindow):
         self.steam_process.setArguments(["steam.exe", "-silent", "-no-cef-sandbox"])
         self.steam_process.start()
         return True
+
+    def _debug_launch_steam_silent(self) -> None:
+        """DEBUG: start Steam with -silent to test background launch timing."""
+        wine = self.wine_binary()
+        if not wine:
+            self.set_status("[DEBUG] Wine not found")
+            return
+        steam_exe = self.steam_dir / "steam.exe"
+        if not steam_exe.exists():
+            self.set_status("[DEBUG] steam.exe not found")
+            return
+        proc = QProcess(self)
+        env = self.wine_env()
+        qenv = QProcessEnvironment.systemEnvironment()
+        for key, value in env.items():
+            qenv.insert(key, value)
+        proc.setProcessEnvironment(qenv)
+        proc.setWorkingDirectory(str(self.steam_dir))
+        proc.setProgram(wine)
+        proc.setArguments(["steam.exe", "-silent", "-no-cef-sandbox"])
+        proc.started.connect(lambda: self.set_status("[DEBUG] Steam -silent started"))
+        proc.errorOccurred.connect(lambda e: self.set_status(f"[DEBUG] error: {e}"))
+        proc.start()
 
     def launch_steam(self) -> None:
         wine = self.ensure_wine()
