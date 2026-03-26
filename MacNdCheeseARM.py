@@ -3492,18 +3492,32 @@ class MainWindow(QMainWindow):
         proc.start()
         self.set_status("Steam Setup running — complete the installer in the Steam window")
 
-    def _wait_for_steam_then_launch(self, game_process: QProcess) -> None:
-        """Wait for Steam to be fully ready before launching the game.
-
-        Three conditions must all pass (same logic as a reliable shell wait_for_steam):
-          1. steam.pid exists in the Steam dir
-          2. steamwebhelper process is running (client UI loaded)
-          3. At least 4 steam-related processes running (bootstrapper has handed off)
-
-        Falls back to launching after 120 s."""
+    def _read_steam_registry_pid(self) -> Optional[str]:
+        """Return the raw pid value from HKCU\\Software\\Valve\\Steam\\ActiveProcess,
+        or None if it can't be read."""
         import subprocess
+        wine = self.wine_binary()
+        if not wine:
+            return None
+        try:
+            result = subprocess.run(
+                [wine, "reg", "query",
+                 r"HKCU\Software\Valve\Steam\ActiveProcess", "/v", "pid"],
+                env=self.wine_env(), capture_output=True, timeout=5,
+            )
+            for line in result.stdout.decode(errors="replace").splitlines():
+                parts = line.split()
+                # line looks like:  "    pid    REG_DWORD    0x20"
+                if "pid" in parts and "REG_DWORD" in parts:
+                    return parts[-1]  # raw hex string e.g. "0x20"
+        except Exception:
+            pass
+        return None
 
-        steam_pid_file = self.steam_dir / "steam.pid"
+    def _wait_for_steam_then_launch(self, game_process: QProcess, old_pid: Optional[str] = None) -> None:
+        """Wait until the ActiveProcess pid in the Wine registry changes from old_pid.
+        Steam overwrites this key with its new PID only when fully initialized.
+        Falls back to launching after 120 s."""
         poll_timer = QTimer(self)
         fallback = QTimer(self)
         fallback.setSingleShot(True)
@@ -3519,30 +3533,10 @@ class MainWindow(QMainWindow):
             game_process.start()
 
         def _check() -> None:
-            # Condition 1: steam.pid exists
-            if not steam_pid_file.exists():
-                return
-            # Condition 2: steamwebhelper is running
-            try:
-                if subprocess.run(
-                    ["pgrep", "-f", "steamwebhelper"],
-                    capture_output=True, timeout=2,
-                ).returncode != 0:
-                    return
-            except Exception:
-                return
-            # Condition 3: at least 4 steam-related processes (bootstrapper handed off)
-            try:
-                result = subprocess.run(
-                    ["pgrep", "-c", "-f", "steam"],
-                    capture_output=True, timeout=2,
-                )
-                count = int(result.stdout.decode().strip() or "0")
-                if count < 4:
-                    return
-            except Exception:
-                return
-            _launch()
+            current = self._read_steam_registry_pid()
+            self.log(f"[Steam wait] registry pid = {current}  (baseline = {old_pid})")
+            if current is not None and current != old_pid:
+                _launch()
 
         poll_timer.timeout.connect(_check)
         poll_timer.start(2_000)
@@ -4191,10 +4185,11 @@ class MainWindow(QMainWindow):
                 self.show_unity_player_log_for_selected_game()
 
         self.game_process.finished.connect(_on_game_finished)
+        old_pid = self._read_steam_registry_pid()
         steam_just_started = self._ensure_steam_silent()
         if steam_just_started:
             self.set_status("Waiting for Steam to initialise silently…")
-            self._wait_for_steam_then_launch(self.game_process)
+            self._wait_for_steam_then_launch(self.game_process, old_pid=old_pid)
         else:
             self.game_process.start()
 
