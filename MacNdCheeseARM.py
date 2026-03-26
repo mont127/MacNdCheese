@@ -2871,23 +2871,52 @@ class MainWindow(QMainWindow):
         env = os.environ.copy()
         env["WINEPREFIX"] = str(self.prefix_path)
 
-        # Ensure MoltenVK is discoverable by Vulkan (needed for DXVK on macOS).
-        # The Gcenx Wine.app bundles MoltenVK; when the wine binary is a raw
-        # symlink rather than the wrapper script, VK_ICD_FILENAMES won't be set.
+        # DXVK needs Vulkan. On macOS, Vulkan comes from MoltenVK bundled inside
+        # Wine Stable.app. The Vulkan loader (libvulkan.1.dylib from Homebrew) finds
+        # drivers via ICD manifest JSON files pointed to by VK_ICD_FILENAMES.
+        # Without a manifest, vkCreateInstance returns VK_ERROR_INCOMPATIBLE_DRIVER
+        # and DXVK silently falls back → game shows "DirectX 11 not available".
         if not env.get("VK_ICD_FILENAMES"):
-            moltenvk_candidates = [
-                Path("/Applications/Wine Stable.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
-                Path("/Applications/Wine Staging.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
-                Path("/Applications/Wine Devel.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
-                Path("/usr/local/share/vulkan/icd.d/MoltenVK_icd.json"),
-                Path("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json"),
-            ]
-            for icd in moltenvk_candidates:
-                if icd.exists():
-                    env["VK_ICD_FILENAMES"] = str(icd)
-                    break
+            env["VK_ICD_FILENAMES"] = self._ensure_moltenvk_icd()
 
         return env
+
+    def _ensure_moltenvk_icd(self) -> str:
+        """Return a path to a MoltenVK ICD JSON manifest, creating one if needed."""
+        # 1. Pre-existing JSON manifests (SDK / Homebrew installs)
+        existing_json = [
+            Path("/usr/local/share/vulkan/icd.d/MoltenVK_icd.json"),
+            Path("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json"),
+            Path(Path.home() / ".local/share/vulkan/icd.d/MoltenVK_icd.json"),
+            Path("/Applications/Wine Stable.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
+            Path("/Applications/Wine Staging.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
+        ]
+        for p in existing_json:
+            if p.exists():
+                return str(p)
+
+        # 2. No pre-existing manifest — find libMoltenVK.dylib and generate one
+        moltenvk_lib_candidates = [
+            Path("/Applications/Wine Stable.app/Contents/Resources/wine/lib/libMoltenVK.dylib"),
+            Path("/Applications/Wine Staging.app/Contents/Resources/wine/lib/libMoltenVK.dylib"),
+            Path("/usr/local/lib/libMoltenVK.dylib"),
+            Path("/opt/homebrew/lib/libMoltenVK.dylib"),
+        ]
+        for lib in moltenvk_lib_candidates:
+            if lib.exists():
+                manifest_dir = Path.home() / ".config" / "macncheese" / "vulkan" / "icd.d"
+                manifest_dir.mkdir(parents=True, exist_ok=True)
+                manifest = manifest_dir / "MoltenVK_icd.json"
+                manifest.write_text(json.dumps({
+                    "file_format_version": "1.0.0",
+                    "ICD": {
+                        "library_path": str(lib),
+                        "api_version": "1.2.0",
+                    },
+                }, indent=2))
+                return str(manifest)
+
+        return ""  # nothing found — leave env var unset
 
     def append_log(self, message: str) -> None:
         self.log(message)
