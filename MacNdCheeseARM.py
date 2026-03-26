@@ -297,11 +297,11 @@ class SettingsDialog(QDialog):
         self.install_tools_btn = QPushButton("Install Tools")
         self.install_wine_btn = QPushButton("Install Wine")
         self.install_mesa_btn = QPushButton("Install Mesa")
-        self.build_dxvk_btn = QPushButton("Build DXVK (64-bit)")
-        self.build_dxvk32_btn = QPushButton("Build DXVK (32-bit)")
+        self.build_dxvk_btn = QPushButton("Install DXVK")
+        self.build_dxvk32_btn = QPushButton("Install DXVK")  # kept for compatibility
         self.init_prefix_btn = QPushButton("Init Prefix")
         self.install_steam_btn = QPushButton("Install Steam")
-        hint = QLabel("Installs tools, Wine, builds DXVK (64/32), then installs Mesa.")
+        hint = QLabel("Installs Wine, downloads prebuilt DXVK, then installs Mesa.")
         hint.setWordWrap(True)
         quick_layout.addWidget(self.quick_setup_btn)
         quick_layout.addWidget(hint)
@@ -313,9 +313,8 @@ class SettingsDialog(QDialog):
         grid.addWidget(self.install_wine_btn, 0, 1)
         grid.addWidget(self.install_mesa_btn, 1, 0)
         grid.addWidget(self.build_dxvk_btn, 1, 1)
-        grid.addWidget(self.build_dxvk32_btn, 2, 0)
-        grid.addWidget(self.init_prefix_btn, 2, 1)
-        grid.addWidget(self.install_steam_btn, 3, 0, 1, 2)
+        grid.addWidget(self.init_prefix_btn, 2, 0)
+        grid.addWidget(self.install_steam_btn, 2, 1)
         layout.addWidget(steps_box)
         layout.addStretch()
 
@@ -499,7 +498,12 @@ class _InstallProgressDialog(QDialog):
         self._bar = QProgressBar()
         self._bar.setRange(0, 0)  # pulsing indeterminate
         self._bar.setTextVisible(False)
-        self._bar.setFixedHeight(6)
+        self._bar.setFixedHeight(14)
+        self._bar.setStyleSheet(
+            "QProgressBar { border-radius: 7px; background: rgba(255,255,255,0.15); }"
+            "QProgressBar::chunk { border-radius: 7px; background: qlineargradient("
+            "  x1:0, y1:0, x2:1, y2:0, stop:0 #6C8EFF, stop:1 #A855F7); }"
+        )
         layout.addWidget(self._bar)
 
         btn_row = QHBoxLayout()
@@ -2480,8 +2484,15 @@ class MainWindow(QMainWindow):
 
         self.stacked_widget.addWidget(self.steam_view)           
 
+    def _update_steam_button(self) -> None:
+        steam_installed = (self.steam_dir / "steam.exe").exists()
+        label = "Launch" if steam_installed else "Install Steam"
+        if hasattr(self, "btn_install_steam"):
+            self.btn_install_steam.setText(label)
+
     def switch_view(self, view_name: str) -> None:
         if view_name == "steam":
+            self._update_steam_button()
             self.stacked_widget.setCurrentIndex(1)
         elif view_name == "games":
             self.stacked_widget.setCurrentIndex(0)
@@ -2698,8 +2709,8 @@ class MainWindow(QMainWindow):
         action_mesa = menu.addAction("Install Mesa")
         action_dxmt = menu.addAction("Install DXMT")
         action_vkd3d = menu.addAction("Install VKD3D-Proton")
-        action_dxvk64 = menu.addAction("Build DXVK (64bit)")
-        action_dxvk32 = menu.addAction("Build DXVK (32bit)")
+        action_dxvk64 = menu.addAction("Install DXVK")
+        action_dxvk32 = menu.addAction("Install DXVK")
         action_wine = menu.addAction("Install Wine")
         action_steam = menu.addAction("Install Steam")
 
@@ -3373,15 +3384,48 @@ class MainWindow(QMainWindow):
         wine = self.ensure_wine()
         if not wine:
             return
-        env = self.request_admin_env()
-        if env is None:
-            return
         if not self.steam_setup.exists():
             QMessageBox.warning(self, APP_NAME, f"SteamSetup.exe not found at {self.steam_setup}")
             return
-        run_env = env.copy()
-        run_env.update(self.wine_env())
-        self.run_commands([[wine, str(self.steam_setup)]], env=run_env)
+
+        # Tell the user where to install before the setup window appears
+        QMessageBox.information(
+            self,
+            "Install Steam",
+            "Steam Setup will open now.\n\n"
+            "When asked where to install, keep the default path (C:\\Program Files\\Steam).\n\n"
+            "MacNCheese will detect Steam automatically once setup is complete.",
+        )
+
+        self.activateWindow()
+        self.raise_()
+
+        env = self.wine_env()
+        qenv = QProcessEnvironment.systemEnvironment()
+        for key, value in env.items():
+            qenv.insert(key, value)
+
+        proc = QProcess(self)
+        proc.setProcessEnvironment(qenv)
+        proc.setProgram(wine)
+        proc.setArguments([str(self.steam_setup)])
+        proc.readyReadStandardOutput.connect(lambda: self._drain_process(proc))
+        proc.readyReadStandardError.connect(lambda: self._drain_process(proc))
+
+        def _on_steam_setup_done(exit_code: int, _exit_status) -> None:
+            self.log(f"SteamSetup.exe exited with code {exit_code}")
+            self.activateWindow()
+            self.raise_()
+            if (self.steam_dir / "steam.exe").exists():
+                self.set_status("Steam installed successfully")
+                self._update_steam_button()
+                QMessageBox.information(self, APP_NAME, "Steam has been installed! Click Launch to start it.")
+            else:
+                self.set_status("Steam installation may not have completed")
+
+        proc.finished.connect(_on_steam_setup_done)
+        proc.start()
+        self.set_status("Steam Setup running — complete the installer in the Steam window")
 
     def launch_steam(self) -> None:
         wine = self.ensure_wine()
@@ -3598,6 +3642,7 @@ class MainWindow(QMainWindow):
             self.log(line)
 
     def scan_games(self) -> None:
+        self._update_steam_button()
         games = SteamScanner.scan_games(self.prefix_path, self.steam_dir)
         self.games = games
         self.games_list.clear()
@@ -3715,7 +3760,7 @@ class MainWindow(QMainWindow):
         dxvk_bin = self.dxvk_bin_for_exe(exe) if exe is not None else (self.dxvk_install / "bin")
         for dll in DXVK_DLLS:
             if not (dxvk_bin / dll).exists():
-                QMessageBox.warning(self, APP_NAME, f"Missing {dll} in {dxvk_bin}. Build DXVK first.")
+                QMessageBox.warning(self, APP_NAME, f"Missing {dll} in {dxvk_bin}. Install DXVK first.")
                 return
 
         game.game_dir.mkdir(parents=True, exist_ok=True)
