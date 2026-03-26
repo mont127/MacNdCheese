@@ -39,7 +39,9 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QProgressBar,
     QSplitter,
+    QStyle,
     QVBoxLayout,
     QWidget,
     QDialog,
@@ -418,6 +420,112 @@ class SettingsDialog(QDialog):
 
     def log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
+
+
+class _AdminPasswordDialog(QDialog):
+    """Apple HIG-style admin password sheet."""
+
+    def __init__(self, message: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("MacNCheese Setup")
+        self.setFixedWidth(380)
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 20)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        header.setSpacing(12)
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation).pixmap(40, 40)
+        )
+        icon_lbl.setFixedSize(40, 40)
+        header.addWidget(icon_lbl)
+        title_lbl = QLabel("<b>Administrator Password Required</b>")
+        title_lbl.setWordWrap(True)
+        header.addWidget(title_lbl, 1)
+        layout.addLayout(header)
+
+        msg_lbl = QLabel(message)
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setStyleSheet("font-size: 12px;")
+        layout.addWidget(msg_lbl)
+
+        self._pwd_field = QLineEdit()
+        self._pwd_field.setEchoMode(QLineEdit.EchoMode.Password)
+        self._pwd_field.setPlaceholderText("Password")
+        self._pwd_field.returnPressed.connect(self.accept)
+        layout.addWidget(self._pwd_field)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+    def password(self) -> str:
+        return self._pwd_field.text()
+
+
+class _InstallProgressDialog(QDialog):
+    """Non-terminal install progress dialog with indeterminate progress bar."""
+    cancel_requested = pyqtSignal()
+
+    def __init__(self, title: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedWidth(420)
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 20)
+        layout.setSpacing(14)
+
+        self._title_lbl = QLabel(f"<b>{title}</b>")
+        self._title_lbl.setStyleSheet("font-size: 14px;")
+        layout.addWidget(self._title_lbl)
+
+        self._step_lbl = QLabel("Starting…")
+        self._step_lbl.setWordWrap(True)
+        self._step_lbl.setStyleSheet("font-size: 12px;")
+        layout.addWidget(self._step_lbl)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 0)  # pulsing indeterminate
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(6)
+        layout.addWidget(self._bar)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self.cancel_requested)
+        btn_row.addWidget(self._cancel_btn)
+        layout.addLayout(btn_row)
+
+        self._done = False
+
+    def update_step(self, text: str) -> None:
+        if not self._done:
+            # show only last non-empty line as current step
+            last = next((l for l in reversed(text.splitlines()) if l.strip()), text.strip())
+            if last:
+                self._step_lbl.setText(last)
+
+    def mark_done(self, ok: bool, message: str) -> None:
+        self._done = True
+        self._bar.setRange(0, 1)
+        self._bar.setValue(1)
+        self._step_lbl.setText(message)
+        self._cancel_btn.setText("Close")
+        self._cancel_btn.clicked.disconnect()
+        self._cancel_btn.clicked.connect(self.accept)
 
 
 MODERN_THEME = """
@@ -1442,12 +1550,22 @@ class CommandWorker(QObject):
         self.commands = commands
         self.env = env or os.environ.copy()
         self.cwd = cwd
+        self._proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
 
     def run(self) -> None:
         try:
             for cmd in self.commands:
+                if self._cancelled:
+                    self.finished.emit(False, "Cancelled")
+                    return
                 self.output.emit(f"$ {' '.join(cmd)}")
-                proc = subprocess.Popen(
+                self._proc = subprocess.Popen(
                     cmd,
                     cwd=self.cwd,
                     env=self.env,
@@ -1456,10 +1574,13 @@ class CommandWorker(QObject):
                     text=True,
                     bufsize=1,
                 )
-                assert proc.stdout is not None
-                for line in proc.stdout:
+                assert self._proc.stdout is not None
+                for line in self._proc.stdout:
                     self.output.emit(line.rstrip())
-                rc = proc.wait()
+                rc = self._proc.wait()
+                if self._cancelled:
+                    self.finished.emit(False, "Cancelled")
+                    return
                 if rc != 0:
                     self.finished.emit(False, f"Command failed with exit code {rc}: {' '.join(cmd)}")
                     return
@@ -1952,6 +2073,7 @@ class MainWindow(QMainWindow):
         self.interactive_install_in_progress: bool = False
         self.interactive_install_action: Optional[str] = None
         self.pending_post_install_action: Optional[str] = None
+        self._progress_dlg: Optional[_InstallProgressDialog] = None
 
         self.prefix_combo = self.settings.prefix_combo
         self.dxvk_src_edit = self.settings.dxvk_src_edit
@@ -2398,10 +2520,10 @@ class MainWindow(QMainWindow):
             btn.setChecked(True)
 
             exe_path = dlg.exe_edit.text().strip()
-            if exe_path:
-                self.run_installer_action_in_terminal(f"wine '{exe_path}'")
-            else:
-                self.run_installer_action("wineboot")
+            wine = self.ensure_wine()
+            if wine:
+                cmd = [wine, exe_path] if exe_path else [wine, "wineboot"]
+                self.run_commands([cmd], env=self.wine_env(), progress_title="Initialising bottle…")
             
             self.set_status(f"Created bottle '{name}' at {p}")
             self.scan_games()
@@ -2756,8 +2878,9 @@ class MainWindow(QMainWindow):
         *,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        progress_title: str = "Installing…",
     ) -> None:
-        
+
         if self.worker_thread is not None:
             try:
                 if self.worker_thread.isRunning():
@@ -2768,14 +2891,19 @@ class MainWindow(QMainWindow):
                 self.worker = None
 
         self.set_status("Task running")
+        self.interactive_install_in_progress = True
 
-       
+        # Show progress dialog
+        self._progress_dlg = _InstallProgressDialog(progress_title, self)
+        self._progress_dlg.cancel_requested.connect(self._cancel_worker)
+
         self.worker_thread = QThread(self)
         self.worker = CommandWorker(commands, env=env, cwd=cwd)
         self.worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.worker.run)
         self.worker.output.connect(self.append_log)
+        self.worker.output.connect(self._progress_dlg.update_step)
         self.worker.error.connect(self.append_log)
         self.worker.finished.connect(self.on_worker_finished)
 
@@ -2790,9 +2918,21 @@ class MainWindow(QMainWindow):
         self.worker_thread.finished.connect(self.worker_thread.deleteLater)
 
         self.worker_thread.start()
+        self._progress_dlg.exec()
+
+    def _cancel_worker(self) -> None:
+        if self.worker:
+            self.worker.cancel()
 
     def on_worker_finished(self, ok: bool, message: str) -> None:
         self.set_status(message if ok else f"Failed: {message}")
+        self.interactive_install_in_progress = False
+        if self._progress_dlg is not None:
+            if ok:
+                self._progress_dlg.accept()
+            else:
+                self._progress_dlg.mark_done(False, message)
+            self._progress_dlg = None
 
         state = getattr(self, "_unified_state", 0)
         self._unified_state = 0
@@ -2802,6 +2942,8 @@ class MainWindow(QMainWindow):
             self.pending_post_install_action = None
         if not ok:
             lower = message.lower()
+            if lower == "cancelled":
+                return
             if "xcode command line tools" in lower or "clt install" in lower:
                 QMessageBox.warning(
                     self,
@@ -2986,17 +3128,18 @@ class MainWindow(QMainWindow):
         return False, "The macOS password was rejected or sudo is unavailable. Enter the same password you use to sign in to macOS, then try again."
 
     def request_admin_env(self) -> Optional[dict[str, str]]:
-        password, ok = QInputDialog.getText(
+        dlg = _AdminPasswordDialog(
+            "MacNCheese needs your administrator password to install software on your Mac.",
             self,
-            APP_NAME,
-            "Enter macOS Administrator password for setup:",
-            QLineEdit.EchoMode.Password,
         )
-        if ok and password:
-            env = os.environ.copy()
-            env["MNC_SUDO_PASSWORD"] = password
-            return env
-        return None
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        password = dlg.password()
+        if not password:
+            return None
+        env = os.environ.copy()
+        env["MNC_SUDO_PASSWORD"] = password
+        return env
 
     def prepare_installer_env(self) -> Optional[dict[str, str]]:
         clt_ok, clt_msg = self.check_clt_installed()
@@ -3018,6 +3161,18 @@ class MainWindow(QMainWindow):
             return None
 
         return env
+
+    _ACTION_TITLES: dict[str, str] = {
+        "install_tools": "Installing Tools",
+        "install_wine": "Installing Wine",
+        "install_mesa": "Installing Mesa",
+        "install_dxvk": "Installing DXVK",
+        "install_dxmt": "Installing DXMT",
+        "install_vkd3d": "Installing VKD3D-Proton",
+        "quick_setup": "Setting Up MacNCheese",
+        "init_prefix": "Initialising Wine Prefix",
+        "install_steam": "Installing Steam",
+    }
 
     def run_installer_action(self, action: str) -> None:
         env = self.prepare_installer_env()
@@ -3049,7 +3204,8 @@ class MainWindow(QMainWindow):
             str(self.mesa_dir),
             DEFAULT_MESA_URL,
         ]
-        self.run_commands([args], env=env, cwd=str(script.parent))
+        title = self._ACTION_TITLES.get(action, f"Running: {action}")
+        self.run_commands([args], env=env, cwd=str(script.parent), progress_title=title)
 
 
     def _version_tuple(self, value: str) -> tuple[int, ...]:
@@ -3091,29 +3247,31 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"Update check failed: {exc}")
 
     def install_tools(self) -> None:
-        self.run_installer_action_in_terminal("install_tools")
+        self.run_installer_action("install_tools")
 
     def install_wine(self) -> None:
-        self.run_installer_action_in_terminal("install_wine")
+        self.run_installer_action("install_wine")
 
     def install_mesa(self) -> None:
-        self.run_installer_action_in_terminal("install_mesa")
-    def install_dxmt(self) -> None:
-        self.run_installer_action_in_terminal("install_dxmt")
-    def install_vkd3d(self) -> None:
-        self.run_installer_action_in_terminal("install_vkd3d")
-    def quick_setup(self) -> None:
-        self.run_installer_action_in_terminal("quick_setup")
+        self.run_installer_action("install_mesa")
 
-    def _build_dxvk(self, *, arch: str) -> None:
-        action = "build_dxvk64" if arch == "win64" else "build_dxvk32"
-        self.run_installer_action_in_terminal(action)
+    def install_dxmt(self) -> None:
+        self.run_installer_action("install_dxmt")
+
+    def install_vkd3d(self) -> None:
+        self.run_installer_action("install_vkd3d")
+
+    def quick_setup(self) -> None:
+        self.run_installer_action("quick_setup")
+
+    def install_dxvk(self) -> None:
+        self.run_installer_action("install_dxvk")
 
     def build_dxvk(self) -> None:
-        self._build_dxvk(arch="win64")
+        self.install_dxvk()
 
     def build_dxvk32(self) -> None:
-        self._build_dxvk(arch="win32")
+        self.install_dxvk()
 
     def exe_is_32bit(self, exe: Path) -> bool:
         try:
@@ -3271,11 +3429,11 @@ class MainWindow(QMainWindow):
             missing = self.missing_core_tools()
 
             if self.interactive_install_in_progress:
-                self.set_status("Finish the installer in Terminal, then try Launch Steam again")
+                self.set_status("Setup already in progress, please wait…")
                 QMessageBox.information(
                     self,
                     APP_NAME,
-                    "MacNCheese already opened an interactive installer Terminal for the missing tools. Finish setup there, then click Launch Steam again.",
+                    "MacNCheese is already installing the required tools. Please wait for it to finish, then click Launch Steam again.",
                 )
                 return
 
@@ -3285,9 +3443,9 @@ class MainWindow(QMainWindow):
                 self.set_status("Xcode Command Line Tools required")
                 return
 
-            self.set_status(f"Missing prerequisites ({', '.join(missing)}). Opening installer Terminal...")
+            self.set_status(f"Missing prerequisites ({', '.join(missing)}). Starting setup…")
             self._unified_state = 1
-            self.run_installer_action_in_terminal("quick_setup", post_action="launch_steam")
+            self.run_installer_action("quick_setup")
             return
 
         elif not steam_installed:

@@ -17,6 +17,7 @@ VKD3D_URL="${11:-}"
 
 XQUARTZ_URL="https://github.com/XQuartz/XQuartz/releases/download/XQuartz-2.8.5/XQuartz-2.8.5.pkg"
 GSTREAMER_URL="https://gstreamer.freedesktop.org/data/pkg/osx/1.28.1/gstreamer-1.0-1.28.1-universal.pkg"
+DXVK_PREBUILT_URL="https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz"
 WINE_STABLE_URL="https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0/wine-stable-11.0-osx64.tar.xz"
 DXMT_DEFAULT_URL="https://github.com/3Shain/dxmt/releases/latest/download/dxmt.tar.gz"
 VKD3D_DEFAULT_URL="https://github.com/HansKristian-Work/vkd3d-proton/releases/latest/download/vkd3d-proton-master.tar.zst"
@@ -192,7 +193,7 @@ install_gstreamer_pkg() {
 
 install_tools() {
   ensure_brew
-  "$BREW_BIN" install git meson ninja mingw-w64 glslang p7zip winetricks zstd || true
+  "$BREW_BIN" install git p7zip winetricks zstd || true
 }
 install_vkd3d() {
   if [ -z "$VKD3D_DIR" ]; then
@@ -269,6 +270,28 @@ PY
   fi
 
   echo "VKD3D-Proton installed successfully"
+}
+
+install_dxvk() {
+  if [ -z "$DXVK_INSTALL64" ] || [ -z "$DXVK_INSTALL32" ]; then
+    echo "Missing DXVK install paths"
+    exit 1
+  fi
+
+  bin64="$DXVK_INSTALL64/bin"
+  bin32="$DXVK_INSTALL32/bin"
+  archive="$WORK_DIR/dxvk.tar.gz"
+  extract_dir="$WORK_DIR/dxvk-prebuilt"
+
+  mkdir -p "$bin64" "$bin32"
+  echo "Downloading prebuilt DXVK..."
+  download_file "$DXVK_PREBUILT_URL" "$archive"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+  tar -xzf "$archive" -C "$extract_dir" --strip-components=1
+  cp "$extract_dir/x64/"*.dll "$bin64/"
+  cp "$extract_dir/x32/"*.dll "$bin32/"
+  echo "DXVK installed successfully"
 }
 
 clone_dxvk_if_missing() {
@@ -442,8 +465,7 @@ init_prefix() {
 quick_setup() {
   install_tools
   install_wine
-  build_dxvk64
-  build_dxvk32
+  install_dxvk
   install_mesa
 }
 
@@ -455,6 +477,9 @@ case "$ACTION" in
     ;;
   install_wine)
     install_wine
+    ;;
+  install_dxvk)
+    install_dxvk
     ;;
   build_dxvk64)
     install_tools
