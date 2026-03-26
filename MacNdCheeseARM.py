@@ -3478,12 +3478,17 @@ class MainWindow(QMainWindow):
         self.set_status("Steam Setup running — complete the installer in the Steam window")
 
     def _wait_for_steam_then_launch(self, game_process: QProcess) -> None:
-        """Poll the Wine registry until Steam writes its ActiveProcess PID — this only
-        happens when the main Steam client is fully up (not during the bootstrapper/update).
-        Falls back to launching after 60 s."""
+        """Wait for Steam to be fully ready before launching the game.
+
+        Three conditions must all pass (same logic as a reliable shell wait_for_steam):
+          1. steam.pid exists in the Steam dir
+          2. steamwebhelper process is running (client UI loaded)
+          3. At least 4 steam-related processes running (bootstrapper has handed off)
+
+        Falls back to launching after 120 s."""
         import subprocess
 
-        wine = self.wine_binary()
+        steam_pid_file = self.steam_dir / "steam.pid"
         poll_timer = QTimer(self)
         fallback = QTimer(self)
         fallback.setSingleShot(True)
@@ -3499,29 +3504,39 @@ class MainWindow(QMainWindow):
             game_process.start()
 
         def _check() -> None:
+            # Condition 1: steam.pid exists
+            if not steam_pid_file.exists():
+                return
+            # Condition 2: steamwebhelper is running
             try:
-                env = self.wine_env()
-                result = subprocess.run(
-                    [wine, "reg", "query",
-                     r"HKCU\Software\Valve\Steam\ActiveProcess", "/v", "pid"],
-                    env=env, capture_output=True, timeout=3,
-                )
-                out = result.stdout.decode(errors="ignore")
-                for part in out.split():
-                    if part.startswith("0x") and part != "0x0":
-                        _launch()
-                        return
+                if subprocess.run(
+                    ["pgrep", "-f", "steamwebhelper"],
+                    capture_output=True, timeout=2,
+                ).returncode != 0:
+                    return
             except Exception:
-                pass  # wine not ready yet, keep polling
+                return
+            # Condition 3: at least 4 steam-related processes (bootstrapper handed off)
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-c", "-f", "steam"],
+                    capture_output=True, timeout=2,
+                )
+                count = int(result.stdout.decode().strip() or "0")
+                if count < 4:
+                    return
+            except Exception:
+                return
+            _launch()
 
         poll_timer.timeout.connect(_check)
-        poll_timer.start(1_000)
+        poll_timer.start(2_000)
 
         fallback.timeout.connect(lambda: (
             self.set_status("Steam init timeout — launching game anyway…"),
             _launch(),
         ))
-        fallback.start(60_000)
+        fallback.start(120_000)
 
     def _ensure_steam_silent(self) -> bool:
         """If Steam is installed but not running, start it silently in the background.
