@@ -3477,21 +3477,49 @@ class MainWindow(QMainWindow):
         proc.start()
         self.set_status("Steam Setup running — complete the installer in the Steam window")
 
-    def _ensure_steam_silent(self) -> None:
+    def _wait_for_steam_then_launch(self, game_process: QProcess) -> None:
+        """Poll until steamwebhelper.exe appears (Steam fully initialised), then start the game.
+        Falls back to launching after 15 s if Steam never becomes ready."""
+        max_wait_ms = 15_000
+        poll_ms = 500
+        elapsed = [0]
+
+        def _check() -> None:
+            elapsed[0] += poll_ms
+            try:
+                import subprocess
+                ready = subprocess.run(
+                    ["pgrep", "-f", "steamwebhelper"],
+                    capture_output=True, timeout=2,
+                ).returncode == 0
+            except Exception:
+                ready = False
+
+            if ready:
+                self.set_status("Steam ready — launching game…")
+                game_process.start()
+            elif elapsed[0] >= max_wait_ms:
+                self.set_status("Steam init timeout — launching game anyway…")
+                game_process.start()
+            else:
+                QTimer.singleShot(poll_ms, _check)
+
+        QTimer.singleShot(poll_ms, _check)
+
+    def _ensure_steam_silent(self) -> bool:
         """If Steam is installed but not running, start it silently in the background.
 
-        This prevents Steam from popping up its main window when a game launches
-        (Wine auto-starts steam.exe from the registry on every Wine startup).
-        With -silent it behaves like Steam already running in the Windows tray."""
+        Returns True if Steam was just started (caller should delay game launch),
+        False if Steam was already running or not installed."""
         steam_exe = self.steam_dir / "steam.exe"
         if not steam_exe.exists():
-            return
+            return False
         if self.steam_process and self.steam_process.state() != QProcess.ProcessState.NotRunning:
-            return  # already running
+            return False  # already running
 
         wine = self.wine_binary()
         if not wine:
-            return
+            return False
 
         self.steam_process = QProcess(self)
         env = self.wine_env()
@@ -3506,6 +3534,7 @@ class MainWindow(QMainWindow):
         self.steam_process.setProgram(wine)
         self.steam_process.setArguments(["steam.exe", "-silent", "-no-cef-sandbox"])
         self.steam_process.start()
+        return True
 
     def launch_steam(self) -> None:
         wine = self.ensure_wine()
@@ -4033,8 +4062,12 @@ class MainWindow(QMainWindow):
                 self.show_unity_player_log_for_selected_game()
 
         self.game_process.finished.connect(_on_game_finished)
-        self._ensure_steam_silent()
-        self.game_process.start()
+        steam_just_started = self._ensure_steam_silent()
+        if steam_just_started:
+            self.set_status("Waiting for Steam to initialise silently…")
+            self._wait_for_steam_then_launch(self.game_process)
+        else:
+            self.game_process.start()
 
     def closeEvent(self, event) -> None:
         for proc in (self.game_process, self.steam_process):
