@@ -1127,6 +1127,10 @@ class DxvkBackend(Backend):
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
         env = env.copy()
+        # Tell Wine where to find the DXVK native DLLs (supplement the per-game copy)
+        dxvk_bin = str(window.dxvk_bin_for_exe(game.exe_path) if game.exe_path else window.dxvk_install / "bin")
+        existing_dll_path = env.get("WINEDLLPATH", "")
+        env["WINEDLLPATH"] = f"{dxvk_bin}:{existing_dll_path}" if existing_dll_path else dxvk_bin
         env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=n,b"
         env["DXVK_LOG_PATH"] = str(Path.home() / "dxvk-logs")
         env["DXVK_LOG_LEVEL"] = "info"
@@ -2866,6 +2870,23 @@ class MainWindow(QMainWindow):
     def wine_env(self) -> dict[str, str]:
         env = os.environ.copy()
         env["WINEPREFIX"] = str(self.prefix_path)
+
+        # Ensure MoltenVK is discoverable by Vulkan (needed for DXVK on macOS).
+        # The Gcenx Wine.app bundles MoltenVK; when the wine binary is a raw
+        # symlink rather than the wrapper script, VK_ICD_FILENAMES won't be set.
+        if not env.get("VK_ICD_FILENAMES"):
+            moltenvk_candidates = [
+                Path("/Applications/Wine Stable.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
+                Path("/Applications/Wine Staging.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
+                Path("/Applications/Wine Devel.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"),
+                Path("/usr/local/share/vulkan/icd.d/MoltenVK_icd.json"),
+                Path("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json"),
+            ]
+            for icd in moltenvk_candidates:
+                if icd.exists():
+                    env["VK_ICD_FILENAMES"] = str(icd)
+                    break
+
         return env
 
     def append_log(self, message: str) -> None:
