@@ -32,8 +32,9 @@ These are optional, but recommended if they are present:
 MacNCheese expects the DLLs to end up here:
 
 
-```bashgptk/lib/wine/x86_64-windows/```
-
+```bash
+gptk/lib/wine/x86_64-windows/
+```
 After the DLLs are imported, select this backend in the game launcher:
 
 Backend -> GPTK (D3DMetal)
@@ -57,8 +58,9 @@ d3d12.dll
 
 In many cases, the folder will look like this:
 
-```bashlib/wine/x86_64-windows/```
-
+```bash
+lib/wine/x86_64-windows/
+```
 ## Step 3 - Import the DLLs into MacNCheese
 
 Open MacNCheese, then go to:
@@ -88,13 +90,14 @@ If you want to prepare or inspect the files manually, these commands help.
 
 ## Create the target directory
 
-```bashmkdir -p gptk/lib/wine/x86_64-windows```
-
+```bash
+mkdir -p gptk/lib/wine/x86_64-windows
+```
 ## Check whether the required DLLs exist in your extracted folder
 
 Replace /path/to/extracted/gptk with your real path:
 
-```
+```bash
 ls -la /path/to/extracted/gptk 
 find /path/to/extracted/gptk -iname "dxgi.dll" -o -iname "d3d11.dll" -o -iname "d3d12.dll"
 ```
@@ -113,18 +116,20 @@ cp /path/to/extracted/gptk/x86_64-windows/d3d10core.dll gptk/lib/wine/x86_64-win
 
 ## Verify the final target folder
 
-```ls -la gptk/lib/wine/x86_64-windows/```
-
+```bash
+ls -la gptk/lib/wine/x86_64-windows/
+```
 ## Find the DLL folder automatically
 
 If you do not know where the DLLs are after extracting GPTK:
 
-```find /path/to/extracted/gptk -type f $begin:math:text$ \-iname \"dxgi\.dll\" \-o \-iname \"d3d11\.dll\" \-o \-iname \"d3d12\.dll\" $end:math:text$```
-
+```bash
+find /path/to/extracted/gptk -type f $begin:math:text$ \-iname \"dxgi\.dll\" \-o \-iname \"d3d11\.dll\" \-o \-iname \"d3d12\.dll\" $end:math:text$
+```
 Copy the full DLL directory manually
 
 ## If you found the correct x86_64-windows folder:
-```
+```bash
 mkdir -p gptk/lib/wine
 cp -R /path/to/extracted/gptk/x86_64-windows gptk/lib/wine/
 ```
@@ -170,7 +175,7 @@ MacNCheese normally handles that for you automatically.
 GPTK backend says DLLs are missing
 
 Check the target folder:
-```
+```bash
 ls -la gptk/lib/wine/x86_64-windows/
 ```
 Make sure these files are there:
@@ -182,11 +187,11 @@ d3d12.dll
 Game still launches with the wrong renderer
 
 Remove old local patches from the game directory first. For example:
-```
+```bash
 find "/path/to/game" -iname "dxgi.dll" -o -iname "d3d11.dll" -o -iname "d3d10core.dll"
 ```
 Then remove them if needed:
-```
+```bash
 rm -f "/path/to/game/dxgi.dll"
 rm -f "/path/to/game/d3d11.dll"
 rm -f "/path/to/game/d3d10core.dll"
