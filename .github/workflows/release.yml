@@ -68,7 +68,7 @@ arch -x86_64 python -m PyInstaller \
   --add-data "Wine.png:." \
   --add-data "Setting.png:." \
   --add-data "Add.png:." \
-  MacNCheeseARM.py
+  MacNdCheeseARM.py
 
 APP_ROOT="dist/MacNCheese.app"
 APP_PLIST="$APP_ROOT/Contents/Info.plist"
