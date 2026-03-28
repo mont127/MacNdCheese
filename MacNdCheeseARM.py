@@ -154,6 +154,7 @@ class SettingsDialog(QDialog):
         self._tabs = QTabWidget()
         layout.addWidget(self._tabs)
 
+        self._tabs.addTab(self._build_bottle_tab(), "Bottle")
         self._tabs.addTab(self._build_paths_tab(), "Paths")
         self._tabs.addTab(self._build_setup_tab(), "Setup")
         self._tabs.addTab(self._build_dev_tab(), "DEV UI")
@@ -167,11 +168,70 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+    def _build_bottle_tab(self) -> QWidget:
+        widget = QWidget()
+        form = QFormLayout(widget)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+
+        # Read-only prefix path display
+        self.bottle_prefix_display = QLineEdit()
+        self.bottle_prefix_display.setReadOnly(True)
+        self.bottle_prefix_display.setStyleSheet("color: rgba(255,255,255,0.5);")
+
+        self.bottle_name_edit = QLineEdit()
+        self.bottle_name_edit.setPlaceholderText("Display name shown in sidebar")
+
+        self.bottle_launcher_edit = QLineEdit()
+        self.bottle_launcher_edit.setPlaceholderText("Leave empty to use Steam (default)")
+
+        self.bottle_icon_edit = QLineEdit()
+        self.bottle_icon_edit.setPlaceholderText("Leave empty to use default icon")
+
+        # Remove / Delete buttons
+        danger_row = QWidget()
+        danger_layout = QHBoxLayout(danger_row)
+        danger_layout.setContentsMargins(0, 0, 0, 0)
+        btn_remove = QPushButton("Remove from List")
+        btn_remove.clicked.connect(self._remove_prefix)
+        btn_delete = QPushButton("Delete Prefix from Disk")
+        btn_delete.setStyleSheet("color: #FF6666;")
+        btn_delete.clicked.connect(self._delete_prefix_disk)
+        danger_layout.addWidget(btn_remove)
+        danger_layout.addWidget(btn_delete)
+        danger_layout.addStretch()
+
+        form.addRow("Prefix path", self.bottle_prefix_display)
+        form.addRow("Bottle Name", self.bottle_name_edit)
+        form.addRow("Launcher exe", self._browsable(self.bottle_launcher_edit, dir=False))
+        form.addRow("Custom icon (PNG)", self._browsable(self.bottle_icon_edit, dir=False))
+        form.addRow(danger_row)
+
+        hint = QLabel("To edit a different bottle: close Settings, select it in the sidebar, then reopen Settings.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: rgba(255,255,255,0.5); font-size: 11px;")
+        form.addRow(hint)
+
+        return widget
+
+    def _reload_bottle_fields(self) -> None:
+        parent = self.parent()
+        if not parent or not hasattr(parent, "_get_bottle_data"):
+            return
+        if not hasattr(self, "bottle_name_edit"):
+            return
+        prefix_path = self.prefix_combo.currentText()
+        self.bottle_prefix_display.setText(prefix_path)
+        bottle = parent._get_bottle_data(prefix_path)
+        self.bottle_name_edit.setText(bottle.get("name", ""))
+        self.bottle_launcher_edit.setText(bottle.get("launcher_exe", ""))
+        self.bottle_icon_edit.setText(bottle.get("icon_path", ""))
+
     def _build_paths_tab(self) -> QWidget:
         widget = QWidget()
         form = QFormLayout(widget)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
+        # prefix_combo is kept as the internal data model (not shown in this tab)
         self.prefix_combo = QComboBox()
         self.prefix_combo.setEditable(True)
         self.prefix_combo.addItems(self.load_prefixes())
@@ -185,9 +245,7 @@ class SettingsDialog(QDialog):
         self.dxmt_dir_edit = QLineEdit(DEFAULT_DXMT_DIR)
         self.vkd3d_dir_edit = QLineEdit(DEFAULT_VKD3D_DIR)
         self.gptk_dir_edit = QLineEdit(DEFAULT_GPTK_DIR)
-        
 
-        form.addRow("Wine prefix", self._build_prefix_row(self.prefix_combo))
         form.addRow("DXVK source", self._browsable(self.dxvk_src_edit, dir=True))
         form.addRow("DXVK install (64-bit)", self._browsable(self.dxvk_install_edit, dir=True))
         form.addRow("DXVK install (32-bit)", self._browsable(self.dxvk_install32_edit, dir=True))
@@ -429,9 +487,9 @@ class SettingsDialog(QDialog):
             self.vkd3d_dir_edit.setText(parent.vkd3d_dir_edit.text())
         if hasattr(parent, "gptk_dir_edit"):
             self.gptk_dir_edit.setText(parent.gptk_dir_edit.text())
+        # Populate bottle tab for the currently active bottle
+        self._reload_bottle_fields()
 
-
-            
     def save_config_to_parent(self) -> None:
         parent = self.parent()
         if parent is None:
@@ -457,6 +515,19 @@ class SettingsDialog(QDialog):
             parent.vkd3d_dir_edit.setText(self.vkd3d_dir_edit.text())
         if hasattr(parent, "gptk_dir_edit"):
             parent.gptk_dir_edit.setText(self.gptk_dir_edit.text())
+        # Save per-bottle settings
+        if hasattr(parent, "_set_bottle_data") and hasattr(self, "bottle_name_edit"):
+            current_prefix = self.prefix_combo.currentText()
+            parent._set_bottle_data(
+                current_prefix,
+                name=self.bottle_name_edit.text().strip(),
+                launcher_exe=self.bottle_launcher_edit.text().strip(),
+                icon_path=self.bottle_icon_edit.text().strip(),
+            )
+            if hasattr(parent, "_sync_sidebar_prefix_buttons"):
+                parent._sync_sidebar_prefix_buttons()
+            if hasattr(parent, "_update_topbar_button"):
+                parent._update_topbar_button()
 
     def log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
@@ -1488,12 +1559,18 @@ class GameEntry:
     name: str
     install_dir_name: str
     library_root: Path
+    custom_exe: Optional[Path] = None  # set for manually-added library entries
+    cover_path: Optional[Path] = None  # custom cover image for manual entries
 
     @property
     def game_dir(self) -> Path:
+        if self.custom_exe is not None:
+            return self.custom_exe.parent
         return self.library_root / "steamapps" / "common" / self.install_dir_name
 
     def detect_exe(self) -> Optional[Path]:
+        if self.custom_exe is not None:
+            return self.custom_exe if self.custom_exe.exists() else None
         if not self.game_dir.exists():
             return None
 
@@ -1577,11 +1654,13 @@ class GameEntry:
         return None
 
     def display(self) -> str:
+        if self.custom_exe is not None:
+            return self.name
         return f"{self.name} [{self.appid}]"
 
     def to_game_model(self, startup_exe: Optional[Path] = None) -> GameModel:
         exe = startup_exe if startup_exe is not None else self.detect_exe()
-        launch_type = "steam" if bool(self.appid) else "direct_exe"
+        launch_type = "direct_exe" if self.custom_exe is not None else ("steam" if bool(self.appid) else "direct_exe")
         return GameModel(
             name=self.name,
             appid=self.appid,
@@ -1589,10 +1668,12 @@ class GameEntry:
             exe_path=exe,
             launcher_type=launch_type,
             preferred_backend=None,
-            required_components=("wine", "dxvk") if launch_type == "steam" else ("wine",),
+            required_components=("wine",),
         )
 
     def detect_exes(self) -> list[Path]:
+        if self.custom_exe is not None:
+            return [self.custom_exe] if self.custom_exe.exists() else []
         if not self.game_dir.exists():
             return []
 
@@ -1892,11 +1973,13 @@ class SteamScanner:
 
 
 class CreateBottleDialog(QDialog):
+    _BOTTLES_BASE = Path.home() / "Games" / "MacNCheese"
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Create a Bottle")
         self.setObjectName("LaunchDialog")
-        self.setFixedSize(480, 520)
+        self.setFixedSize(480, 460)
         self.setWindowOpacity(0.0)
         self._fade_anim = QPropertyAnimation(self, b"windowOpacity")
         self._fade_anim.setDuration(200)
@@ -1904,128 +1987,285 @@ class CreateBottleDialog(QDialog):
         self._fade_anim.setEndValue(1.0)
         self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._fade_anim.start()
-        
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(24)
-        
+        layout.setSpacing(20)
+
         title = QLabel("Create a Bottle")
         title.setObjectName("DialogTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        
+
         form_layout = QVBoxLayout()
-        form_layout.setSpacing(16)
-        
-              
+        form_layout.setSpacing(14)
+
+        # Name (required) — drives the path
         name_group = QVBoxLayout()
-        name_group.setSpacing(8)
-        name_lbl = QLabel("Bottle Name")
-        name_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 12px; font-weight: bold;")
+        name_group.setSpacing(6)
+        name_lbl = QLabel("Bottle Name  *")
+        name_lbl.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 12px; font-weight: bold;")
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("e.g. Cool Library")
+        self.name_edit.setPlaceholderText("e.g. My Games")
+        self.name_edit.textChanged.connect(self._on_name_changed)
         name_group.addWidget(name_lbl)
         name_group.addWidget(self.name_edit)
         form_layout.addLayout(name_group)
-        
-                     
+
+        # Auto-generated path (read-only)
         path_group = QVBoxLayout()
-        path_group.setSpacing(8)
-        path_lbl = QLabel("Bottle Prefix (Path)")
-        path_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 12px; font-weight: bold;")
-        
-        path_row = QHBoxLayout()
+        path_group.setSpacing(6)
+        path_lbl = QLabel("Prefix path (auto)")
+        path_lbl.setStyleSheet("color: rgba(255,255,255,0.4); font-size: 12px; font-weight: bold;")
         self.path_edit = QLineEdit()
-        self.path_edit.setText(str(Path.home() / "Games" / "MacNCheese"))
-        btn_browse = QPushButton("...")
-        btn_browse.setFixedSize(32, 32)
-        btn_browse.clicked.connect(self._browse_path)
-        path_row.addWidget(self.path_edit)
-        path_row.addWidget(btn_browse)
-        
+        self.path_edit.setReadOnly(True)
+        self.path_edit.setStyleSheet("color: rgba(255,255,255,0.45);")
+        self.path_edit.setText(str(self._BOTTLES_BASE))
         path_group.addWidget(path_lbl)
-        path_group.addLayout(path_row)
+        path_group.addWidget(self.path_edit)
         form_layout.addLayout(path_group)
-        
-                        
+
+        # Error label (hidden by default)
+        self._error_lbl = QLabel("")
+        self._error_lbl.setStyleSheet("color: #FF6666; font-size: 12px;")
+        self._error_lbl.setVisible(False)
+        form_layout.addWidget(self._error_lbl)
+
+        # Installer exe (optional)
         exe_group = QVBoxLayout()
-        exe_group.setSpacing(8)
+        exe_group.setSpacing(6)
         exe_lbl = QLabel("Installer .exe (Optional)")
-        exe_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 12px; font-weight: bold;")
-        
+        exe_lbl.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 12px; font-weight: bold;")
         exe_row = QHBoxLayout()
         self.exe_edit = QLineEdit()
-        self.exe_edit.setPlaceholderText("Select setup.exe or similar...")
+        self.exe_edit.setPlaceholderText("Select setup.exe or similar…")
         btn_browse_exe = QPushButton("...")
         btn_browse_exe.setFixedSize(32, 32)
         btn_browse_exe.clicked.connect(self._browse_exe)
         exe_row.addWidget(self.exe_edit)
         exe_row.addWidget(btn_browse_exe)
-        
         exe_group.addWidget(exe_lbl)
         exe_group.addLayout(exe_row)
         form_layout.addLayout(exe_group)
-        
-                         
-        win_group = QVBoxLayout()
-        win_group.setSpacing(8)
-        win_lbl = QLabel("Windows Version")
-        win_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 12px; font-weight: bold;")
-        self.win_combo = QComboBox()
-        for v in ["Windows 10", "Windows 11", "Windows 7", "Windows 8.1"]:
-            self.win_combo.addItem(v)
-        win_group.addWidget(win_lbl)
-        win_group.addWidget(self.win_combo)
-        form_layout.addLayout(win_group)
-        
-               
-        icons_group = QVBoxLayout()
-        icons_group.setSpacing(8)
-        icons_lbl = QLabel("Platform")
-        icons_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 12px; font-weight: bold;")
-        
-        icons_row = QHBoxLayout()
-        self.icon_group = QButtonGroup(self)
-        self.icon_group.setExclusive(True)
-        
-        for i, icon_text in enumerate(["+", "📦", "E", "EA", "U"]):
-            btn = QPushButton(icon_text)
-            btn.setObjectName("IconSelectorBtn")
-            btn.setCheckable(True)
-            btn.setFixedSize(48, 48)
-            btn.setStyleSheet("font-size: 20px;" if i < 2 else "font-size: 16px; font-weight: bold;")
-            if i == 0:
-                btn.setChecked(True)
-            self.icon_group.addButton(btn)
-            icons_row.addWidget(btn)
-            
-        icons_row.addStretch()
-        icons_group.addWidget(icons_lbl)
-        icons_group.addLayout(icons_row)
-        form_layout.addLayout(icons_group)
-        
+
         layout.addLayout(form_layout)
         layout.addStretch()
-        
-                       
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        install_btn = QPushButton("↓ Install")
-        install_btn.setObjectName("InstallBtn")
-        install_btn.clicked.connect(self.accept)
-        btn_row.addWidget(install_btn)
+        self._install_btn = QPushButton("↓ Create")
+        self._install_btn.setObjectName("InstallBtn")
+        self._install_btn.clicked.connect(self._validate_and_accept)
+        btn_row.addWidget(self._install_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-    def _browse_path(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Prefix Directory", self.path_edit.text())
-        if d:
-            self.path_edit.setText(d)
+    def _slug(self, name: str) -> str:
+        """Convert a display name to a safe folder name."""
+        slug = re.sub(r"[^\w\- ]", "", name.strip())
+        slug = re.sub(r"\s+", "_", slug)
+        return slug
+
+    def _on_name_changed(self, text: str) -> None:
+        slug = self._slug(text)
+        if slug:
+            self.path_edit.setText(str(self._BOTTLES_BASE / slug))
+        else:
+            self.path_edit.setText(str(self._BOTTLES_BASE))
+        self._error_lbl.setVisible(False)
+
+    def _validate_and_accept(self) -> None:
+        name = self.name_edit.text().strip()
+        if not name:
+            self._error_lbl.setText("Bottle name is required.")
+            self._error_lbl.setVisible(True)
+            return
+
+        slug = self._slug(name)
+        target_path = str(self._BOTTLES_BASE / slug)
+
+        # Check uniqueness against existing prefixes
+        parent = self.parent()
+        if parent and hasattr(parent, "prefix_combo"):
+            existing = [
+                str(Path(parent.prefix_combo.itemText(i)).expanduser().resolve())
+                for i in range(parent.prefix_combo.count())
+                if parent.prefix_combo.itemText(i)
+            ]
+            if str(Path(target_path).expanduser().resolve()) in existing:
+                self._error_lbl.setText(f"A bottle named '{name}' already exists.")
+                self._error_lbl.setVisible(True)
+                return
+
+        self.path_edit.setText(target_path)
+        self.accept()
 
     def _browse_exe(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select Installer Executable", str(Path.home()), "Executables (*.exe *.bat *.msi);;All Files (*)")
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Select Installer Executable", str(Path.home()),
+            "Executables (*.exe *.bat *.msi);;All Files (*)"
+        )
         if f:
             self.exe_edit.setText(f)
+
+
+class AddGameDialog(QDialog):
+    def __init__(self, drive_c: Optional[Path] = None, parent=None):
+        super().__init__(parent)
+        self._drive_c = drive_c
+        self.setWindowTitle("Add Game")
+        self.setObjectName("LaunchDialog")
+        self.setFixedSize(500, 420)
+        self.setWindowOpacity(0.0)
+        self._fade_anim = QPropertyAnimation(self, b"windowOpacity")
+        self._fade_anim.setDuration(200)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._fade_anim.start()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(32, 32, 32, 28)
+        layout.setSpacing(0)
+
+        title = QLabel("Add Game")
+        title.setObjectName("DialogTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        layout.addSpacing(20)
+
+        # Cover image preview + browse
+        cover_row = QHBoxLayout()
+        cover_row.setSpacing(16)
+
+        self._cover_preview = QLabel()
+        self._cover_preview.setFixedSize(90, 135)
+        self._cover_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cover_preview.setStyleSheet(
+            "background: rgba(255,255,255,0.06); border-radius: 8px; color: rgba(255,255,255,0.3); font-size: 11px;"
+        )
+        self._cover_preview.setText("Cover\nImage")
+        self._cover_preview.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cover_preview.mousePressEvent = lambda _e: self._browse_cover()
+        cover_row.addWidget(self._cover_preview)
+
+        fields = QVBoxLayout()
+        fields.setSpacing(12)
+
+        # Name
+        name_group = QVBoxLayout()
+        name_group.setSpacing(4)
+        name_lbl = QLabel("Game Name  *")
+        name_lbl.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 12px; font-weight: bold;")
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g. The Witcher 3")
+        name_group.addWidget(name_lbl)
+        name_group.addWidget(self.name_edit)
+        fields.addLayout(name_group)
+
+        # Executable
+        exe_group = QVBoxLayout()
+        exe_group.setSpacing(4)
+        exe_lbl = QLabel("Game Executable  *")
+        exe_lbl.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 12px; font-weight: bold;")
+        exe_row = QHBoxLayout()
+        exe_row.setSpacing(6)
+        self.exe_edit = QLineEdit()
+        self.exe_edit.setPlaceholderText("Path to .exe inside drive_c…")
+        self.exe_edit.textChanged.connect(self._on_exe_changed)
+        btn_browse_exe = QPushButton("…")
+        btn_browse_exe.setFixedSize(32, 32)
+        btn_browse_exe.clicked.connect(self._browse_exe)
+        exe_row.addWidget(self.exe_edit)
+        exe_row.addWidget(btn_browse_exe)
+        exe_group.addWidget(exe_lbl)
+        exe_group.addLayout(exe_row)
+        fields.addLayout(exe_group)
+
+        # Cover path (hidden text field — set via click on preview)
+        self.cover_edit = QLineEdit()
+        self.cover_edit.setVisible(False)
+        self.cover_edit.textChanged.connect(self._update_cover_preview)
+        fields.addWidget(self.cover_edit)
+
+        cover_hint = QLabel("Click the image area to set a cover (PNG/JPG)")
+        cover_hint.setStyleSheet("color: rgba(255,255,255,0.35); font-size: 11px;")
+        fields.addWidget(cover_hint)
+
+        cover_row.addLayout(fields, 1)
+        layout.addLayout(cover_row)
+        layout.addSpacing(12)
+
+        self._error_lbl = QLabel("")
+        self._error_lbl.setStyleSheet("color: #FF6666; font-size: 12px;")
+        self._error_lbl.setVisible(False)
+        layout.addWidget(self._error_lbl)
+
+        layout.addStretch()
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        add_btn = QPushButton("Add Game")
+        add_btn.setObjectName("InstallBtn")
+        add_btn.setDefault(True)
+        add_btn.clicked.connect(self._validate_and_accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(add_btn)
+        layout.addLayout(btn_row)
+
+    def _browse_exe(self) -> None:
+        start = str(self._drive_c) if self._drive_c and self._drive_c.exists() else str(Path.home())
+        f, _ = QFileDialog.getOpenFileName(self, "Select Game Executable", start,
+                                           "Executables (*.exe);;All Files (*)")
+        if f:
+            self.exe_edit.setText(f)
+
+    def _browse_cover(self) -> None:
+        f, _ = QFileDialog.getOpenFileName(self, "Select Cover Image", str(Path.home()),
+                                           "Images (*.png *.jpg *.jpeg *.webp);;All Files (*)")
+        if f:
+            self.cover_edit.setText(f)
+
+    def _on_exe_changed(self, text: str) -> None:
+        if not self.name_edit.text().strip() and text:
+            self.name_edit.setText(Path(text).stem)
+        self._error_lbl.setVisible(False)
+
+    def _update_cover_preview(self, path: str) -> None:
+        if path and Path(path).exists():
+            pix = QPixmap(path)
+            if not pix.isNull():
+                scaled = pix.scaled(90, 135, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                    Qt.TransformationMode.SmoothTransformation)
+                x = max(0, (scaled.width() - 90) // 2)
+                y = max(0, (scaled.height() - 135) // 2)
+                self._cover_preview.setPixmap(scaled.copy(x, y, 90, 135))
+                self._cover_preview.setStyleSheet("border-radius: 8px;")
+                return
+        self._cover_preview.setPixmap(QPixmap())
+        self._cover_preview.setText("Cover\nImage")
+        self._cover_preview.setStyleSheet(
+            "background: rgba(255,255,255,0.06); border-radius: 8px; color: rgba(255,255,255,0.3); font-size: 11px;"
+        )
+
+    def _validate_and_accept(self) -> None:
+        name = self.name_edit.text().strip()
+        exe = self.exe_edit.text().strip()
+        if not name:
+            self._error_lbl.setText("Game name is required.")
+            self._error_lbl.setVisible(True)
+            return
+        if not exe:
+            self._error_lbl.setText("Executable path is required.")
+            self._error_lbl.setVisible(True)
+            return
+        if not Path(exe).exists():
+            self._error_lbl.setText("Executable not found at that path.")
+            self._error_lbl.setVisible(True)
+            return
+        self.accept()
 
 
 class GameLaunchDialog(QDialog):
@@ -2262,11 +2502,12 @@ class MainWindow(QMainWindow):
         self.vkd3d_dir_edit = self.settings.vkd3d_dir_edit
         self.gptk_dir_edit = self.settings.gptk_dir_edit
 
-        self._cover_cache: dict[str, bytes] = {}      
-        self._cover_failed: set[str] = set()            
-        self._active_fetchers: list[CoverFetcher] = [] 
+        self._cover_cache: dict[str, bytes] = {}
+        self._cover_failed: set[str] = set()
+        self._active_fetchers: list[CoverFetcher] = []
         self._scanner_worker: Optional[LibraryScannerWorker] = None
         self._game_card_cache: dict[str, QWidget] = {}
+        self._exe_icon_cache: dict[str, Optional[QPixmap]] = {}
 
         self.component_registry = ComponentRegistry()
         self.backend_registry = BackendRegistry()
@@ -2288,15 +2529,99 @@ class MainWindow(QMainWindow):
             try:
                 data = json.loads(self.user_settings_path.read_text())
                 self.skip_update_check = data.get("skip_update_check", False)
+                last_prefix = data.get("active_prefix", "")
+                if last_prefix:
+                    items = [self.prefix_combo.itemText(i) for i in range(self.prefix_combo.count())]
+                    if last_prefix in items:
+                        self.prefix_combo.setCurrentText(last_prefix)
             except Exception:
                 pass
 
     def save_user_settings(self) -> None:
         try:
-            data = {"skip_update_check": self.skip_update_check}
+            data = {
+                "skip_update_check": self.skip_update_check,
+                "active_prefix": self.prefix_combo.currentText(),
+            }
             self.user_settings_path.write_text(json.dumps(data))
         except Exception:
             pass
+
+    # ── Per-bottle config ─────────────────────────────────────────────────────
+
+    @property
+    def _bottles_config_path(self) -> Path:
+        return Path.home() / ".macncheese_bottles.json"
+
+    def _load_bottles_config(self) -> dict:
+        try:
+            if self._bottles_config_path.exists():
+                return json.loads(self._bottles_config_path.read_text())
+        except Exception:
+            pass
+        return {}
+
+    def _save_bottles_config(self, data: dict) -> None:
+        try:
+            self._bottles_config_path.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
+
+    def _get_manual_games(self, prefix_path: str) -> list["GameEntry"]:
+        bottle = self._get_bottle_data(prefix_path)
+        result = []
+        for entry in bottle.get("manual_games", []):
+            name = entry.get("name", "")
+            exe_str = entry.get("exe", "")
+            if not name or not exe_str:
+                continue
+            uid = f"custom_{abs(hash(exe_str)) % 10_000_000}"
+            cover_str = entry.get("cover_path", "")
+            cover_path = Path(cover_str) if cover_str else None
+            result.append(GameEntry(
+                appid=uid,
+                name=name,
+                install_dir_name="",
+                library_root=Path(exe_str).parent,
+                custom_exe=Path(exe_str),
+                cover_path=cover_path,
+            ))
+        return result
+
+    def _add_manual_game(self, prefix_path: str, name: str, exe_path: Path, cover_path: Optional[Path] = None) -> None:
+        bottle = self._get_bottle_data(prefix_path)
+        manual: list = bottle.get("manual_games", [])
+        if any(m.get("exe") == str(exe_path) for m in manual):
+            return
+        entry: dict = {"name": name, "exe": str(exe_path)}
+        if cover_path:
+            entry["cover_path"] = str(cover_path)
+        manual = list(manual) + [entry]
+        self._set_bottle_data(prefix_path, manual_games=manual)
+
+    def _get_bottle_data(self, prefix_path: str) -> dict:
+        if not prefix_path:
+            return {}
+        try:
+            key = str(Path(prefix_path).expanduser().resolve())
+        except Exception:
+            key = prefix_path
+        return self._load_bottles_config().get(key, {})
+
+    def _set_bottle_data(self, prefix_path: str, **kwargs) -> None:
+        if not prefix_path:
+            return
+        try:
+            key = str(Path(prefix_path).expanduser().resolve())
+        except Exception:
+            key = prefix_path
+        config = self._load_bottles_config()
+        existing = config.get(key, {})
+        existing.update({k: v for k, v in kwargs.items() if v is not None})
+        config[key] = existing
+        self._save_bottles_config(config)
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     def startup_update_check(self):
         if not self.skip_update_check:
@@ -2551,17 +2876,141 @@ class MainWindow(QMainWindow):
         return True
 
     def _build_menu(self) -> None:
+        mb = self.menuBar()
+
+        # File menu — rebuilt eagerly (no aboutToShow so it's never empty on macOS).
+        # The prefs action has PreferencesRole so Qt auto-moves it to the app menu (Cmd+,).
+        # Exit is always the last item, keeping the menu non-empty after Qt pulls prefs out.
+        self._file_menu = mb.addMenu("File")
+        prefs_action = QAction("Settings…", self)
+        prefs_action.setMenuRole(QAction.MenuRole.PreferencesRole)
+        prefs_action.setShortcut("Ctrl+,")
+        prefs_action.triggered.connect(self.settings.show)
+        self._file_menu.addAction(prefs_action)
+        self._file_exit_action = QAction("Exit", self)
+        self._file_exit_action.triggered.connect(self.close)
+        self._file_menu.addAction(self._file_exit_action)
+        # Initial population — also called from _sync_sidebar_prefix_buttons and _on_scan_finished
+        self._rebuild_file_menu()
+
+        # Wine menu
+        wine_menu = mb.addMenu("Wine")
+
+        launch_action = QAction("Launch", self)
+        launch_action.triggered.connect(self._launch_topbar_exe)
+        wine_menu.addAction(launch_action)
+
+        wine_menu.addSeparator()
+
+        init_prefix_action = QAction("Init Prefix", self)
+        init_prefix_action.triggered.connect(self.init_prefix)
+        wine_menu.addAction(init_prefix_action)
+
+        clean_prefix_action = QAction("Clean Prefix (wineboot -u)", self)
+        clean_prefix_action.triggered.connect(self.clean_prefix)
+        wine_menu.addAction(clean_prefix_action)
+
+        kill_wine_action = QAction("Kill Wineserver", self)
+        kill_wine_action.triggered.connect(self.kill_wineserver)
+        wine_menu.addAction(kill_wine_action)
+
+        # Help menu
+        help_menu = mb.addMenu("Help")
+
         check_updates_action = QAction("Check for Updates", self)
         check_updates_action.triggered.connect(self.check_for_updates)
-        self.menuBar().addAction(check_updates_action)
+        help_menu.addAction(check_updates_action)
 
-        settings_action = QAction("Settings", self)
-        settings_action.triggered.connect(self.settings.show)
-        self.menuBar().addAction(settings_action)
+    def _rebuild_file_menu(self) -> None:
+        if not hasattr(self, "_file_menu") or not hasattr(self, "_file_exit_action"):
+            return
 
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        self.menuBar().addAction(exit_action)
+        # Remove all actions except the persistent ones (prefs + exit)
+        # We'll re-insert bottle submenus before the exit action.
+        for action in list(self._file_menu.actions()):
+            if action is not self._file_exit_action and action.menuRole() != QAction.MenuRole.PreferencesRole:
+                self._file_menu.removeAction(action)
+
+        # Collect unique paths: DEFAULT_PREFIX first, then extras
+        all_paths: list[str] = [DEFAULT_PREFIX]
+        seen: set[str] = {str(Path(DEFAULT_PREFIX).expanduser().resolve())}
+        for i in range(self.prefix_combo.count()):
+            path = self.prefix_combo.itemText(i)
+            if not path:
+                continue
+            try:
+                resolved = str(Path(path).expanduser().resolve())
+            except Exception:
+                resolved = path
+            if resolved not in seen:
+                seen.add(resolved)
+                all_paths.append(path)
+
+        active_resolved = str(self.prefix_path.resolve()) if hasattr(self, "prefix_path") else ""
+
+        for path in all_paths:
+            bottle_data = self._get_bottle_data(path)
+            is_default = str(Path(path).expanduser().resolve()) == str(Path(DEFAULT_PREFIX).expanduser().resolve())
+            default_name = "Steam" if is_default else (Path(path).name or "Bottle")
+            display_name = bottle_data.get("name") or default_name
+
+            bottle_menu = QMenu(display_name, self)
+
+            # Games: only show for the currently active bottle (avoids slow FS scan for others)
+            try:
+                is_active = str(Path(path).expanduser().resolve()) == active_resolved
+            except Exception:
+                is_active = False
+
+            games = self.games if is_active else []
+
+            if games:
+                for game in games[:40]:
+                    game_action = QAction(game.name, self)
+                    game_action.triggered.connect(
+                        lambda _, g=game, p=path: self._launch_game_from_menu(g, p)
+                    )
+                    bottle_menu.addAction(game_action)
+                bottle_menu.addSeparator()
+            else:
+                if not is_active:
+                    switch_action = QAction("Switch to this bottle", self)
+                    switch_action.triggered.connect(lambda _, p=path: self._switch_to_bottle(p))
+                    bottle_menu.addAction(switch_action)
+                    bottle_menu.addSeparator()
+
+            settings_action = QAction("Bottle Settings", self)
+            settings_action.triggered.connect(lambda _, p=path: self._open_bottle_settings_for(p))
+            bottle_menu.addAction(settings_action)
+
+            finder_action = QAction("Open Prefix in Finder", self)
+            finder_action.triggered.connect(lambda _, p=path: self._open_prefix_in_finder_path(p))
+            bottle_menu.addAction(finder_action)
+
+            self._file_menu.insertMenu(self._file_exit_action, bottle_menu)
+
+        self._file_menu.insertSeparator(self._file_exit_action)
+
+    def _launch_game_from_menu(self, game: "GameEntry", prefix_path: str) -> None:
+        if self.prefix_combo.currentText() != prefix_path:
+            self.prefix_combo.setCurrentText(prefix_path)
+        self.launch_selected_game(game)
+
+    def _open_bottle_settings_for(self, prefix_path: str) -> None:
+        self.prefix_combo.setCurrentText(prefix_path)
+        self.settings.load_config_from_parent()
+        self.settings._tabs.setCurrentIndex(0)  # Bottle tab is first
+        self.settings.show()
+
+    def _open_prefix_in_finder_path(self, path: str) -> None:
+        p = Path(path).expanduser()
+        if not p.exists():
+            QMessageBox.warning(self, APP_NAME, f"Prefix path does not exist:\n{p}")
+            return
+        subprocess.Popen(["open", str(p)])
+
+    def _open_prefix_in_finder(self) -> None:
+        self._open_prefix_in_finder_path(self.prefix_combo.currentText() or DEFAULT_PREFIX)
 
     def _build_steam_landing_view(self) -> None:
         self.steam_view = QWidget()
@@ -2593,12 +3042,6 @@ class MainWindow(QMainWindow):
         self.btn_install_steam.setFixedWidth(160)
         self.btn_install_steam.clicked.connect(self.unified_steam_action)
         launch_row.addWidget(self.btn_install_steam)
-
-        btn_play_icon = QPushButton("▶")
-        btn_play_icon.setObjectName("PlayBtn")
-        btn_play_icon.setFixedSize(40, 36)
-        btn_play_icon.clicked.connect(self.unified_steam_action)
-        launch_row.addWidget(btn_play_icon)
 
         steam_layout.addLayout(launch_row)
         self.stacked_widget.addWidget(self.steam_view)
@@ -2677,11 +3120,10 @@ class MainWindow(QMainWindow):
 
         topbar_layout.addSpacing(32)
 
-        self.btn_top_launch_steam = QPushButton(" Steam")
+        self.btn_top_launch_steam = QPushButton("Open Steam")
         self.btn_top_launch_steam.setObjectName("TopBarBtn")
-        self.btn_top_launch_steam.setToolTip("Launch Steam")
-        self._set_button_icon_from_asset(self.btn_top_launch_steam, "Steam.png", size=20)
-        self.btn_top_launch_steam.clicked.connect(self.launch_steam)
+        self.btn_top_launch_steam.setToolTip("Launch the bottle's configured launcher")
+        self.btn_top_launch_steam.clicked.connect(self._launch_topbar_exe)
         topbar_layout.addWidget(self.btn_top_launch_steam)
 
         self.search_bar = QLineEdit()
@@ -2771,39 +3213,31 @@ class MainWindow(QMainWindow):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(8)
 
-        icon_lbl = QLabel("🎮")
+        icon_lbl = QLabel("📦")
         icon_lbl.setStyleSheet("font-size: 64px; color: rgba(255, 255, 255, 0.4);")
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(icon_lbl)
 
         layout.addSpacing(16)
 
-        title_lbl = QLabel("No Libraries found")
+        title_lbl = QLabel("No games found")
         title_lbl.setStyleSheet("font-size: 24px; font-weight: bold; color: #FFFFFF;")
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_lbl)
 
-        sub_lbl1 = QLabel("No Steam libraries found.")
-        sub_lbl1.setStyleSheet("font-size: 14px; color: rgba(255, 255, 255, 0.7);")
-        sub_lbl1.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(sub_lbl1)
-
-        sub_lbl2 = QLabel("Please add a Steam library folder.")
-        sub_lbl2.setStyleSheet("font-size: 14px; color: rgba(255, 255, 255, 0.7);")
-        sub_lbl2.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(sub_lbl2)
+        sub_lbl = QLabel("Run an installer to add games to this bottle.")
+        sub_lbl.setStyleSheet("font-size: 14px; color: rgba(255, 255, 255, 0.6);")
+        sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(sub_lbl)
 
         layout.addSpacing(24)
 
-        btn_row = QHBoxLayout()
-        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.btn_add_library = QPushButton("+ Add Library")
-        self.btn_add_library.setStyleSheet("""
+        _btn_style = """
             QPushButton {
                 background-color: rgba(255, 255, 255, 0.1);
                 border: 1px solid rgba(255, 255, 255, 0.2);
                 border-radius: 12px;
-                padding: 10px 20px;
+                padding: 10px 24px;
                 color: #FFFFFF;
                 font-size: 14px;
                 font-weight: bold;
@@ -2812,9 +3246,38 @@ class MainWindow(QMainWindow):
                 background-color: rgba(255, 255, 255, 0.15);
                 border: 1px solid rgba(255, 255, 255, 0.3);
             }
+        """
+
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_row.setSpacing(12)
+
+        self.btn_empty_launch = QPushButton("Launch")
+        self.btn_empty_launch.setStyleSheet(_btn_style)
+        self.btn_empty_launch.clicked.connect(self._launch_topbar_exe)
+        self.btn_empty_launch.setVisible(False)
+        btn_row.addWidget(self.btn_empty_launch)
+
+        self.btn_open_installer = QPushButton("Open Installer")
+        self.btn_open_installer.setStyleSheet(_btn_style)
+        self.btn_open_installer.clicked.connect(self._open_installer_for_current_bottle)
+        btn_row.addWidget(self.btn_open_installer)
+
+        self.btn_empty_add_game = QPushButton()
+        self.btn_empty_add_game.setToolTip("Add game to library")
+        self.btn_empty_add_game.setFixedSize(36, 36)
+        self.btn_empty_add_game.setStyleSheet("""
+            QPushButton { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);
+                          border-radius: 8px; }
+            QPushButton:hover { background: rgba(255,255,255,0.15); }
         """)
-        self.btn_add_library.clicked.connect(self._open_create_bottle_dialog)
-        btn_row.addWidget(self.btn_add_library)
+        self.btn_empty_add_game.clicked.connect(self._add_game_to_current_bottle)
+        self._set_button_icon_from_asset(self.btn_empty_add_game, "Add.png", size=18)
+        btn_row.addWidget(self.btn_empty_add_game)
+
+        # Keep a hidden reference so old code that references btn_add_library doesn't crash
+        self.btn_add_library = self.btn_open_installer
+
         layout.addLayout(btn_row)
         self.stacked_widget.addWidget(self.empty_view)
 
@@ -2845,14 +3308,11 @@ class MainWindow(QMainWindow):
             if hasattr(self.settings, "_save_current_prefixes"):
                 self.settings._save_current_prefixes()
             
+            # Save per-bottle config from dialog
+            name = dlg.name_edit.text().strip() or Path(path_str).name or "Bottle"
+            self._set_bottle_data(str(p), name=name)
+
             self._sync_sidebar_prefix_buttons()
-
-            name = dlg.name_edit.text().strip() or "Bottle"
-            icon_text = "📦"
-            if hasattr(dlg, "icon_group") and dlg.icon_group.checkedButton():
-                icon_text = dlg.icon_group.checkedButton().text()
-
-            # Removed inline sidebar addition as it's now handled by _sync_sidebar_prefix_buttons()
             
             missing = self.missing_core_tools()
             if missing:
@@ -2881,6 +3341,116 @@ class MainWindow(QMainWindow):
             
             self.set_status(f"Created bottle '{name}' at {p}")
             self.scan_games()
+
+    def _open_installer_for_current_bottle(self) -> None:
+        exe, _ = QFileDialog.getOpenFileName(
+            self, "Select Installer", str(Path.home()),
+            "Executables (*.exe *.msi *.bat);;All Files (*)"
+        )
+        if not exe:
+            return
+        wine = self.ensure_wine()
+        if not wine:
+            return
+        env = self.wine_env()
+        prefix = self.prefix_combo.currentText()
+        resolved = str(Path(prefix).expanduser().resolve())
+        resolved_default = str(Path(DEFAULT_PREFIX).expanduser().resolve())
+        if resolved != resolved_default:
+            self._post_install_prefix = prefix
+        self.run_commands([[wine, exe]], env=env)
+
+    def _refresh_empty_view_buttons(self) -> None:
+        if not hasattr(self, "btn_empty_launch"):
+            return
+        prefix = self.prefix_combo.currentText()
+        resolved_current = str(Path(prefix).expanduser().resolve())
+        resolved_default = str(Path(DEFAULT_PREFIX).expanduser().resolve())
+        is_default = resolved_current == resolved_default
+
+        bottle = self._get_bottle_data(prefix)
+        launcher_exe = bottle.get("launcher_exe", "").strip()
+        has_launcher = bool(launcher_exe and Path(launcher_exe).exists())
+        self.btn_empty_launch.setVisible(has_launcher)
+        if hasattr(self, "btn_empty_add_game"):
+            self.btn_empty_add_game.setVisible(not is_default)
+
+    def _add_game_to_current_bottle(self) -> None:
+        prefix = self.prefix_combo.currentText()
+        drive_c = Path(prefix).expanduser() / "drive_c"
+        dlg = AddGameDialog(drive_c if drive_c.exists() else None, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = dlg.name_edit.text().strip()
+        exe_path = Path(dlg.exe_edit.text().strip())
+        cover_str = dlg.cover_edit.text().strip()
+        cover_path = Path(cover_str) if cover_str else None
+        self._add_manual_game(prefix, name, exe_path, cover_path)
+        self.scan_games()
+
+    def _show_post_install_exe_picker(self, prefix: str) -> None:
+        drive_c = Path(prefix).expanduser() / "drive_c"
+        if not drive_c.exists():
+            return
+
+        exes: list[Path] = []
+        skip_dirs = {"windows"}
+        try:
+            for p in sorted(drive_c.rglob("*.exe")):
+                parts_lower = [part.lower() for part in p.relative_to(drive_c).parts]
+                if any(s in parts_lower for s in skip_dirs):
+                    continue
+                exes.append(p)
+        except Exception:
+            pass
+
+        if not exes:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select Launcher Executable")
+        dlg.setFixedSize(520, 380)
+        dlg.setObjectName("BottleDialog")
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(20, 20, 20, 16)
+        layout.setSpacing(12)
+
+        lbl = QLabel("Select the main executable to use as this bottle's launcher:")
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        list_widget = QListWidget()
+        list_widget.setAlternatingRowColors(False)
+        for exe_path in exes:
+            try:
+                label = str(exe_path.relative_to(drive_c))
+            except Exception:
+                label = exe_path.name
+            item = QListWidgetItem(label)
+            item.setData(256, exe_path)
+            list_widget.addItem(item)
+        layout.addWidget(list_widget, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        skip_btn = QPushButton("Skip")
+        skip_btn.clicked.connect(dlg.reject)
+        set_btn = QPushButton("Set as Launcher")
+        set_btn.setDefault(True)
+        set_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(skip_btn)
+        btn_row.addWidget(set_btn)
+        layout.addLayout(btn_row)
+
+        list_widget.itemDoubleClicked.connect(lambda _: dlg.accept())
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            item = list_widget.currentItem()
+            if item:
+                chosen: Path = item.data(256)
+                self._set_bottle_data(prefix, launcher_exe=str(chosen))
+                self._update_topbar_button()
+                self._refresh_empty_view_buttons()
 
     def remove_sidebar_button_for_prefix(self, path: str) -> None:
         for i in range(self._sidebar_containers_layout.count()):
@@ -2938,7 +3508,7 @@ class MainWindow(QMainWindow):
         text_lbl = QLabel(name)
         text_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         text_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        text_lbl.setStyleSheet("font-size: 9px; color: inherit; background: transparent;")
+        text_lbl.setStyleSheet("font-size: 9px; color: rgba(255,255,255,0.75); background: transparent;")
 
         btn_layout.addWidget(icon_lbl)
         btn_layout.addWidget(text_lbl)
@@ -2957,25 +3527,48 @@ class MainWindow(QMainWindow):
                 self.sidebar_group.removeButton(w)
                 w.deleteLater()
 
-        # Add "Steam" button (as a general Home view for the active prefix)
-        steam_icon = Path(__file__).resolve().with_name("Steam.png")
-        self._steam_sidebar_btn = self._add_sidebar_container("Steam", steam_icon)
+        # Steam button represents DEFAULT_PREFIX — use its bottle config for name/icon
+        default_bottle = self._get_bottle_data(DEFAULT_PREFIX)
+        steam_display_name = default_bottle.get("name") or "Steam"
+        steam_icon_str = default_bottle.get("icon_path", "")
+        if steam_icon_str and Path(steam_icon_str).exists():
+            steam_icon: Optional[Path] = Path(steam_icon_str)
+        else:
+            candidate = Path(__file__).resolve().with_name("Steam.png")
+            steam_icon = candidate if candidate.exists() else None
+        self._steam_sidebar_btn = self._add_sidebar_container(steam_display_name, steam_icon)
         self._steam_sidebar_btn.clicked.connect(self._on_steam_container_clicked)
-        
-        # Add a button for each prefix in the combo
+
+        # Add a button for each prefix in the combo, skipping DEFAULT_PREFIX
+        # (the Steam button already represents it).
+        default_prefix_resolved = str(Path(DEFAULT_PREFIX).expanduser().resolve())
         current_path = self.prefix_combo.currentText()
+        seen_paths: set[str] = set()
         for i in range(self.prefix_combo.count()):
             path = self.prefix_combo.itemText(i)
-            if not path: continue
-            
-            name = Path(path).name or "Bottle"
-            btn = self._add_sidebar_container(name)
+            if not path:
+                continue
+            resolved = str(Path(path).expanduser().resolve())
+            if resolved == default_prefix_resolved:
+                continue
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+
+            # Use per-bottle config for name and icon
+            bottle_data = self._get_bottle_data(path)
+            display_name = bottle_data.get("name") or Path(path).name or "Bottle"
+            icon_str = bottle_data.get("icon_path", "")
+            icon_path: Optional[Path] = Path(icon_str) if icon_str and Path(icon_str).exists() else None
+
+            btn = self._add_sidebar_container(display_name, icon_path)
             btn._prefix_path = path
             btn.clicked.connect(lambda _, p=path: self._switch_to_bottle(p))
-            
+
             if path == current_path:
                 btn.setChecked(True)
 
+        self._rebuild_file_menu()
 
     def create_game_card(self, game: "GameEntry") -> "QWidget":
                                                                              
@@ -3030,7 +3623,43 @@ class MainWindow(QMainWindow):
             lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); color: #888; border-radius: 14px; padding: 10px;")
             lbl.setWordWrap(True)
 
-        if game.appid in self._cover_cache:
+        if game.custom_exe is not None:
+            # Manual game — use custom cover if provided, else extract icon from exe
+            if game.cover_path and game.cover_path.exists():
+                try:
+                    data = game.cover_path.read_bytes()
+                    _apply_pixmap(data)
+                except Exception:
+                    _apply_fallback()
+            else:
+                def _apply_exe_icon_or_initials(lbl: QLabel = cover_lbl) -> None:
+                    icon_pix = self._get_exe_icon(game.custom_exe) if game.custom_exe else None
+                    bg = QPixmap(150, 225)
+                    bg.fill(QColor(32, 32, 38))
+                    painter = QPainter(bg)
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    if icon_pix and not icon_pix.isNull():
+                        scaled_icon = icon_pix.scaled(
+                            96, 96,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        x = (150 - scaled_icon.width()) // 2
+                        y = (225 - scaled_icon.height()) // 2
+                        painter.drawPixmap(x, y, scaled_icon)
+                    else:
+                        initials = "".join(w[0].upper() for w in game.name.split()[:2]) or "?"
+                        font = painter.font()
+                        font.setPixelSize(48)
+                        font.setBold(True)
+                        painter.setFont(font)
+                        painter.setPen(QColor(255, 255, 255, 160))
+                        painter.drawText(bg.rect(), Qt.AlignmentFlag.AlignCenter, initials)
+                    painter.end()
+                    lbl.setPixmap(bg)
+                    lbl.setStyleSheet("border-radius: 14px;")
+                _apply_exe_icon_or_initials()
+        elif game.appid in self._cover_cache:
             _apply_pixmap(self._cover_cache[game.appid])
         elif game.appid in self._cover_failed:
             _apply_fallback()
@@ -3123,6 +3752,51 @@ class MainWindow(QMainWindow):
             lambda pos: self.show_game_context_menu(card, game, pos)
         )
 
+        return card
+
+    def _create_add_game_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("GameCard")
+        card.setFixedSize(150, 225)
+        card.setStyleSheet("""
+            #GameCard {
+                border-radius: 14px;
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px dashed rgba(255, 255, 255, 0.2);
+            }
+            #GameCard:hover {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px dashed rgba(255, 255, 255, 0.4);
+            }
+        """)
+        card._game_name = ""
+        layout = QVBoxLayout(card)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(6)
+
+        icon_lbl = QLabel()
+        add_asset = self._asset_path("Add.png")
+        if add_asset:
+            pix = QPixmap(str(add_asset)).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio,
+                                                  Qt.TransformationMode.SmoothTransformation)
+            if not pix.isNull():
+                icon_lbl.setPixmap(pix)
+            else:
+                icon_lbl.setText("+")
+                icon_lbl.setStyleSheet("font-size: 28px; color: rgba(255,255,255,0.5);")
+        else:
+            icon_lbl.setText("+")
+            icon_lbl.setStyleSheet("font-size: 28px; color: rgba(255,255,255,0.5);")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon_lbl)
+
+        lbl = QLabel("Add Game")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet("color: rgba(255,255,255,0.5); font-size: 12px;")
+        layout.addWidget(lbl)
+
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.mousePressEvent = lambda _e: self._add_game_to_current_bottle()
         return card
 
     def show_game_context_menu(self, card_widget, game: "GameEntry", pos: "QPoint"):
@@ -3497,6 +4171,13 @@ class MainWindow(QMainWindow):
                 self.run_commands([[wine, pending_exe]], env=run_env)
             else:
                 self.run_installer_action("init_prefix")
+
+        # After a custom-bottle installer finishes, offer to pick the launcher exe
+        post_prefix = getattr(self, "_post_install_prefix", None)
+        if ok and post_prefix:
+            self._post_install_prefix = None
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(800, lambda: self._show_post_install_exe_picker(post_prefix))
         elif ok and not pending_exe and getattr(self, "interactive_install_action", None) == "quick_setup":
              # If we just finished quick_setup but had no pending exe, maybe we should init prefix?
              # Actually, _open_create_bottle_dialog already initiated the action.
@@ -3901,6 +4582,29 @@ class MainWindow(QMainWindow):
         run_env.update(self.wine_env())
         self.run_commands([[wine, str(self.steam_setup), "/S"]], env=run_env)
 
+    def _launch_topbar_exe(self) -> None:
+        bottle = self._get_bottle_data(self.prefix_combo.currentText())
+        exe = bottle.get("launcher_exe", "").strip()
+        if exe:
+            exe_path = Path(exe)
+            if not exe_path.exists():
+                QMessageBox.warning(self, APP_NAME, f"Bottle launcher exe not found:\n{exe_path}")
+                return
+            wine = self.ensure_wine()
+            if not wine:
+                return
+            env = self.wine_env()
+            proc = QProcess(self)
+            qenv = QProcessEnvironment.systemEnvironment()
+            for k, v in env.items():
+                qenv.insert(k, v)
+            proc.setProcessEnvironment(qenv)
+            proc.setProgram(wine)
+            proc.setArguments([str(exe_path)])
+            proc.start()
+        else:
+            self.launch_steam()
+
     def launch_steam(self, backend: Optional[Backend] = None, game_model: Optional[GameModel] = None) -> None:
         wine = self.ensure_wine()
         if not wine:
@@ -4167,6 +4871,13 @@ class MainWindow(QMainWindow):
         if prefix != self.prefix_path:
             return
 
+        # Merge manually-added library entries
+        manual = self._get_manual_games(self.prefix_combo.currentText())
+        existing_ids = {g.appid for g in games}
+        for mg in manual:
+            if mg.appid not in existing_ids:
+                games.append(mg)
+
         if hasattr(self, "games") and self.games == games:
             return
 
@@ -4194,6 +4905,15 @@ class MainWindow(QMainWindow):
             self.games_flow_layout.addWidget(card)
             card.show()
 
+        resolved_current = str(Path(self.prefix_combo.currentText()).expanduser().resolve())
+        resolved_default = str(Path(DEFAULT_PREFIX).expanduser().resolve())
+        is_default_bottle = resolved_current == resolved_default
+
+        if games and not is_default_bottle:
+            add_card = self._create_add_game_card()
+            self.games_flow_layout.addWidget(add_card)
+            add_card.show()
+
         has_content = bool(games)
         self.btn_add_container.setVisible(True)
         if hasattr(self, "_steam_sidebar_btn") and self._steam_sidebar_btn:
@@ -4202,16 +4922,31 @@ class MainWindow(QMainWindow):
         if has_content:
             self.stacked_widget.setCurrentIndex(0)
         else:
+            self._refresh_empty_view_buttons()
             self.stacked_widget.setCurrentIndex(2)
 
+        self._rebuild_file_menu()
+
+        games_count = len([g for g in games if g.custom_exe is None])
+        manual_count = len([g for g in games if g.custom_exe is not None])
+        parts = []
+        if games_count:
+            parts.append(f"{games_count} Steam game(s)")
+        if manual_count:
+            parts.append(f"{manual_count} custom game(s)")
+        self.set_status(f"Found {', '.join(parts)}" if parts else "No games found")
         self.games_list.blockSignals(False)
-        self.set_status(f"Found {len(games)} installed game(s)")
 
     def _on_steam_container_clicked(self) -> None:
-        if self.games:
-            self.stacked_widget.setCurrentIndex(0)
+        # Always switch to the default prefix — scan_games will update the view
+        if self.prefix_combo.currentText() != DEFAULT_PREFIX:
+            self.prefix_combo.setCurrentText(DEFAULT_PREFIX)
         else:
-            self.stacked_widget.setCurrentIndex(1)
+            # Already on default prefix — just update the view immediately
+            if self.games:
+                self.stacked_widget.setCurrentIndex(0)
+            else:
+                self.stacked_widget.setCurrentIndex(1)
             
     def _switch_to_bottle(self, path: str) -> None:
         if self.prefix_combo.currentText() != path:
@@ -4225,7 +4960,173 @@ class MainWindow(QMainWindow):
             if w and getattr(w, "_prefix_path", None) == text:
                 w.setChecked(True)
                 break
+        self._update_topbar_button()
+        self._refresh_empty_view_buttons()
+        self.settings._reload_bottle_fields()
         self.scan_games()
+
+    def _update_topbar_button(self) -> None:
+        if not hasattr(self, "btn_top_launch_steam"):
+            return
+        bottle = self._get_bottle_data(self.prefix_combo.currentText())
+
+        # Determine launcher display name: exe stem → bottle name → "Steam"
+        launcher_exe = bottle.get("launcher_exe", "").strip()
+        if launcher_exe:
+            launcher_name = Path(launcher_exe).stem
+        else:
+            launcher_name = bottle.get("name", "").strip() or "Steam"
+        self.btn_top_launch_steam.setText(f"Open {launcher_name}")
+
+        # Icon: custom icon → fallback to Steam.png for default prefix → no icon
+        icon_str = bottle.get("icon_path", "").strip()
+        resolved_current = str(Path(self.prefix_combo.currentText()).expanduser().resolve())
+        resolved_default = str(Path(DEFAULT_PREFIX).expanduser().resolve())
+        new_icon = QIcon()
+        if icon_str and Path(icon_str).exists():
+            pix = QPixmap(icon_str)
+            if not pix.isNull():
+                new_icon = QIcon(pix.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio,
+                                            Qt.TransformationMode.SmoothTransformation))
+        elif resolved_current == resolved_default:
+            candidate = Path(__file__).resolve().with_name("Steam.png")
+            if candidate.exists():
+                pix = QPixmap(str(candidate))
+                if not pix.isNull():
+                    new_icon = QIcon(pix.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio,
+                                                Qt.TransformationMode.SmoothTransformation))
+        self.btn_top_launch_steam.setIconSize(QSize(20, 20))
+        self.btn_top_launch_steam.setIcon(new_icon)
+        self.btn_top_launch_steam.update()
+
+    def _get_exe_icon(self, exe_path: Path) -> Optional[QPixmap]:
+        """Extract the largest icon from a Windows PE exe. Returns a QPixmap or None."""
+        import struct
+        key = str(exe_path)
+        if key in self._exe_icon_cache:
+            return self._exe_icon_cache[key]
+        result: Optional[QPixmap] = None
+        try:
+            raw = exe_path.read_bytes()
+            if raw[:2] != b'MZ':
+                raise ValueError("not PE")
+            pe_off = struct.unpack_from('<I', raw, 0x3C)[0]
+            if raw[pe_off:pe_off+4] != b'PE\x00\x00':
+                raise ValueError("no PE sig")
+            num_sections = struct.unpack_from('<H', raw, pe_off+6)[0]
+            opt_size = struct.unpack_from('<H', raw, pe_off+20)[0]
+            opt_off = pe_off + 24
+            pe_magic = struct.unpack_from('<H', raw, opt_off)[0]
+            if pe_magic == 0x10b:
+                dd_off = opt_off + 96
+            elif pe_magic == 0x20b:
+                dd_off = opt_off + 112
+            else:
+                raise ValueError("unknown magic")
+            res_rva = struct.unpack_from('<I', raw, dd_off + 2*8)[0]
+            if res_rva == 0:
+                raise ValueError("no resources")
+            secs_off = pe_off + 24 + opt_size
+            res_raw = res_sec_rva = res_sec_raw = None
+            for i in range(num_sections):
+                s = secs_off + i*40
+                va = struct.unpack_from('<I', raw, s+12)[0]
+                vs = struct.unpack_from('<I', raw, s+16)[0]
+                ro = struct.unpack_from('<I', raw, s+20)[0]
+                if va <= res_rva < va + max(vs, 1):
+                    res_raw = ro + (res_rva - va)
+                    res_sec_rva = va
+                    res_sec_raw = ro
+                    break
+            if res_raw is None:
+                raise ValueError("res section not found")
+
+            def rva2off(rva: int) -> int:
+                return res_sec_raw + (rva - res_sec_rva)
+
+            def read_dir(off: int) -> list:
+                named = struct.unpack_from('<H', raw, off+12)[0]
+                ids = struct.unpack_from('<H', raw, off+14)[0]
+                out = []
+                for i in range(named + ids):
+                    e = off + 16 + i*8
+                    nid = struct.unpack_from('<I', raw, e)[0]
+                    doff = struct.unpack_from('<I', raw, e+4)[0]
+                    is_dir = bool(doff & 0x80000000)
+                    doff &= 0x7fffffff
+                    if not (nid & 0x80000000):
+                        out.append((nid, doff, is_dir))
+                return out
+
+            # Collect RT_ICON (3) raw DIB/PNG blobs by id
+            icon_blobs: dict[int, bytes] = {}
+            for tid, toff, tis_dir in read_dir(res_raw):
+                if tid == 3 and tis_dir:
+                    for iid, ioff, iis_dir in read_dir(res_raw + toff):
+                        if iis_dir:
+                            langs = read_dir(res_raw + ioff)
+                            if langs:
+                                _, loff, _ = langs[0]
+                                drva = struct.unpack_from('<I', raw, res_raw + loff)[0]
+                                dsz  = struct.unpack_from('<I', raw, res_raw + loff + 4)[0]
+                                icon_blobs[iid] = raw[rva2off(drva):rva2off(drva)+dsz]
+
+            # Find best icon via RT_GROUP_ICON (14)
+            best_blob: Optional[bytes] = None
+            for tid, toff, tis_dir in read_dir(res_raw):
+                if tid == 14 and tis_dir:
+                    for _, goff, gis_dir in read_dir(res_raw + toff):
+                        if gis_dir:
+                            langs = read_dir(res_raw + goff)
+                            if not langs:
+                                continue
+                            _, loff, _ = langs[0]
+                            grva = struct.unpack_from('<I', raw, res_raw + loff)[0]
+                            graw = rva2off(grva)
+                            count = struct.unpack_from('<H', raw, graw+4)[0]
+                            best_score = -1
+                            best_id = None
+                            for j in range(count):
+                                e = graw + 6 + j*14
+                                w = raw[e] or 256
+                                bc = struct.unpack_from('<H', raw, e+6)[0]
+                                iid = struct.unpack_from('<H', raw, e+12)[0]
+                                score = w * bc
+                                if score > best_score:
+                                    best_score = score
+                                    best_id = iid
+                            if best_id and best_id in icon_blobs:
+                                best_blob = icon_blobs[best_id]
+                                break
+                    if best_blob:
+                        break
+
+            if not best_blob:
+                # Fallback: just pick the largest blob
+                if icon_blobs:
+                    best_blob = max(icon_blobs.values(), key=len)
+
+            if best_blob:
+                pix = QPixmap()
+                if best_blob[:8] == b'\x89PNG\r\n\x1a\n':
+                    pix.loadFromData(best_blob)
+                else:
+                    # Wrap DIB in a minimal .ico container
+                    dib_w = abs(struct.unpack_from('<i', best_blob, 4)[0])
+                    dib_h = abs(struct.unpack_from('<i', best_blob, 8)[0]) // 2
+                    dib_bc = struct.unpack_from('<H', best_blob, 14)[0]
+                    wb = dib_w if dib_w < 256 else 0
+                    hb = dib_h if dib_h < 256 else 0
+                    ico_hdr = struct.pack('<HHH', 0, 1, 1)
+                    ico_entry = struct.pack('<BBBBHHI', wb, hb, 0, 0, 1, dib_bc, len(best_blob))
+                    ico_entry += struct.pack('<I', 22)  # 6 header + 16 entry
+                    pix.loadFromData(ico_hdr + ico_entry + best_blob, 'ICO')
+                if not pix.isNull():
+                    result = pix
+        except Exception:
+            pass
+        self._exe_icon_cache[key] = result
+        return result
 
     def selected_game(self) -> Optional[GameEntry]:
         item = self.games_list.currentItem()
@@ -4576,6 +5477,7 @@ class MainWindow(QMainWindow):
         self.game_process.start()
 
     def closeEvent(self, event) -> None:
+        self.save_user_settings()
         for proc in (self.game_process, self.steam_process):
             if proc and proc.state() != QProcess.ProcessState.NotRunning:
                 proc.kill()
