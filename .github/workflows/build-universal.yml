@@ -30,7 +30,7 @@ jobs:
         run: brew install create-dmg
 
       - name: Make build script executable
-        run: chmod +x scripts/build_dmg.sh
+        run: chmod +x .github/workflows/release.yml
 
       - name: Build Intel DMG
         run: |
