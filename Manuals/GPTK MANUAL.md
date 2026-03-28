@@ -140,6 +140,7 @@ Example Layout
 
 A correct layout looks like this:
 
+```text
 MacNCheese/
 ├── gptk/
 │   └── lib/
@@ -150,9 +151,7 @@ MacNCheese/
 │               ├── d3d12.dll
 │               ├── d3d12core.dll
 │               └── d3d10core.dll
-
-
-
+```
 
 ## Notes
 >GPTK backend needs the Windows DLLs, not only the .app bundle.
