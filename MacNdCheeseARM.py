@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 from __future__ import annotations
 
 import json
@@ -13,13 +13,13 @@ import time
 import urllib.request
 import webbrowser
 import getpass
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Any
-import AVFoundation as AV
 
 
-from PyQt6.QtGui import QAction, QPixmap, QPainter, QIcon
+from PyQt6.QtGui import QAction, QPixmap, QPainter, QIcon, QColor
 from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, pyqtSignal, QPoint, QRect, QSize, Qt, QEvent, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt6.QtWidgets import (
     QApplication,
@@ -54,6 +54,7 @@ from PyQt6.QtWidgets import (
     QLayout,
     QSizePolicy,
     QButtonGroup,
+    QGraphicsOpacityEffect,
 )
 
 class FlowLayout(QLayout):
@@ -184,6 +185,7 @@ class SettingsDialog(QDialog):
         self.dxmt_dir_edit = QLineEdit(DEFAULT_DXMT_DIR)
         self.vkd3d_dir_edit = QLineEdit(DEFAULT_VKD3D_DIR)
         self.gptk_dir_edit = QLineEdit(DEFAULT_GPTK_DIR)
+        
 
         form.addRow("Wine prefix", self._build_prefix_row(self.prefix_combo))
         form.addRow("DXVK source", self._browsable(self.dxvk_src_edit, dir=True))
@@ -297,11 +299,19 @@ class SettingsDialog(QDialog):
         self.install_tools_btn = QPushButton("Install Tools")
         self.install_wine_btn = QPushButton("Install Wine")
         self.install_mesa_btn = QPushButton("Install Mesa")
-        self.build_dxvk_btn = QPushButton("Install DXVK")
-        self.build_dxvk32_btn = QPushButton("Install DXVK")  # kept for compatibility
+        self.build_dxvk_btn = QPushButton("Install DXVK (64-bit)")
+        self.build_dxvk32_btn = QPushButton("Install DXVK (32-bit)")
         self.init_prefix_btn = QPushButton("Init Prefix")
+        self.clean_prefix_btn = QPushButton("Clean Prefix (wineboot -u)")
+        self.kill_wineserver_btn = QPushButton("Kill Wineserver (pkill)")
+        self.kill_wineserver_btn.setStyleSheet("color: #FF5555;")
+        self.unpatch_game_btn = QPushButton("Unpatch Game (remove DLLs)")
         self.install_steam_btn = QPushButton("Install Steam")
-        hint = QLabel("Installs Wine, downloads prebuilt DXVK, then installs Mesa.")
+        self.install_gptk_full_btn = QPushButton("Install GPTK FULL (Experimental)")
+        self.install_gptk_full_btn.setStyleSheet("color: #FFCC00;") 
+        self.install_d3dmetal3_btn = QPushButton("Install D3DMetal 3 (Prebuilt)")
+        self.install_d3dmetal3_btn.setStyleSheet("color: #00D8D6; font-weight: bold;")
+        hint = QLabel("Installs tools, Wine, builds DXVK (64/32), then installs Mesa.")
         hint.setWordWrap(True)
         quick_layout.addWidget(self.quick_setup_btn)
         quick_layout.addWidget(hint)
@@ -313,10 +323,32 @@ class SettingsDialog(QDialog):
         grid.addWidget(self.install_wine_btn, 0, 1)
         grid.addWidget(self.install_mesa_btn, 1, 0)
         grid.addWidget(self.build_dxvk_btn, 1, 1)
-        grid.addWidget(self.init_prefix_btn, 2, 0)
-        grid.addWidget(self.install_steam_btn, 2, 1)
+        grid.addWidget(self.build_dxvk32_btn, 2, 0)
+        grid.addWidget(self.init_prefix_btn, 2, 1)
+        grid.addWidget(self.install_steam_btn, 3, 1)
+        grid.addWidget(self.install_gptk_full_btn, 12, 0, 1, 1)
+        grid.addWidget(self.install_d3dmetal3_btn, 12, 1, 1, 1)
+        grid.addWidget(self.clean_prefix_btn, 13, 0, 1, 1)
+        grid.addWidget(self.kill_wineserver_btn, 13, 1, 1, 1)
+        grid.addWidget(self.unpatch_game_btn, 14, 0, 1, 2)
         layout.addWidget(steps_box)
         layout.addStretch()
+
+        parent = self.parent()
+        if parent:
+            self.quick_setup_btn.clicked.connect(parent.quick_setup)
+            self.install_tools_btn.clicked.connect(parent.install_tools)
+            self.install_wine_btn.clicked.connect(parent.install_wine)
+            self.install_mesa_btn.clicked.connect(parent.install_mesa)
+            self.build_dxvk_btn.clicked.connect(parent.build_dxvk)
+            self.build_dxvk32_btn.clicked.connect(parent.build_dxvk32)
+            self.init_prefix_btn.clicked.connect(parent.init_prefix)
+            self.clean_prefix_btn.clicked.connect(parent.clean_prefix)
+            self.kill_wineserver_btn.clicked.connect(parent.kill_wineserver)
+            self.unpatch_game_btn.clicked.connect(parent.unpatch_selected_game)
+            self.install_steam_btn.clicked.connect(parent.install_steam)
+            self.install_gptk_full_btn.clicked.connect(parent.install_gptk_full)
+            self.install_d3dmetal3_btn.clicked.connect(parent.install_d3dmetal3)
 
         return widget
 
@@ -422,46 +454,38 @@ class SettingsDialog(QDialog):
 
 
 class _AdminPasswordDialog(QDialog):
-    """Apple HIG-style admin password sheet."""
-
     def __init__(self, message: str, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("MacNCheese Setup")
+        self.setWindowTitle('MacNCheese Setup')
         self.setFixedWidth(380)
         self.setModal(True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 20)
         layout.setSpacing(14)
-
         header = QHBoxLayout()
         header.setSpacing(12)
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation).pixmap(40, 40)
-        )
+        icon_lbl.setPixmap(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation).pixmap(40, 40))
         icon_lbl.setFixedSize(40, 40)
         header.addWidget(icon_lbl)
-        title_lbl = QLabel("<b>Administrator Password Required</b>")
+        title_lbl = QLabel('<b>Administrator Password Required</b>')
         title_lbl.setWordWrap(True)
         header.addWidget(title_lbl, 1)
         layout.addLayout(header)
-
         msg_lbl = QLabel(message)
         msg_lbl.setWordWrap(True)
-        msg_lbl.setStyleSheet("font-size: 12px;")
+        msg_lbl.setStyleSheet('font-size: 12px;')
         layout.addWidget(msg_lbl)
-
         self._pwd_field = QLineEdit()
         self._pwd_field.setEchoMode(QLineEdit.EchoMode.Password)
-        self._pwd_field.setPlaceholderText("Password")
+        self._pwd_field.setPlaceholderText('Password')
         self._pwd_field.returnPressed.connect(self.accept)
         layout.addWidget(self._pwd_field)
-
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = QPushButton('Cancel')
         cancel_btn.clicked.connect(self.reject)
-        ok_btn = QPushButton("OK")
+        ok_btn = QPushButton('OK')
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self.accept)
         btn_row.addWidget(cancel_btn)
@@ -473,7 +497,6 @@ class _AdminPasswordDialog(QDialog):
 
 
 class _InstallProgressDialog(QDialog):
-    """Non-terminal install progress dialog with indeterminate progress bar."""
     cancel_requested = pyqtSignal()
 
     def __init__(self, title: str, parent=None) -> None:
@@ -485,39 +508,29 @@ class _InstallProgressDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 20)
         layout.setSpacing(14)
-
-        self._title_lbl = QLabel(f"<b>{title}</b>")
-        self._title_lbl.setStyleSheet("font-size: 14px;")
+        self._title_lbl = QLabel(f'<b>{title}</b>')
+        self._title_lbl.setStyleSheet('font-size: 14px;')
         layout.addWidget(self._title_lbl)
-
-        self._step_lbl = QLabel("Starting…")
+        self._step_lbl = QLabel('Starting…')
         self._step_lbl.setWordWrap(True)
-        self._step_lbl.setStyleSheet("font-size: 12px;")
+        self._step_lbl.setStyleSheet('font-size: 12px;')
         layout.addWidget(self._step_lbl)
-
         self._bar = QProgressBar()
-        self._bar.setRange(0, 0)  # pulsing indeterminate
+        self._bar.setRange(0, 0)
         self._bar.setTextVisible(False)
         self._bar.setFixedHeight(14)
-        self._bar.setStyleSheet(
-            "QProgressBar { border-radius: 7px; background: rgba(255,255,255,0.15); }"
-            "QProgressBar::chunk { border-radius: 7px; background: qlineargradient("
-            "  x1:0, y1:0, x2:1, y2:0, stop:0 #6C8EFF, stop:1 #A855F7); }"
-        )
+        self._bar.setStyleSheet('QProgressBar { border-radius: 7px; background: rgba(255,255,255,0.15); }QProgressBar::chunk { border-radius: 7px; background: qlineargradient(  x1:0, y1:0, x2:1, y2:0, stop:0 #6C8EFF, stop:1 #A855F7); }')
         layout.addWidget(self._bar)
-
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn = QPushButton('Cancel')
         self._cancel_btn.clicked.connect(self.cancel_requested)
         btn_row.addWidget(self._cancel_btn)
         layout.addLayout(btn_row)
-
         self._done = False
 
     def update_step(self, text: str) -> None:
         if not self._done:
-            # show only last non-empty line as current step
             last = next((l for l in reversed(text.splitlines()) if l.strip()), text.strip())
             if last:
                 self._step_lbl.setText(last)
@@ -527,7 +540,7 @@ class _InstallProgressDialog(QDialog):
         self._bar.setRange(0, 1)
         self._bar.setValue(1)
         self._step_lbl.setText(message)
-        self._cancel_btn.setText("Close")
+        self._cancel_btn.setText('Close')
         self._cancel_btn.clicked.disconnect()
         self._cancel_btn.clicked.connect(self.accept)
 
@@ -880,7 +893,7 @@ QGroupBox::title {
 """
 
 APP_NAME = "MacNCheese"
-APP_VERSION = "v4.4.2"
+APP_VERSION = "v5.1.0"
 GITHUB_REPO = "mont127/MacNdCheese"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -893,6 +906,8 @@ DEFAULT_MESA_DIR = str(Path.home() / "mesa" / "x64")
 DEFAULT_DXMT_DIR = str(Path.home() / "dxmt")
 DEFAULT_VKD3D_DIR = str(Path.home() / "vkd3d-proton")
 DEFAULT_GPTK_DIR = str(Path(__file__).resolve().with_name("gptk"))
+DEFAULT_PATCHED_WINE_APP_RESOURCES_SUBDIR = "wine-build"
+STEAM_URL = "https://steamcdn-a.akamaihd.net/client/installer/SteamSetup.exe"
 DXVK_DLLS = ("dxgi.dll", "d3d11.dll", "d3d10core.dll")
 
 DEFAULT_MESA_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
@@ -907,6 +922,8 @@ LAUNCH_BACKEND_MESA_ZINK = "mesa:zink"
 LAUNCH_BACKEND_MESA_SWR = "mesa:swr"
 LAUNCH_BACKEND_VKD3D = "vkd3d-proton"
 LAUNCH_BACKEND_GPTK = "gptk"
+LAUNCH_BACKEND_GPTK_FULL = "gptk_full"
+LAUNCH_BACKEND_D3DMETAL3 = "d3dmetal3"
 
 MESA_DRIVER_LLVMPIPE = "llvmpipe"
 MESA_DRIVER_ZINK = "zink"
@@ -922,6 +939,8 @@ LAUNCH_BACKENDS = (
     ("Mesa zink (GPU, Vulkan)", LAUNCH_BACKEND_MESA_ZINK),
     ("Mesa swr (CPU rasterizer)", LAUNCH_BACKEND_MESA_SWR),
     ("GPTK (D3DMetal)", LAUNCH_BACKEND_GPTK),
+    ("GPTK Full (Apple Toolkit)", LAUNCH_BACKEND_GPTK_FULL),
+    ("D3DMetal 3 (Prebuilt GPTK)", LAUNCH_BACKEND_D3DMETAL3),
 )
 
 
@@ -1025,7 +1044,7 @@ class Vkd3dProtonComponent(Component):
 
     def required_env(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
         return {
-            "VKD3D_PROTON_PATH": str(window.vkd3d_dir),
+            "VKD3D_CONFIG": str(window.vkd3d_dir),
         }
 
     def required_dll_overrides(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
@@ -1059,13 +1078,13 @@ class DxmtComponent(Component):
 
     def required_env(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
         return {
-            "DXMT_PATH": str(window.dxmt_dir),
+            "DXMTROOT": str(window.dxmt_dir),
         }
 
     def required_dll_overrides(self, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
         return {
-            "dxgi": "n,b",
             "d3d11": "n,b",
+            "dxgi": "n,b",
         }
 
 class WinetricksComponent(Component):
@@ -1087,6 +1106,8 @@ class Backend:
         return True
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = env.copy()
+        env["WINE_MF_MFT_SKIP_VERIFY"] = "1"
         return env
 
     def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
@@ -1095,13 +1116,16 @@ class Backend:
     def supports_game(self, game: GameModel) -> bool:
         return True
 
+    def launch_command(self, game: GameModel, prefix: PrefixModel) -> list[str]:
+        return []
+
 
 class WineBuiltinBackend(Backend):
     backend_id = LAUNCH_BACKEND_WINE
     label = "Wine builtin (no DXVK/Mesa)"
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
-        env = env.copy()
+        env = super().apply_env(env, game, prefix, window)
         env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=b"
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
@@ -1126,16 +1150,20 @@ class DxvkBackend(Backend):
         return {"kind": "dxvk"}
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
-        env = env.copy()
-        # Tell Wine where to find the DXVK native DLLs (supplement the per-game copy)
-        dxvk_bin = str(window.dxvk_bin_for_exe(game.exe_path) if game.exe_path else window.dxvk_install / "bin")
-        existing_dll_path = env.get("WINEDLLPATH", "")
-        env["WINEDLLPATH"] = f"{dxvk_bin}:{existing_dll_path}" if existing_dll_path else dxvk_bin
-        env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d10core=n,b"
+        env = super().apply_env(env, game, prefix, window)
+        overrides = env.get("WINEDLLOVERRIDES", "")
+        dxvk_ovr = "dxgi,d3d11,d3d10core=n,b"
+        if overrides:
+            overrides += f";{dxvk_ovr}"
+        else:
+            overrides = dxvk_ovr
+        env["WINEDLLOVERRIDES"] = overrides
         env["DXVK_LOG_PATH"] = str(Path.home() / "dxvk-logs")
         env["DXVK_LOG_LEVEL"] = "info"
         env["DXVK_HDR"] = "0"
         env["DXVK_STATE_CACHE"] = "0"
+        env["DXVK_ASYNC"] = "1"
+        env["DXVK_ENABLE_NVAPI"] = "0"
         env.pop("GALLIUM_DRIVER", None)
         env.pop("MESA_GLTHREAD", None)
         Path(env["DXVK_LOG_PATH"]).mkdir(parents=True, exist_ok=True)
@@ -1156,9 +1184,15 @@ class MesaBackend(Backend):
         return {"kind": "mesa", "driver": self.driver}
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
-        env = env.copy()
+        env = super().apply_env(env, game, prefix, window)
         env["GALLIUM_DRIVER"] = self.driver
-        env["WINEDLLOVERRIDES"] = "opengl32=n,b"
+        overrides = env.get("WINEDLLOVERRIDES", "")
+        mesa_ovr = "opengl32=n,b"
+        if overrides:
+            overrides += f";{mesa_ovr}"
+        else:
+            overrides = mesa_ovr
+        env["WINEDLLOVERRIDES"] = overrides
         env["MESA_GLTHREAD"] = "true"
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
@@ -1198,11 +1232,17 @@ class Vkd3dProtonBackend(Backend):
         return {"kind": "vkd3d-proton"}
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
-        env = env.copy()
+        env = super().apply_env(env, game, prefix, window)
         vkd3d_path = str(window.vkd3d_dir)
 
         env["VKD3D_PROTON_PATH"] = vkd3d_path
-        env["WINEDLLOVERRIDES"] = "d3d12,d3d12core,dxgi=n,b"
+        overrides = env.get("WINEDLLOVERRIDES", "")
+        vkd3d_ovr = "d3d12,d3d12core,dxgi=n,b"
+        if overrides:
+            overrides += f";{vkd3d_ovr}"
+        else:
+            overrides = vkd3d_ovr
+        env["WINEDLLOVERRIDES"] = overrides
 
         existing_winepath = env.get("WINEPATH", "")
         env["WINEPATH"] = vkd3d_path if not existing_winepath else f"{vkd3d_path};{existing_winepath}"
@@ -1230,11 +1270,17 @@ class DxmtBackend(Backend):
         return {"kind": "dxmt"}
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
-        env = env.copy()
+        env = super().apply_env(env, game, prefix, window)
         dxmt_path = str(window.dxmt_dir)
 
         env["DXMT_PATH"] = dxmt_path
-        env["WINEDLLOVERRIDES"] = "dxgi,d3d11=n,b"
+        overrides = env.get("WINEDLLOVERRIDES", "")
+        dxmt_ovr = "dxgi,d3d11=n,b"
+        if overrides:
+            overrides += f";{dxmt_ovr}"
+        else:
+            overrides = dxmt_ovr
+        env["WINEDLLOVERRIDES"] = overrides
 
         existing_winepath = env.get("WINEPATH", "")
         env["WINEPATH"] = dxmt_path if not existing_winepath else f"{dxmt_path};{existing_winepath}"
@@ -1259,14 +1305,22 @@ class GptkBackend(Backend):
         required = ("dxgi.dll", "d3d11.dll", "d3d12.dll")
         if not dll_dir.exists() or not all((dll_dir / name).exists() for name in required):
             raise RuntimeError("GPTK DLLs not found. Put GPTK Windows DLLs in gptk/lib/wine/x86_64-windows first.")
+        window.unpatch_selected_game()
         return {"kind": "gptk"}
 
     def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
-        env = env.copy()
+        env = super().apply_env(env, game, prefix, window)
         dll_dir = str(window.gptk_windows_dir)
         env["WINEPREFIX"] = str(prefix.path)
         env["WINEPATH"] = dll_dir
-        env["WINEDLLOVERRIDES"] = "dxgi,d3d11,d3d12=n,b"
+        env["WINESERVER"] = window.wineserver_binary()
+        overrides = env.get("WINEDLLOVERRIDES", "")
+        gptk_ovr = "dxgi,d3d11,d3d12=n,b"
+        if overrides:
+            overrides += f";{gptk_ovr}"
+        else:
+            overrides = gptk_ovr
+        env["WINEDLLOVERRIDES"] = overrides
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
         env.pop("VKD3D_PROTON_PATH", None)
@@ -1274,6 +1328,87 @@ class GptkBackend(Backend):
         env.pop("GALLIUM_DRIVER", None)
         env.pop("MESA_GLTHREAD", None)
         return env
+
+class GptkFullBackend(Backend):
+    backend_id = LAUNCH_BACKEND_GPTK_FULL
+    label = "GPTK Full (Apple Toolkit)"
+
+    def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
+        return Path("/usr/local/bin/gameportingtoolkit").exists() or shutil.which("gameportingtoolkit") is not None
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        if not self.is_available(prefix, game, window):
+            raise RuntimeError("GPTK (gameportingtoolkit) not found. Install GPTK Full from Settings -> Setup first.")
+        window.unpatch_selected_game()
+        return {"kind": "gptk_full"}
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = super().apply_env(env, game, prefix, window)
+        env["WINEPREFIX"] = str(prefix.path)
+        env["WINESERVER"] = window.wineserver_binary()
+        return env
+
+    def launch_command(self, game: GameModel, prefix: PrefixModel) -> list[str]:
+        gptk_bin = "/usr/local/bin/gameportingtoolkit"
+        if not Path(gptk_bin).exists():
+            raise FileNotFoundError("gameportingtoolkit not found in /usr/local/bin. Install GPTK Full first.")
+        if game.exe_path is None:
+            raise ValueError("Executable path is required for GPTK Full backend.")
+        cmd = ["arch", "-x86_64", gptk_bin, str(prefix.path), str(game.exe_path)]
+        
+        
+        
+        return cmd
+
+class D3DMetal3Backend(Backend):
+    backend_id = LAUNCH_BACKEND_D3DMETAL3
+    label = "D3DMetal 3 (Prebuilt GPTK)"
+
+    def is_available(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> bool:
+        gptk3_root = Path.home() / "gptk3" / "Game Porting Toolkit.app"
+        wine64 = gptk3_root / "Contents" / "Resources" / "wine" / "bin" / "wine64"
+        return wine64.exists()
+
+    def prepare_game(self, prefix: PrefixModel, game: GameModel, window: "MainWindow") -> dict[str, Any]:
+        if not self.is_available(prefix, game, window):
+            raise RuntimeError("D3DMetal 3 (Prebuilt GPTK) not found. Install it first.")
+        window.unpatch_selected_game()
+        return {"kind": "d3dmetal3"}
+
+    def apply_env(self, env: dict[str, str], game: GameModel, prefix: PrefixModel, window: "MainWindow") -> dict[str, str]:
+        env = super().apply_env(env, game, prefix, window)
+        env["WINEPREFIX"] = str(prefix.path)
+        env["WINESERVER"] = window.wineserver_binary()
+
+        gptk3_root = Path.home() / "gptk3" / "Game Porting Toolkit.app"
+        wine_res = gptk3_root / "Contents" / "Resources" / "wine"
+        lib_dir = wine_res / "lib"
+        unix_lib_dir = lib_dir / "wine" / "x86_64-unix"
+        external_lib_dir = lib_dir / "external"
+        dyld_paths = [str(unix_lib_dir), str(lib_dir), str(external_lib_dir)]
+        env["DYLD_LIBRARY_PATH"] = ":".join(dyld_paths)
+        env["WINEPATH"] = str(wine_res / "bin")
+        env["DYLD_SHARED_REGION"] = "avoid"
+        overrides = env.get("WINEDLLOVERRIDES", "")
+        m3_ovr = "d3d11,d3d12,dxgi=n"
+        if overrides:
+            overrides += f";{m3_ovr}"
+        else:
+            overrides = m3_ovr
+        env["WINEDLLOVERRIDES"] = overrides
+        env["WINEDEBUG"] = "-all"
+        env["WINEESYNC"] = "1"
+        return env
+
+    def launch_command(self, game: GameModel, prefix: PrefixModel) -> list[str]:
+        gptk3_root = Path.home() / "gptk3" / "Game Porting Toolkit.app"
+        wine64 = gptk3_root / "Contents" / "Resources" / "wine" / "bin" / "wine64"
+        if not wine64.exists():
+            raise FileNotFoundError(f"D3DMetal 3 wine64 not found at {wine64}. Install D3DMetal 3 (Prebuilt) first.")
+        if game.exe_path is None:
+            raise ValueError("Executable path is required for D3DMetal 3 backend.")
+
+        return ["arch", "-x86_64", str(wine64), str(game.exe_path)]
 
 
 class AutoBackend(Backend):
@@ -1371,15 +1506,16 @@ class GameEntry:
         def _is_probably_not_game(exe: Path) -> bool:
             lowered = exe.name.lower()
             bad_tokens = (
-                "unitycrashhandler",
-                "crashhandler",
-                "unins",
-                "uninstall",
+                "crash",
+                "reporter",
                 "setup",
-                "launcherhelper",
-                "steamerrorreporter",
-                "vcredist",
-                "dxsetup",
+                "install",
+                "unins",
+                "unitycrash",
+                "helper",
+                "bootstrap",
+                "diagnostics",
+                "dxwebsetup",
             )
             return any(t in lowered for t in bad_tokens)
 
@@ -1388,9 +1524,6 @@ class GameEntry:
 
         sub_exes: list[Path] = []
         patterns = [
-            "*.exe",
-            "*/*.exe",
-            "*/*/*.exe",
             "**/*.exe",
         ]
         for pat in patterns:
@@ -1449,26 +1582,27 @@ class GameEntry:
         def _is_probably_not_game(exe: Path) -> bool:
             lowered = exe.name.lower()
             bad_tokens = (
-                "unitycrashhandler",
-                "crashhandler",
-                "unins",
-                "uninstall",
+                "crash",
+                "reporter",
                 "setup",
-                "launcherhelper",
-                "steamerrorreporter",
-                "vcredist",
-                "dxsetup",
+                "install",
+                "unins",
+                "unitycrash",
+                "helper",
+                "bootstrap",
+                "diagnostics",
             )
+            return any(t in lowered for t in bad_tokens)
             return any(t in lowered for t in bad_tokens)
 
         seen: set[str] = set()
         candidates: list[Path] = []
 
         preferred_names = (
-            "Launcher.exe",
-            "launcher.exe",
-            "WarframeLauncher.exe",
-            "Launcher_x64.exe",
+            "Project Playtime.exe",
+            "Launch.exe",
+            "Play.exe",
+            "Start.exe",
         )
         for name in preferred_names:
             for exe in self.game_dir.glob(f"**/{name}"):
@@ -1510,9 +1644,6 @@ class GameEntry:
             pass
 
         patterns = [
-            "*.exe",
-            "*/*.exe",
-            "*/*/*.exe",
             "**/*.exe",
         ]
         sub_exes: list[Path] = []
@@ -1558,44 +1689,65 @@ class CommandWorker(QObject):
         self.commands = commands
         self.env = env or os.environ.copy()
         self.cwd = cwd
-        self._proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
+        self._proc: Optional[subprocess.Popen] = None
         self._cancelled = False
 
     def cancel(self) -> None:
         self._cancelled = True
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
+        if self._proc and hasattr(self._proc, 'pid') and self._proc.pid and self._proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+            except Exception:
+                self._proc.terminate()
 
     def run(self) -> None:
         try:
             for cmd in self.commands:
                 if self._cancelled:
-                    self.finished.emit(False, "Cancelled")
+                    self.finished.emit(False, 'Cancelled')
                     return
                 self.output.emit(f"$ {' '.join(cmd)}")
                 self._proc = subprocess.Popen(
-                    cmd,
-                    cwd=self.cwd,
-                    env=self.env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
+                    cmd, 
+                    cwd=self.cwd, 
+                    env=self.env, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.STDOUT, 
+                    text=True, 
                     bufsize=1,
+                    start_new_session=True
                 )
                 assert self._proc.stdout is not None
                 for line in self._proc.stdout:
                     self.output.emit(line.rstrip())
                 rc = self._proc.wait()
                 if self._cancelled:
-                    self.finished.emit(False, "Cancelled")
+                    self.finished.emit(False, 'Cancelled')
                     return
                 if rc != 0:
                     self.finished.emit(False, f"Command failed with exit code {rc}: {' '.join(cmd)}")
                     return
-            self.finished.emit(True, "Done")
+            self.finished.emit(True, 'Done')
         except Exception as exc:
             self.error.emit(str(exc))
             self.finished.emit(False, str(exc))
+
+
+class LibraryScannerWorker(QThread):
+    finished_scan = pyqtSignal(object, object)
+
+    def __init__(self, prefix: Path, steam_dir: Path):
+        super().__init__()
+        self.prefix = prefix
+        self.steam_dir = steam_dir
+
+    def run(self) -> None:
+        try:
+            games = SteamScanner.scan_games(self.prefix, self.steam_dir)
+            self.finished_scan.emit(self.prefix, games)
+        except Exception as e:
+            print(f"Scan failed: {e}")
+            self.finished_scan.emit(self.prefix, [])
 
 
 class CoverFetcher(QThread):
@@ -1819,7 +1971,7 @@ class CreateBottleDialog(QDialog):
         self.icon_group = QButtonGroup(self)
         self.icon_group.setExclusive(True)
         
-        for i, icon_text in enumerate(["+", "", "E", "EA", "U"]):
+        for i, icon_text in enumerate(["+", "📦", "E", "EA", "U"]):
             btn = QPushButton(icon_text)
             btn.setObjectName("IconSelectorBtn")
             btn.setCheckable(True)
@@ -2031,7 +2183,7 @@ class GameLaunchDialog(QDialog):
         if p and hasattr(p, "launch_selected_game"):
             backend_id = self.backend_combo.currentData()
             args = self.args_edit.text()
-            p.launch_selected_game(self.game, backend_id=backend_id, extra_args=args)
+            p.launch_selected_game(self.game, backend_id=backend_id, extra_args=args)   
         self.accept()
 
 class UpdateChecker(QThread):
@@ -2081,9 +2233,9 @@ class MainWindow(QMainWindow):
         self.interactive_install_in_progress: bool = False
         self.interactive_install_action: Optional[str] = None
         self.pending_post_install_action: Optional[str] = None
-        self._progress_dlg: Optional[_InstallProgressDialog] = None
 
         self.prefix_combo = self.settings.prefix_combo
+        self.prefix_combo.currentTextChanged.connect(self._on_prefix_changed)
         self.dxvk_src_edit = self.settings.dxvk_src_edit
         self.dxvk_install_edit = self.settings.dxvk_install_edit
         self.dxvk_install32_edit = self.settings.dxvk_install32_edit
@@ -2096,6 +2248,8 @@ class MainWindow(QMainWindow):
         self._cover_cache: dict[str, bytes] = {}      
         self._cover_failed: set[str] = set()            
         self._active_fetchers: list[CoverFetcher] = [] 
+        self._scanner_worker: Optional[LibraryScannerWorker] = None
+        self._game_card_cache: dict[str, QWidget] = {}
 
         self.component_registry = ComponentRegistry()
         self.backend_registry = BackendRegistry()
@@ -2107,6 +2261,8 @@ class MainWindow(QMainWindow):
         self.load_user_settings()
         self.startup_update_check()
         self.log(f"{APP_NAME} ready")
+        self._sync_sidebar_prefix_buttons()
+        QTimer.singleShot(500, self._ensure_default_prefix)
 
     def load_user_settings(self) -> None:
         self.user_settings_path = Path.home() / ".macncheese_settings.json"
@@ -2147,7 +2303,52 @@ class MainWindow(QMainWindow):
         if cb.isChecked():
             self.skip_update_check = True
             self.save_user_settings()
-            
+
+    def resource_base_dir(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent.parent / "Resources"
+        return Path(__file__).resolve().parent
+
+    def patched_wine_dir(self) -> Path:
+        env_override = os.environ.get("MACNCHEESE_PATCHED_WINE_DIR", "").strip()
+        if env_override:
+            return Path(env_override).expanduser().resolve()
+        return self.resource_base_dir() / DEFAULT_PATCHED_WINE_APP_RESOURCES_SUBDIR
+
+    def patched_wine_binary(self) -> Optional[str]:
+        root = self.patched_wine_dir()
+        candidates = [
+            root / "bin" / "wine64",
+            root / "bin" / "wine",
+            root / "tools" / "wine" / "wine",
+            root / "loader" / "wine",
+            root / "wine64",
+            root / "wine",
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    return str(candidate)
+            except Exception:
+                continue
+        return None
+
+    def patched_wineserver_binary(self) -> Optional[str]:
+        root = self.patched_wine_dir()
+        candidates = [
+            root / "server" / "wineserver",
+            root / "bin" / "wineserver",
+            root / "wineserver",
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    return str(candidate)
+            except Exception:
+                continue
+        return None
+
+
         if msg.clickedButton() == update_btn:
             webbrowser.open(GITHUB_RELEASES_URL)
 
@@ -2172,6 +2373,8 @@ class MainWindow(QMainWindow):
             Vkd3dProtonBackend(),
             DxmtBackend(),
             GptkBackend(),
+            GptkFullBackend(),
+            D3DMetal3Backend(),
         ):
             self.backend_registry.register(backend)
         self.backend_registry.register(AutoBackend(self.backend_registry))
@@ -2190,15 +2393,21 @@ class MainWindow(QMainWindow):
         token = f"{game.name} {game.install_path.name}".lower()
         exe_name = game.exe_path.name.lower() if game.exe_path else ""
 
+        
+        gptk3 = self.backend_registry.get(LAUNCH_BACKEND_D3DMETAL3)
+        prefix = self.current_prefix_model()
+        has_gptk3 = bool(gptk3 and gptk3.is_available(prefix, game, self))
+
         if "poppy playtime" in token or "poppy_playtime" in exe_name or "project playtime" in token or "project_playtime" in exe_name:
-            return LAUNCH_BACKEND_DXVK
+            return LAUNCH_BACKEND_D3DMETAL3 if has_gptk3 else LAUNCH_BACKEND_DXVK
         if "mewgenics" in token:
             return LAUNCH_BACKEND_MESA_LLVMPIPE
         if "enlisted" in token or exe_name == "enlisted.exe" or exe_name == "enlisted-min-cpu.exe":
-            return LAUNCH_BACKEND_VKD3D
+            return LAUNCH_BACKEND_VKD3D if not has_gptk3 else LAUNCH_BACKEND_D3DMETAL3
         if (game.install_path / "D3D12").exists():
-            return LAUNCH_BACKEND_VKD3D
-        return LAUNCH_BACKEND_DXVK
+            return LAUNCH_BACKEND_D3DMETAL3 if has_gptk3 else LAUNCH_BACKEND_VKD3D
+            
+        return LAUNCH_BACKEND_D3DMETAL3 if has_gptk3 else LAUNCH_BACKEND_DXVK
 
     def resolve_backend(self, backend_id: str, game: GameModel, prefix: PrefixModel) -> Backend:
         backend = self.backend_registry.get(backend_id)
@@ -2263,6 +2472,52 @@ class MainWindow(QMainWindow):
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         self.menuBar().addAction(exit_action)
+
+    def _build_steam_landing_view(self) -> None:
+        self.steam_view = QWidget()
+        self.steam_view.setStyleSheet("background-color: transparent;")
+        steam_layout = QVBoxLayout(self.steam_view)
+        steam_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        steam_layout.setSpacing(0)
+
+        steam_logo_lbl = QLabel()
+        steam_logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if not self._set_label_pixmap_from_asset(steam_logo_lbl, "Steam.png", width=120, height=120):
+            steam_logo_lbl.setText("🎮")
+            steam_logo_lbl.setStyleSheet("font-size: 80px;")
+
+        steam_title = QLabel("STEAM")
+        steam_title.setObjectName("SteamTitle")
+        steam_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        steam_layout.addWidget(steam_logo_lbl)
+        steam_layout.addWidget(steam_title)
+
+        steam_layout.addSpacing(24)
+
+        launch_row = QHBoxLayout()
+        launch_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.btn_install_steam = QPushButton("Launch")
+        self.btn_install_steam.setObjectName("PlayBtn")
+        self.btn_install_steam.setFixedWidth(160)
+        self.btn_install_steam.clicked.connect(self.unified_steam_action)
+        launch_row.addWidget(self.btn_install_steam)
+
+        btn_play_icon = QPushButton("▶")
+        btn_play_icon.setObjectName("PlayBtn")
+        btn_play_icon.setFixedSize(40, 36)
+        btn_play_icon.clicked.connect(self.unified_steam_action)
+        launch_row.addWidget(btn_play_icon)
+
+        steam_layout.addLayout(launch_row)
+        self.stacked_widget.addWidget(self.steam_view)
+
+    def _update_steam_button(self) -> None:
+        steam_installed = (self.steam_dir / "steam.exe").exists()
+        label = "Launch" if steam_installed else "Install Steam"
+        if hasattr(self, "btn_install_steam"):
+            self.btn_install_steam.setText(label)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -2339,7 +2594,6 @@ class MainWindow(QMainWindow):
         self.btn_top_launch_steam.clicked.connect(self.launch_steam)
         topbar_layout.addWidget(self.btn_top_launch_steam)
 
-
         self.search_bar = QLineEdit()
         self.search_bar.setObjectName("SearchBar")
         self.search_bar.setPlaceholderText("Search games...")
@@ -2366,35 +2620,10 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.games_scroll)
 
                                   
-        self.steam_view = QWidget()
-        steam_layout = QVBoxLayout(self.steam_view)
-        steam_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-                                
-        steam_logo_lbl = QLabel("STEAM")
-        steam_logo_lbl.setStyleSheet("font-size: 64px; font-weight: bold; color: #FFFFFF;")
-        steam_logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        steam_buttons_layout = QHBoxLayout()
-        self.btn_install_steam = QPushButton("Install Steam")
-        self.btn_install_steam.setStyleSheet("padding: 12px 24px; font-size: 16px; background-color: transparent; border: 2px solid #FFFFFF; border-radius: 16px;")
-        self.btn_install_steam.clicked.connect(self.unified_steam_action)
-        
-        self.btn_launch_steam = QPushButton("▶")
-        self.btn_launch_steam.setStyleSheet("padding: 12px; font-size: 16px; background-color: transparent; border: 2px solid #FFFFFF; border-radius: 16px;")
-        self.btn_launch_steam.clicked.connect(self.launch_steam)
-        
-        steam_buttons_layout.addWidget(self.btn_install_steam)
-        steam_buttons_layout.addWidget(self.btn_launch_steam)
-        
-        steam_layout.addWidget(steam_logo_lbl)
-        steam_layout.addSpacing(24)
-        steam_layout.addLayout(steam_buttons_layout)
-        
-        self.stacked_widget.addWidget(self.games_scroll)           
+        self._build_steam_landing_view()
 
                                                                                                
-        self._build_steam_landing_view()            
+        self._build_empty_state_view()            
 
                                  
         status_bar = QFrame()
@@ -2445,55 +2674,59 @@ class MainWindow(QMainWindow):
         self.scan_timer.timeout.connect(self.scan_games)
         self.scan_timer.start(3000)
 
-    def _build_steam_landing_view(self) -> None:
-                                                                                                     
-        self.steam_view = QWidget()
-        self.steam_view.setStyleSheet("background-color: transparent;")
-        steam_layout = QVBoxLayout(self.steam_view)
-        steam_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        steam_layout.setSpacing(0)
+    def _build_empty_state_view(self) -> None:
+        self.empty_view = QWidget()
+        self.empty_view.setStyleSheet("background-color: transparent;")
+        layout = QVBoxLayout(self.empty_view)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(8)
 
-                          
-        steam_logo_lbl = QLabel()
-        steam_logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        if not self._set_label_pixmap_from_asset(steam_logo_lbl, "Steam.png", width=120, height=120):
-            steam_logo_lbl.setText("🎮")
-            steam_logo_lbl.setStyleSheet("font-size: 80px;")
+        icon_lbl = QLabel("🎮")
+        icon_lbl.setStyleSheet("font-size: 64px; color: rgba(255, 255, 255, 0.4);")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon_lbl)
 
-                       
-        steam_title = QLabel("STEAM")
-        steam_title.setObjectName("SteamTitle")
-        steam_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        steam_layout.addWidget(steam_title)
+        layout.addSpacing(16)
 
-        steam_layout.addSpacing(24)
+        title_lbl = QLabel("No Libraries found")
+        title_lbl.setStyleSheet("font-size: 24px; font-weight: bold; color: #FFFFFF;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
 
-                                                                  
-        launch_row = QHBoxLayout()
-        launch_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub_lbl1 = QLabel("No Steam libraries found.")
+        sub_lbl1.setStyleSheet("font-size: 14px; color: rgba(255, 255, 255, 0.7);")
+        sub_lbl1.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(sub_lbl1)
 
-        self.btn_install_steam = QPushButton("Launch")
-        self.btn_install_steam.setObjectName("PlayBtn")
-        self.btn_install_steam.setFixedWidth(160)
-        self.btn_install_steam.clicked.connect(self.unified_steam_action)
-        launch_row.addWidget(self.btn_install_steam)
+        sub_lbl2 = QLabel("Please add a Steam library folder.")
+        sub_lbl2.setStyleSheet("font-size: 14px; color: rgba(255, 255, 255, 0.7);")
+        sub_lbl2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(sub_lbl2)
 
-                                     
-        btn_play_icon = QPushButton("▶")
-        btn_play_icon.setObjectName("PlayBtn")
-        btn_play_icon.setFixedSize(40, 36)
-        btn_play_icon.clicked.connect(self.unified_steam_action)
-        launch_row.addWidget(btn_play_icon)
+        layout.addSpacing(24)
 
-        steam_layout.addLayout(launch_row)
-
-        self.stacked_widget.addWidget(self.steam_view)           
-
-    def _update_steam_button(self) -> None:
-        steam_installed = (self.steam_dir / "steam.exe").exists()
-        label = "Launch" if steam_installed else "Install Steam"
-        if hasattr(self, "btn_install_steam"):
-            self.btn_install_steam.setText(label)
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.btn_add_library = QPushButton("+ Add Library")
+        self.btn_add_library.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 12px;
+                padding: 10px 20px;
+                color: #FFFFFF;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.15);
+                border: 1px solid rgba(255, 255, 255, 0.3);
+            }
+        """)
+        self.btn_add_library.clicked.connect(self._open_create_bottle_dialog)
+        btn_row.addWidget(self.btn_add_library)
+        layout.addLayout(btn_row)
+        self.stacked_widget.addWidget(self.empty_view)
 
     def switch_view(self, view_name: str) -> None:
         if view_name == "steam":
@@ -2521,25 +2754,40 @@ class MainWindow(QMainWindow):
             self.prefix_combo.setCurrentText(str(p))
             if hasattr(self.settings, "_save_current_prefixes"):
                 self.settings._save_current_prefixes()
+            
+            self._sync_sidebar_prefix_buttons()
 
             name = dlg.name_edit.text().strip() or "Bottle"
             icon_text = "📦"
             if hasattr(dlg, "icon_group") and dlg.icon_group.checkedButton():
                 icon_text = dlg.icon_group.checkedButton().text()
 
-            btn = self._add_sidebar_container(name)
-            btn._prefix_path = str(p)
+            # Removed inline sidebar addition as it's now handled by _sync_sidebar_prefix_buttons()
             
-                                                                                    
-            btn.clicked.connect(lambda _, path=str(p): self._switch_to_bottle(path))
-                                                                             
-            btn.setChecked(True)
+            missing = self.missing_core_tools()
+            if missing:
+                answer = QMessageBox.question(
+                    self,
+                    APP_NAME,
+                    f"The following tools are required but not installed:\n\n• {chr(10).join(missing)}\n\nWould you like to install them now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self._pending_bottle_exe = dlg.exe_edit.text().strip()
+                    self.run_installer_action("quick_setup")
+                    self.set_status(f"Installing tools for bottle '{name}'…")
+                    self.scan_games()
+                    return
 
             exe_path = dlg.exe_edit.text().strip()
-            wine = self.ensure_wine()
-            if wine:
-                cmd = [wine, exe_path] if exe_path else [wine, "wineboot"]
-                self.run_commands([cmd], env=self.wine_env(), progress_title="Initialising bottle…")
+            if exe_path:
+                wine = self.ensure_wine()
+                if wine:
+                    run_env = self.wine_env()
+                    self.run_commands([[wine, exe_path]], env=run_env)
+            else:
+                self.run_installer_action("init_prefix")
             
             self.set_status(f"Created bottle '{name}' at {p}")
             self.scan_games()
@@ -2609,13 +2857,42 @@ class MainWindow(QMainWindow):
         self.sidebar_group.addButton(btn)
         return btn
 
+    def _sync_sidebar_prefix_buttons(self) -> None:
+        # Clear existing buttons from the containers layout except the "+" button
+        # Actually the "+" button is outside the containers layout (it's in the main sidebar layout)
+        while self._sidebar_containers_layout.count():
+            item = self._sidebar_containers_layout.takeAt(0)
+            if item.widget():
+                w = item.widget()
+                self.sidebar_group.removeButton(w)
+                w.deleteLater()
+
+        # Add "Steam" button (as a general Home view for the active prefix)
+        steam_icon = Path(__file__).resolve().with_name("Steam.png")
+        self._steam_sidebar_btn = self._add_sidebar_container("Steam", steam_icon)
+        self._steam_sidebar_btn.clicked.connect(self._on_steam_container_clicked)
+        
+        # Add a button for each prefix in the combo
+        current_path = self.prefix_combo.currentText()
+        for i in range(self.prefix_combo.count()):
+            path = self.prefix_combo.itemText(i)
+            if not path: continue
+            
+            name = Path(path).name or "Bottle"
+            btn = self._add_sidebar_container(name)
+            btn._prefix_path = path
+            btn.clicked.connect(lambda _, p=path: self._switch_to_bottle(p))
+            
+            if path == current_path:
+                btn.setChecked(True)
+
 
     def create_game_card(self, game: "GameEntry") -> "QWidget":
                                                                              
         card = QFrame()
         card.setObjectName("GameCard")
         card.setFixedSize(150, 225)
-        card.setStyleSheet("#GameCard { overflow: hidden; }")
+        card.setStyleSheet("#GameCard { border-radius: 14px; background-color: rgba(255, 255, 255, 0.03); }")
         card._game_name = game.name
 
         layout = QVBoxLayout(card)
@@ -2645,9 +2922,29 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+        def _apply_fallback(lbl: QLabel = cover_lbl) -> None:
+            steam_icon = Path(__file__).resolve().with_name("Steam.png")
+            if steam_icon.exists():
+                pix = QPixmap(str(steam_icon))
+                if not pix.isNull():
+                    scaled = pix.scaled(60, 60, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    bg = QPixmap(150, 225)
+                    bg.fill(QColor(40, 40, 40))
+                    painter = QPainter(bg)
+                    painter.drawPixmap((150 - scaled.width()) // 2, (225 - scaled.height()) // 2, scaled)
+                    painter.end()
+                    lbl.setPixmap(bg)
+                    lbl.setStyleSheet("border-radius: 14px;")
+                    return
+            lbl.setText(game.name)
+            lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); color: #888; border-radius: 14px; padding: 10px;")
+            lbl.setWordWrap(True)
+
         if game.appid in self._cover_cache:
             _apply_pixmap(self._cover_cache[game.appid])
-        elif game.appid not in self._cover_failed:
+        elif game.appid in self._cover_failed:
+            _apply_fallback()
+        else:
             librarycache_dir = self.steam_dir / "appcache" / "librarycache"
             local_candidates = [
                 librarycache_dir / f"p{game.appid}_library_600x900.jpg",
@@ -2670,6 +2967,7 @@ class MainWindow(QMainWindow):
                 def _on_finished(fetcher_ref=None, appid=game.appid):
                     if appid not in self._cover_cache:
                         self._cover_failed.add(appid)
+                        _apply_fallback()
 
                 fetcher.cover_bytes_ready.connect(_on_fetched)
                 fetcher.finished.connect(_on_finished)
@@ -2677,6 +2975,39 @@ class MainWindow(QMainWindow):
                 fetcher.start()
 
         layout.addWidget(cover_lbl)
+
+        overlay = QWidget(card)
+        overlay.resize(150, 225)
+        overlay.setStyleSheet("background-color: rgba(0, 0, 0, 0.75); border-radius: 14px;")
+        
+        opacity_effect = QGraphicsOpacityEffect(overlay)
+        overlay.setGraphicsEffect(opacity_effect)
+        opacity_effect.setOpacity(0.0)
+
+        overlay_layout = QVBoxLayout(overlay)
+        name_lbl = QLabel(game.name)
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_lbl.setWordWrap(True)
+        name_lbl.setStyleSheet("color: white; font-size: 14px; font-weight: bold; background: transparent;")
+        overlay_layout.addWidget(name_lbl)
+
+        anim = QPropertyAnimation(opacity_effect, b"opacity", card)
+        anim.setDuration(200)
+
+        class HoverFilter(QObject):
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.Type.Enter:
+                    anim.stop()
+                    anim.setEndValue(1.0)
+                    anim.start()
+                elif event.type() == QEvent.Type.Leave:
+                    anim.stop()
+                    anim.setEndValue(0.0)
+                    anim.start()
+                return False
+
+        card._hover_filter = HoverFilter()
+        card.installEventFilter(card._hover_filter)
 
 
 
@@ -2714,8 +3045,8 @@ class MainWindow(QMainWindow):
         action_mesa = menu.addAction("Install Mesa")
         action_dxmt = menu.addAction("Install DXMT")
         action_vkd3d = menu.addAction("Install VKD3D-Proton")
-        action_dxvk64 = menu.addAction("Install DXVK")
-        action_dxvk32 = menu.addAction("Install DXVK")
+        action_dxvk64 = menu.addAction("Install DXVK (64bit)")
+        action_dxvk32 = menu.addAction("Install DXVK (32bit)")
         action_wine = menu.addAction("Install Wine")
         action_steam = menu.addAction("Install Steam")
 
@@ -2739,7 +3070,6 @@ class MainWindow(QMainWindow):
         action_dxvk32.triggered.connect(self.build_dxvk32)
         action_wine.triggered.connect(self.install_wine)
         action_steam.triggered.connect(self.install_steam)
-
         menu.exec(card_widget.mapToGlobal(pos))
 
 
@@ -2873,19 +3203,12 @@ class MainWindow(QMainWindow):
         env = os.environ.copy()
         env["WINEPREFIX"] = str(self.prefix_path)
 
-        # DXVK needs Vulkan. On macOS, Vulkan comes from MoltenVK bundled inside
-        # Wine Stable.app. The Vulkan loader (libvulkan.1.dylib from Homebrew) finds
-        # drivers via ICD manifest JSON files pointed to by VK_ICD_FILENAMES.
-        # Without a manifest, vkCreateInstance returns VK_ERROR_INCOMPATIBLE_DRIVER
-        # and DXVK silently falls back → game shows "DirectX 11 not available".
         if not env.get("VK_ICD_FILENAMES"):
             env["VK_ICD_FILENAMES"] = self._ensure_moltenvk_icd()
 
         return env
 
     def _ensure_moltenvk_icd(self) -> str:
-        """Return a path to a MoltenVK ICD JSON manifest, creating one if needed."""
-        # 1. Pre-existing JSON manifests (SDK / Homebrew installs)
         existing_json = [
             Path("/usr/local/share/vulkan/icd.d/MoltenVK_icd.json"),
             Path("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json"),
@@ -2897,7 +3220,6 @@ class MainWindow(QMainWindow):
             if p.exists():
                 return str(p)
 
-        # 2. No pre-existing manifest — find libMoltenVK.dylib and generate one
         moltenvk_lib_candidates = [
             Path("/Applications/Wine Stable.app/Contents/Resources/wine/lib/libMoltenVK.dylib"),
             Path("/Applications/Wine Staging.app/Contents/Resources/wine/lib/libMoltenVK.dylib"),
@@ -2918,22 +3240,48 @@ class MainWindow(QMainWindow):
                 }, indent=2))
                 return str(manifest)
 
-        return ""  # nothing found — leave env var unset
+        return ""
 
     def append_log(self, message: str) -> None:
         self.log(message)
 
     def wine_binary(self) -> str:
-        for candidate in (shutil.which("wine"), "/opt/homebrew/bin/wine", "/usr/local/bin/wine"):
+        patched = self.patched_wine_binary()
+        if patched:
+            return patched
+
+        for candidate in (
+            shutil.which("wine64"),
+            shutil.which("wine"),
+            "/usr/local/bin/wine64",
+            "/opt/homebrew/bin/wine64",
+            "/usr/local/bin/wine",
+            "/opt/homebrew/bin/wine",
+        ):
             if candidate and Path(candidate).exists():
-                return str(candidate)
-        raise FileNotFoundError("wine not found. Install Wine first.")
+                return candidate
+        raise FileNotFoundError(
+            "Wine not found. Install Wine or bundle a patched Wine build in Resources/wine-build."
+        )
+
+
+
 
     def wineserver_binary(self) -> str:
-        for candidate in (shutil.which("wineserver"), "/opt/homebrew/bin/wineserver", "/usr/local/bin/wineserver"):
+        patched = self.patched_wineserver_binary()
+        if patched:
+            return patched
+
+        for candidate in (
+            shutil.which("wineserver"),
+            "/usr/local/bin/wineserver",
+            "/opt/homebrew/bin/wineserver",
+        ):
             if candidate and Path(candidate).exists():
-                return str(candidate)
-        return "wineserver"
+                return candidate
+        raise FileNotFoundError(
+            "wineserver not found. Install Wine or bundle a patched Wine build in Resources/wine-build."
+        )
 
     def run_commands(
         self,
@@ -2956,7 +3304,6 @@ class MainWindow(QMainWindow):
         self.set_status("Task running")
         self.interactive_install_in_progress = True
 
-        # Show progress dialog
         self._progress_dlg = _InstallProgressDialog(progress_title, self)
         self._progress_dlg.cancel_requested.connect(self._cancel_worker)
 
@@ -2993,6 +3340,8 @@ class MainWindow(QMainWindow):
         if self._progress_dlg is not None:
             if ok:
                 self._progress_dlg.accept()
+            elif message == 'Cancelled':
+                self._progress_dlg.reject()
             else:
                 self._progress_dlg.mark_done(False, message)
             self._progress_dlg = None
@@ -3044,7 +3393,22 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(500, self.unified_steam_action)
         elif state == 2:
             self.log("Unified Setup: Steam installer executed.")
-            QTimer.singleShot(500, self.unified_steam_action)
+
+        # Handle pending bottle exe after tool install
+        pending_exe = getattr(self, "_pending_bottle_exe", None)
+        if ok and pending_exe:
+            self._pending_bottle_exe = None
+            wine = self.ensure_wine()
+            if wine:
+                self.log(f"Tools installed. Running pending installer: {pending_exe}")
+                run_env = self.wine_env()
+                self.run_commands([[wine, pending_exe]], env=run_env)
+            else:
+                self.run_installer_action("init_prefix")
+        elif ok and not pending_exe and getattr(self, "interactive_install_action", None) == "quick_setup":
+             # If we just finished quick_setup but had no pending exe, maybe we should init prefix?
+             # Actually, _open_create_bottle_dialog already initiated the action.
+             pass
 
     def has_wine(self) -> bool:
         try:
@@ -3062,7 +3426,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     APP_NAME,
-                    "Wine is not installed or not found in PATH. Starting automatic installation via Homebrew now.",
+                    "Wine not found. MacNCheese will now open the installer to set up the environment.",
                 )
                 self.install_wine()
                 return None
@@ -3113,9 +3477,9 @@ class MainWindow(QMainWindow):
             f"cd {shlex.quote(str(script.parent))}; "
             f"echo 'Running MacNCheese installer in interactive Terminal mode'; "
             f"{command}; "
-            f"status=$?; "
+            f"exit_status=$?; "
             f"echo; "
-            f"echo 'Installer finished with exit code:' $status; "
+            f"echo 'Installer finished with exit code:' $exit_status; "
             f"echo 'You can run extra commands in this terminal if needed.'; "
             f"exec bash"
         )
@@ -3132,7 +3496,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     APP_NAME,
-                    "The MacNCheese installer terminal is already open. Finish the installation there, then return here and try again.",
+                    "The installer is already running in a Terminal window. Please finish the installation there first.",
                 )
                 self.set_status("Installer terminal already open")
                 return
@@ -3140,12 +3504,7 @@ class MainWindow(QMainWindow):
             self.interactive_install_action = None
             self.pending_post_install_action = None
 
-        applescript = (
-            'tell application "Terminal"\n'
-            'activate\n'
-            f'do script {json.dumps(self.installer_terminal_command(action))}\n'
-            'end tell\n'
-        )
+        applescript = f'tell application "Terminal" to do script {json.dumps(self.installer_terminal_command(action))}'
 
         try:
             subprocess.run(["osascript", "-e", applescript], check=True)
@@ -3191,18 +3550,17 @@ class MainWindow(QMainWindow):
         return False, "The macOS password was rejected or sudo is unavailable. Enter the same password you use to sign in to macOS, then try again."
 
     def request_admin_env(self) -> Optional[dict[str, str]]:
-        dlg = _AdminPasswordDialog(
-            "MacNCheese needs your administrator password to install software on your Mac.",
+        password, ok = QInputDialog.getText(
             self,
+            APP_NAME,
+            "Enter your macOS sudo password:",
+            QLineEdit.EchoMode.Password,
         )
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return None
-        password = dlg.password()
-        if not password:
-            return None
-        env = os.environ.copy()
-        env["MNC_SUDO_PASSWORD"] = password
-        return env
+        if ok and password:
+            env = os.environ.copy()
+            env["MNC_SUDO_PASSWORD"] = password
+            return env
+        return None
 
     def prepare_installer_env(self) -> Optional[dict[str, str]]:
         clt_ok, clt_msg = self.check_clt_installed()
@@ -3307,34 +3665,47 @@ class MainWindow(QMainWindow):
                 f"You are up to date.\n\nCurrent version: {APP_VERSION}",
             )
         except Exception as exc:
-            QMessageBox.warning(self, APP_NAME, f"Update check failed: {exc}")
+            if "403" in str(exc):
+                self.log(f"Update check skipped: GitHub Rate Limit reached.")
+            else:
+                QMessageBox.warning(self, APP_NAME, f"Update check failed: {exc}")
 
     def install_tools(self) -> None:
-        self.run_installer_action("install_tools")
+        self.run_installer_action_in_terminal("install_tools")
 
     def install_wine(self) -> None:
-        self.run_installer_action("install_wine")
+        patched = self.patched_wine_binary()
+        if patched:
+            self.log(f"Using bundled patched Wine build: {patched}")
+            if hasattr(self, "status_label"):
+                self.status_label.setText("Bundled patched Wine build detected")
+            return
+        self.run_installer_action_in_terminal("install_wine")
 
     def install_mesa(self) -> None:
-        self.run_installer_action("install_mesa")
-
+        self.run_installer_action_in_terminal("install_mesa")
     def install_dxmt(self) -> None:
-        self.run_installer_action("install_dxmt")
-
+        self.run_installer_action_in_terminal("install_dxmt")
     def install_vkd3d(self) -> None:
-        self.run_installer_action("install_vkd3d")
-
+        self.run_installer_action_in_terminal("install_vkd3d")
     def quick_setup(self) -> None:
-        self.run_installer_action("quick_setup")
+        self.run_installer_action_in_terminal("quick_setup")
 
-    def install_dxvk(self) -> None:
-        self.run_installer_action("install_dxvk")
+    def install_gptk_full(self) -> None:
+        self.run_installer_action_in_terminal("install_gptk_full")
+
+    def install_d3dmetal3(self) -> None:
+        self.run_installer_action_in_terminal("install_d3dmetal3")
+
+    def _build_dxvk(self, *, arch: str) -> None:
+        action = "build_dxvk64" if arch == "win64" else "build_dxvk32"
+        self.run_installer_action_in_terminal(action)
 
     def build_dxvk(self) -> None:
-        self.install_dxvk()
+        self._build_dxvk(arch="win64")
 
     def build_dxvk32(self) -> None:
-        self.install_dxvk()
+        self._build_dxvk(arch="win32")
 
     def exe_is_32bit(self, exe: Path) -> bool:
         try:
@@ -3395,7 +3766,7 @@ class MainWindow(QMainWindow):
         if missing:
             raise FileNotFoundError(
                 f"Missing Mesa DLL(s) in {self.mesa_dir}: {', '.join(missing)}\n\n"
-                "Fix: click 'Install Mesa' in the Setup section, or set 'Mesa x64 dir' to the folder that contains those DLLs (usually ~/mesa/x64)."
+                "Please install/extract Mesa x64 to this folder or use the 'Install Mesa' menu option."
             )
 
         
@@ -3432,58 +3803,49 @@ class MainWindow(QMainWindow):
             return
         self.run_installer_action("init_prefix")
 
+    def _ensure_default_prefix(self) -> None:
+        p = Path(DEFAULT_PREFIX).expanduser()
+        if not p.exists():
+            self.log(f"Auto-creating default Steam prefix at {p}...")
+            self.run_installer_action("init_prefix")
+
+    def clean_prefix(self) -> None:
+        wine = self.ensure_wine()
+        if not wine:
+            return
+        self.run_installer_action_in_terminal("clean_prefix")
+
+    def kill_wineserver(self) -> None:
+        try:
+            wineserver = self.wineserver_binary()
+            self.run_commands([[wineserver, "-k"]])
+            return
+        except Exception:
+            pass
+
+        self.run_commands([["pkill", "-f", "wineserver"]])
+        self.run_installer_action_in_terminal("kill_wineserver")
+
     def install_steam(self) -> None:
         wine = self.ensure_wine()
         if not wine:
             return
+        env = self.request_admin_env()
+        if env is None:
+            return
         if not self.steam_setup.exists():
             QMessageBox.warning(self, APP_NAME, f"SteamSetup.exe not found at {self.steam_setup}")
             return
+        run_env = env.copy()
+        run_env.update(self.wine_env())
+        self.run_commands([[wine, str(self.steam_setup)]], env=run_env)
 
-        # Tell the user where to install before the setup window appears
-        QMessageBox.information(
-            self,
-            "Install Steam",
-            "Steam Setup will open now.\n\n"
-            "When asked where to install, keep the default path (C:\\Program Files\\Steam).\n\n"
-            "MacNCheese will detect Steam automatically once setup is complete.",
-        )
-
-        self.activateWindow()
-        self.raise_()
-
-        env = self.wine_env()
-        qenv = QProcessEnvironment.systemEnvironment()
-        for key, value in env.items():
-            qenv.insert(key, value)
-
-        proc = QProcess(self)
-        proc.setProcessEnvironment(qenv)
-        proc.setProgram(wine)
-        proc.setArguments([str(self.steam_setup)])
-        proc.readyReadStandardOutput.connect(lambda: self._drain_process(proc))
-        proc.readyReadStandardError.connect(lambda: self._drain_process(proc))
-
-        def _on_steam_setup_done(exit_code: int, _exit_status) -> None:
-            self.log(f"SteamSetup.exe exited with code {exit_code}")
-            self.activateWindow()
-            self.raise_()
-            if (self.steam_dir / "steam.exe").exists():
-                self.set_status("Steam installed successfully")
-                self._update_steam_button()
-                QMessageBox.information(self, APP_NAME, "Steam has been installed! Click Launch to start it.")
-            else:
-                self.set_status("Steam installation may not have completed")
-
-        proc.finished.connect(_on_steam_setup_done)
-        proc.start()
-        self.set_status("Steam Setup running — complete the installer in the Steam window")
-
-
-    def launch_steam(self) -> None:
+    def launch_steam(self, backend: Optional[Backend] = None, game_model: Optional[GameModel] = None) -> None:
         wine = self.ensure_wine()
         if not wine:
             return
+        
+        prefix_model = self.current_prefix_model()
         steam_exe = self.steam_dir / "steam.exe"
         if not steam_exe.exists():
             QMessageBox.warning(self, APP_NAME, "Steam is not installed in this prefix yet.")
@@ -3495,7 +3857,38 @@ class MainWindow(QMainWindow):
 
         self.steam_process = QProcess(self)
         env = self.wine_env()
-        env.pop("WINEDLLOVERRIDES", None)
+        
+        
+        if backend:
+            
+            if not game_model:
+                
+                game_model = GameModel(
+                    name="Steam",
+                    appid="",
+                    install_path=self.steam_dir,
+                    exe_path=steam_exe
+                )
+            env = backend.apply_env(env, game_model, prefix_model, self)
+            
+            mandatory_ovr = "nvapi,nvapi64=;dxgi,d3d11,d3d10core=n,b;mf,mfplat,mfreadwrite,mfplay=b"
+            curr_ovr = env.get("WINEDLLOVERRIDES", "").strip(";")
+            env["WINEDLLOVERRIDES"] = f"{mandatory_ovr};{curr_ovr}" if curr_ovr else mandatory_ovr
+            env["WINEDEBUG"] = "-all"
+            dxvk_log_dir = str(Path.home() / "dxvk-logs")
+            Path(dxvk_log_dir).mkdir(parents=True, exist_ok=True)
+            env["DXVK_LOG_PATH"] = dxvk_log_dir
+            env["DXVK_LOG_LEVEL"] = "info"
+            env["DXVK_ASYNC"] = "1"
+            env["DXVK_ENABLE_NVAPI"] = "0"
+
+            
+            backend_cmd = backend.launch_command(game_model, prefix_model)
+            if len(backend_cmd) >= 3 and backend_cmd[0] == "arch":
+                wine = backend_cmd[2]
+            elif len(backend_cmd) >= 1:
+                wine = backend_cmd[0]
+
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
         qenv = QProcessEnvironment.systemEnvironment()
@@ -3504,12 +3897,13 @@ class MainWindow(QMainWindow):
         self.steam_process.setProcessEnvironment(qenv)
         self.steam_process.setWorkingDirectory(str(self.steam_dir))
         self.steam_process.setProgram(wine)
-        self.steam_process.setArguments(["steam.exe", "-no-cef-sandbox", "-vgui"])
+        self.steam_process.setArguments([str(steam_exe), "-no-browser", "-vgui"]) 
+        
         self.steam_process.readyReadStandardOutput.connect(lambda: self._drain_process(self.steam_process))
         self.steam_process.readyReadStandardError.connect(lambda: self._drain_process(self.steam_process))
-        self.steam_process.started.connect(lambda: self.set_status("Steam started"))
-        self.steam_process.errorOccurred.connect(lambda e: self.set_status(f"Steam error: {e}"))
+        self.steam_process.finished.connect(lambda code, status: self.set_status(f"Steam exited with code {code}"))
         self.steam_process.start()
+        self.set_status(f"Steam started ({'backend ' + backend.backend_id if backend else 'host wine'})")
 
     def unified_steam_action(self) -> None:
         if self.steam_process and self.steam_process.state() != QProcess.ProcessState.NotRunning:
@@ -3526,11 +3920,11 @@ class MainWindow(QMainWindow):
             missing = self.missing_core_tools()
 
             if self.interactive_install_in_progress:
-                self.set_status("Setup already in progress, please wait…")
+                self.set_status("Finish the installer in Terminal, then try Launch Steam again")
                 QMessageBox.information(
                     self,
                     APP_NAME,
-                    "MacNCheese is already installing the required tools. Please wait for it to finish, then click Launch Steam again.",
+                    "The installer is already running in a Terminal window.\n\nPlease finish the installation there first.",
                 )
                 return
 
@@ -3540,9 +3934,9 @@ class MainWindow(QMainWindow):
                 self.set_status("Xcode Command Line Tools required")
                 return
 
-            self.set_status(f"Missing prerequisites ({', '.join(missing)}). Starting setup…")
+            self.set_status(f"Missing prerequisites ({', '.join(missing)}). Opening installer Terminal...")
             self._unified_state = 1
-            self.run_installer_action("quick_setup")
+            self.run_installer_action_in_terminal("quick_setup", post_action="launch_steam")
             return
 
         elif not steam_installed:
@@ -3556,9 +3950,9 @@ class MainWindow(QMainWindow):
                     [
                         "curl",
                         "-L",
+                        STEAM_URL,
                         "-o",
                         str(self.steam_setup),
-                        "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
                     ]
                 ])
             else:
@@ -3638,27 +4032,23 @@ class MainWindow(QMainWindow):
         if not logs_dir.exists():
             return None
 
-        patterns = [
-            f"{game.install_dir_name}_d3d11.log",
-            f"{game.install_dir_name.replace(' ', '')}_d3d11.log",
-            f"{game.name}_d3d11.log",
-            f"{game.name.replace(' ', '')}_d3d11.log",
-            f"{game.install_dir_name}*_d3d11.log",
-            f"{game.name.replace(' ', '')}*_d3d11.log",
-            f"{game.name}*_d3d11.log",
-        ]
+        all_logs = list(logs_dir.glob("*_d3d11.log"))
+        if not all_logs:
+            return None
 
         candidates: list[Path] = []
-        for pat in patterns:
-            candidates.extend(list(logs_dir.glob(pat)))
+        name_clean = game.name.replace(' ', '')
+        install_clean = (game.install_dir_name or "").replace(' ', '')
+        
+        for p in all_logs:
+            fname = p.name
+            if (game.name in fname or name_clean in fname or 
+                (game.install_dir_name and game.install_dir_name in fname) or 
+                (install_clean and install_clean in fname)):
+                candidates.append(p)
 
         if not candidates:
-            candidates = list(logs_dir.glob("*_d3d11.log"))
-
-        uniq: dict[str, Path] = {}
-        for p in candidates:
-            uniq[str(p)] = p
-        candidates = list(uniq.values())
+            candidates = all_logs
 
         if not candidates:
             return None
@@ -3695,36 +4085,65 @@ class MainWindow(QMainWindow):
             self.log(line)
 
     def scan_games(self) -> None:
-        self._update_steam_button()
-        games = SteamScanner.scan_games(self.prefix_path, self.steam_dir)
+        p = self.prefix_path
+        s = self.steam_dir
+        worker = self._scanner_worker
+        if worker is not None and worker.isRunning():
+            if worker.prefix == p:
+                return
+            try:
+                worker.finished_scan.disconnect(self._on_scan_finished)
+            except Exception:
+                pass
+            worker.deleteLater()
+
+        new_worker = LibraryScannerWorker(p, s)
+        new_worker.finished_scan.connect(self._on_scan_finished)
+        self._scanner_worker = new_worker
+        new_worker.start()
+
+    def _on_scan_finished(self, prefix: Path, games: list[GameEntry]) -> None:
+        if prefix != self.prefix_path:
+            return
+
+        if hasattr(self, "games") and self.games == games:
+            return
+
         self.games = games
+        self.games_list.blockSignals(True)
         self.games_list.clear()
 
         while self.games_flow_layout.count():
             item = self.games_flow_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-
-       
-        if not hasattr(self, "_steam_sidebar_btn") or self._steam_sidebar_btn is None:
-            steam_icon = Path(__file__).resolve().with_name("Steam.png")
-            self._steam_sidebar_btn = self._add_sidebar_container("Steam", steam_icon)
-            self._steam_sidebar_btn.clicked.connect(lambda: self._on_steam_container_clicked())
-            self._steam_sidebar_btn.setChecked(True)
+            if item.widget():
+                item.widget().setParent(None)
 
         for game in games:
             item = QListWidgetItem(game.display())
             item.setData(256, game)
             self.games_list.addItem(item)
-            card = self.create_game_card(game)
+            
+            if game.appid in self._game_card_cache:
+                card = self._game_card_cache[game.appid]
+                card.setParent(self.games_container)
+            else:
+                card = self.create_game_card(game)
+                self._game_card_cache[game.appid] = card
+                
             self.games_flow_layout.addWidget(card)
+            card.show()
 
-        if games:
+        has_content = bool(games)
+        self.btn_add_container.setVisible(True)
+        if hasattr(self, "_steam_sidebar_btn") and self._steam_sidebar_btn:
+            self._steam_sidebar_btn.setVisible(True)
+
+        if has_content:
             self.stacked_widget.setCurrentIndex(0)
         else:
-            self.stacked_widget.setCurrentIndex(1)
+            self.stacked_widget.setCurrentIndex(2)
 
+        self.games_list.blockSignals(False)
         self.set_status(f"Found {len(games)} installed game(s)")
 
     def _on_steam_container_clicked(self) -> None:
@@ -3734,7 +4153,17 @@ class MainWindow(QMainWindow):
             self.stacked_widget.setCurrentIndex(1)
             
     def _switch_to_bottle(self, path: str) -> None:
-        self.prefix_combo.setCurrentText(path)
+        if self.prefix_combo.currentText() != path:
+            self.prefix_combo.setCurrentText(path)
+        else:
+            self.scan_games()
+
+    def _on_prefix_changed(self, text: str) -> None:
+        for i in range(self._sidebar_containers_layout.count()):
+            w = self._sidebar_containers_layout.itemAt(i).widget()
+            if w and getattr(w, "_prefix_path", None) == text:
+                w.setChecked(True)
+                break
         self.scan_games()
 
     def selected_game(self) -> Optional[GameEntry]:
@@ -3779,7 +4208,7 @@ class MainWindow(QMainWindow):
                     current_label = label
                     break
 
-        current_index = labels.index(current_label) if current_label in labels else 0
+        current_index = labels.index(current_label) if current_label is not None and current_label in labels else 0
         choice, ok = QInputDialog.getItem(
             self,
             APP_NAME,
@@ -3813,7 +4242,7 @@ class MainWindow(QMainWindow):
         dxvk_bin = self.dxvk_bin_for_exe(exe) if exe is not None else (self.dxvk_install / "bin")
         for dll in DXVK_DLLS:
             if not (dxvk_bin / dll).exists():
-                QMessageBox.warning(self, APP_NAME, f"Missing {dll} in {dxvk_bin}. Install DXVK first.")
+                QMessageBox.warning(self, APP_NAME, f"Missing {dll} in {dxvk_bin}. Build DXVK first.")
                 return
 
         game.game_dir.mkdir(parents=True, exist_ok=True)
@@ -3849,6 +4278,24 @@ class MainWindow(QMainWindow):
 
         self.set_status(f"Patched {game.name} with local DXVK")
 
+    def unpatch_selected_game(self) -> None:
+        game = self.selected_game()
+        if not game:
+            QMessageBox.warning(self, APP_NAME, "Select a game first.")
+            return
+
+        removed_count = 0
+        try:
+            
+            for p in game.game_dir.glob("**/*.dll"):
+                if p.name.lower() in [d.lower() for d in DXVK_DLLS]:
+                    p.unlink()
+                    removed_count += 1
+            self.log(f"Removed {removed_count} DXVK/Mesa DLLs from {game.game_dir}")
+            self.set_status(f"Unpatched {game.name} ({removed_count} DLLs removed)")
+        except Exception as e:
+            self.log(f"Failed to unpatch game: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to unpatch game:\n{e}")
 
     def launch_selected_game(self, game: Optional["GameEntry"] = None, backend_id: Optional[str] = None, extra_args: str = "") -> None:
         game = game or self.selected_game()
@@ -3874,11 +4321,6 @@ class MainWindow(QMainWindow):
             return
         self.log(f"Launching EXE: {exe} (cwd={exe.parent})")
         self.log(f"EXE architecture: {'32-bit' if self.exe_is_32bit(exe) else '64-bit'}")
-        is_steam_game = bool(game.appid)
-        if is_steam_game:
-            if not self.steam_process or self.steam_process.state() == QProcess.ProcessState.NotRunning:
-                self.log("Steam is not running but required for this game. Launching Steam first...")
-                self.launch_steam()
   
 
         game_model = self.selected_game_model(game)
@@ -3899,38 +4341,56 @@ class MainWindow(QMainWindow):
 
         resolved_backend = self.resolve_backend(backend_id, game_model, prefix_model)
         effective_backend = resolved_backend.backend_id
-        effective_mesa_driver = ""
+        
+        is_steam_game = bool(game.appid)
+        if is_steam_game:
+            if not self.steam_process or self.steam_process.state() == QProcess.ProcessState.NotRunning:
+                self.log("Steam is not running but required for this game. Launching Steam with backend...")
+                self.launch_steam(backend=resolved_backend, game_model=game_model)
+                
+                self.set_status("Waiting for Steam...")
+                time.sleep(2)
+
         try:
             prepare_info = resolved_backend.prepare_game(prefix_model, game_model, self)
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
 
-        wine_bin = self.wine_binary()
-        self.log(f"Requested backend: {backend_id}")
-        self.log(f"Resolved backend: {effective_backend}")
-        self.log(f"Runner binary: {wine_bin or 'NONE'}")
-        if effective_backend == LAUNCH_BACKEND_GPTK:
-            self.log(f"GPTK DLL dir: {self.gptk_windows_dir}")
-
-        effective_backend = resolved_backend.backend_id
         effective_mesa_driver = ""
         if isinstance(prepare_info, dict):
-            effective_backend = str(prepare_info.get("kind", effective_backend)) if prepare_info.get("kind") in {"dxvk", "mesa"} else effective_backend
+            effective_backend = str(prepare_info.get("kind", effective_backend))
             effective_mesa_driver = str(prepare_info.get("driver", ""))
-            if prepare_info.get("kind") == "mesa":
+            
+            kind = prepare_info.get("kind")
+            if kind == "mesa":
                 effective_backend = resolved_backend.backend_id
                 effective_mesa_driver = prepare_info.get("driver", "")
-            elif prepare_info.get("kind") == "dxvk":
+            elif kind == "dxvk":
                 effective_backend = LAUNCH_BACKEND_DXVK
-            elif prepare_info.get("kind") == "vkd3d-proton":
+            elif kind == "vkd3d-proton":
                 effective_backend = LAUNCH_BACKEND_VKD3D
-            elif prepare_info.get("kind") == "dxmt":
+            elif kind == "dxmt":
                 effective_backend = LAUNCH_BACKEND_DXMT
-            elif prepare_info.get("kind") == "gptk":
+            elif kind == "gptk":
                 effective_backend = LAUNCH_BACKEND_GPTK
+            elif kind == "d3dmetal3":
+                effective_backend = LAUNCH_BACKEND_D3DMETAL3
 
-        wine_bin = self.wine_binary()
+        
+        backend_cmd = resolved_backend.launch_command(game_model, prefix_model)
+        if len(backend_cmd) >= 3 and backend_cmd[0] == "arch":
+            wine_bin = backend_cmd[2]
+        elif len(backend_cmd) >= 1:
+            wine_bin = backend_cmd[0]
+        else:
+            wine_bin = self.wine_binary()
+
+        self.log(f"Requested backend: {backend_id}")
+        self.log(f"Resolved backend: {effective_backend}")
+        self.log(f"Runner binary: {wine_bin}")
+        if effective_backend == LAUNCH_BACKEND_GPTK or effective_backend == LAUNCH_BACKEND_D3DMETAL3:
+            self.log(f"GPTK/D3DMetal DLL dir: {self.gptk_windows_dir}")
 
         if self.game_process and self.game_process.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.warning(self, APP_NAME, "A game process is already running.")
@@ -3939,6 +4399,22 @@ class MainWindow(QMainWindow):
         self.game_process = QProcess(self)
         env = self.wine_env()
         env = resolved_backend.apply_env(env, game_model, prefix_model, self)
+        
+        mandatory_ovr = "nvapi,nvapi64=;dxgi,d3d11,d3d10core=n,b;mf,mfplat,mfreadwrite,mfplay=b"
+        curr_ovr = env.get("WINEDLLOVERRIDES", "").strip(";")
+        env["WINEDLLOVERRIDES"] = f"{mandatory_ovr};{curr_ovr}" if curr_ovr else mandatory_ovr
+        env["WINEDEBUG"] = "-all"
+        dxvk_log_dir = str(Path.home() / "dxvk-logs")
+        Path(dxvk_log_dir).mkdir(parents=True, exist_ok=True)
+        env["DXVK_LOG_PATH"] = dxvk_log_dir
+        env["DXVK_LOG_LEVEL"] = "info"
+        env["DXVK_ASYNC"] = "1"
+        env["DXVK_ENABLE_NVAPI"] = "0"
+        try:
+            subprocess.run([self.wineserver_binary(), "-k"], env=env, timeout=5)
+            time.sleep(2)
+        except Exception:
+            pass
         if self.backend_is_mesa(effective_backend) and not effective_mesa_driver:
             effective_mesa_driver = self.mesa_driver_from_backend(effective_backend)
 
@@ -3952,11 +4428,11 @@ class MainWindow(QMainWindow):
 
         args = [exe.name]
 
-        extra = ""
-        if hasattr(self, "game_args_edit"):
+        extra = extra_args.strip()
+        if not extra and hasattr(self, "game_args_edit"):
             extra = self.game_args_edit.text().strip()
         if extra:
-            args += extra.split()
+            args += shlex.split(extra)
 
         if self.is_unity_game(game):
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", game.install_dir_name or game.name)
@@ -3970,18 +4446,44 @@ class MainWindow(QMainWindow):
         self.last_game_launch_ts[game.appid] = time.time()
         self.last_game_wine_log[game.appid] = Path(host_wine_log)
 
-        debug_prefix = "WINEDEBUG=+loaddll"
-        if self.backend_is_mesa(effective_backend):
-            debug_prefix = "WINEDEBUG=+loaddll,+wgl,+opengl"
-        cmd = f"cd {shlex.quote(str(exe_dir))} && {debug_prefix} {shlex.quote(wine)} { ' '.join(shlex.quote(a) for a in args) } > {shlex.quote(host_wine_log)} 2>&1"
+        
+        if effective_backend == LAUNCH_BACKEND_GPTK_FULL:
+            gptk_script = "/usr/local/bin/gameportingtoolkit" if Path("/usr/local/bin/gameportingtoolkit").exists() else "gameportingtoolkit"
+            cmd = f"arch -x86_64 {shlex.quote(gptk_script)} {shlex.quote(str(prefix_model.path))} {shlex.quote(str(exe))} { ' '.join(shlex.quote(a) for a in args) } > {shlex.quote(host_wine_log)} 2>&1"
+        else:
+            
+            backend_cmd = resolved_backend.launch_command(game_model, prefix_model)
+            
+            
+            if len(backend_cmd) >= 3:
+                
+                wine_binary_to_use = backend_cmd[2]
+                arch_prefix = "arch -x86_64" if backend_cmd[0] == "arch" else ""
+            else:
+                wine_binary_to_use = self.wine_binary() or "wine"
+                arch_prefix = "arch -x86_64"
+
+            debug_prefix = "WINEDEBUG=+loaddll"
+            if self.backend_is_mesa(effective_backend):
+                debug_prefix = "WINEDEBUG=+loaddll,+wgl,+opengl"
+            
+            cmd = f"cd {shlex.quote(str(exe_dir))} && {debug_prefix} {arch_prefix} {shlex.quote(str(wine_binary_to_use))} { ' '.join(shlex.quote(a) for a in args) } > {shlex.quote(host_wine_log)} 2>&1"
+
         self.game_process.setProgram("bash")
         self.game_process.setArguments(["-lc", cmd])
         self.game_process.readyReadStandardOutput.connect(lambda: self._drain_process(self.game_process))
         self.game_process.readyReadStandardError.connect(lambda: self._drain_process(self.game_process))
+        
+        backend_label = "Wine builtin"
+        if effective_backend == LAUNCH_BACKEND_GPTK_FULL: backend_label = "GPTK Full"
+        elif effective_backend == LAUNCH_BACKEND_D3DMETAL3: backend_label = "D3DMetal 3"
+        elif effective_backend == LAUNCH_BACKEND_DXVK: backend_label = "DXVK"
+        elif effective_backend == LAUNCH_BACKEND_VKD3D: backend_label = "VKD3D-Proton"
+        elif effective_backend == LAUNCH_BACKEND_DXMT: backend_label = "DXMT"
+        elif self.backend_is_mesa(effective_backend): backend_label = f"Mesa {effective_mesa_driver}"
+
         self.game_process.started.connect(
-            lambda: self.set_status(
-                f"Started {game.name} ({'Mesa ' + effective_mesa_driver if self.backend_is_mesa(effective_backend) else ('VKD3D-Proton' if effective_backend == LAUNCH_BACKEND_VKD3D else ('DXMT' if effective_backend == LAUNCH_BACKEND_DXMT else ('DXVK' if effective_backend == LAUNCH_BACKEND_DXVK else 'Wine builtin')))})"
-            )
+            lambda: self.set_status(f"Started {game.name} ({backend_label})")
         )
         self.game_process.errorOccurred.connect(lambda e: self.set_status(f"Game error: {e}"))
 
@@ -3989,17 +4491,7 @@ class MainWindow(QMainWindow):
             self.set_status(f"{game.name} exited with code {code}")
 
             if effective_backend == LAUNCH_BACKEND_DXVK:
-                log_path = self._latest_dxvk_log_for_game(game)
-                if log_path and log_path.exists():
-                    try:
-                        text = log_path.read_text(encoding="utf-8", errors="ignore")
-                        lines = text.splitlines()
-                        tail = "\n".join(lines[-200:]) if lines else "(log is empty)"
-                        self.log(f"--- DXVK log: {log_path.name} (last {min(200, len(lines))} lines) ---")
-                        for line in tail.splitlines():
-                            self.log(line)
-                    except Exception as exc:
-                        self.log(f"Failed to read DXVK log {log_path}: {exc}")
+                self.show_dxvk_log_for_selected_game()
 
             wine_log_path = self.last_game_wine_log.get(game.appid)
             if wine_log_path and wine_log_path.exists():
@@ -4014,56 +4506,18 @@ class MainWindow(QMainWindow):
                     self.log(f"Failed to read wine log {wine_log_path}: {exc}")
 
             if self.is_unity_game(game):
-                log_path = self.latest_unity_player_log_for_game(game)
-                if log_path and log_path.exists():
-                    try:
-                        text = log_path.read_text(encoding="utf-8", errors="ignore")
-                        lines = text.splitlines()
-                        tail = "\n".join(lines[-200:]) if lines else "(log is empty)"
-                        self.log(f"--- Unity Player.log: {log_path} (last {min(200, len(lines))} lines) ---")
-                        for line in tail.splitlines():
-                            self.log(line)
-                    except Exception as exc:
-                        self.log(f"Failed to read Unity log {log_path}: {exc}")
+                self.show_unity_player_log_for_selected_game()
 
         self.game_process.finished.connect(_on_game_finished)
         self.game_process.start()
 
-
     def closeEvent(self, event) -> None:
-        # Kill tracked Qt processes first
         for proc in (self.game_process, self.steam_process):
             if proc and proc.state() != QProcess.ProcessState.NotRunning:
                 proc.kill()
                 proc.waitForFinished(2000)
-
-        # Shut down the entire Wine server for this prefix — terminates all
-        # remaining Wine processes (winedevice, services, explorer, etc.) cleanly.
-        try:
-            import subprocess
-            wineserver = self.wineserver_binary()
-            env = self.wine_env()
-            subprocess.run([wineserver, "-k"], env=env, timeout=5)
-        except Exception:
-            pass
-
         super().closeEvent(event)
 
-
-def request_microphone_permission() -> bool:
-    if sys.platform != "darwin":
-        return True
-
-    try:
-        status = AV.AVCaptureDevice.authorizationStatusForMediaType_(AV.AVMediaTypeAudio)
-        if status == 0:
-            AV.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
-                AV.AVMediaTypeAudio, lambda granted: None
-            )
-            return False
-        return status == 3
-    except Exception:
-        return False
 
 
 def main() -> int:
@@ -4071,7 +4525,6 @@ def main() -> int:
     app.setStyle("Fusion")
     app.setStyleSheet(MODERN_THEME)
     win = MainWindow()
-    request_microphone_permission()
     win.show()
     win.apply_ui_modes()
     return app.exec()
