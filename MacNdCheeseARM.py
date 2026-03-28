@@ -908,7 +908,8 @@ DEFAULT_VKD3D_DIR = str(Path.home() / "vkd3d-proton")
 DEFAULT_GPTK_DIR = str(Path(__file__).resolve().with_name("gptk"))
 DEFAULT_PATCHED_WINE_APP_RESOURCES_SUBDIR = "wine-build"
 STEAM_URL = "https://steamcdn-a.akamaihd.net/client/installer/SteamSetup.exe"
-DXVK_DLLS = ("dxgi.dll", "d3d11.dll", "d3d10core.dll")
+DXVK_DLLS = ("d3d11.dll", "d3d10core.dll")
+DXVK_OPTIONAL_DLLS = ("dxgi.dll",)
 
 DEFAULT_MESA_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
 
@@ -3201,6 +3202,7 @@ class MainWindow(QMainWindow):
 
     def wine_env(self) -> dict[str, str]:
         env = os.environ.copy()
+        env["WINEDEBUG"] = "-all"
         env["WINEPREFIX"] = str(self.prefix_path)
 
         if not env.get("VK_ICD_FILENAMES"):
@@ -3393,6 +3395,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(500, self.unified_steam_action)
         elif state == 2:
             self.log("Unified Setup: Steam installer executed.")
+            QTimer.singleShot(500, self.unified_steam_action)
 
         # Handle pending bottle exe after tool install
         pending_exe = getattr(self, "_pending_bottle_exe", None)
@@ -3438,7 +3441,7 @@ class MainWindow(QMainWindow):
         missing: list[str] = []
         if not self.has_wine():
             missing.append("Wine")
-        if not (self.dxvk_install / "bin" / "dxgi.dll").exists():
+        if not (self.dxvk_install / "bin" / "d3d11.dll").exists():
             missing.append("DXVK")
         if not (self.mesa_dir / "opengl32.dll").exists():
             missing.append("Mesa")
@@ -3807,7 +3810,7 @@ class MainWindow(QMainWindow):
             return
         run_env = env.copy()
         run_env.update(self.wine_env())
-        self.run_commands([[wine, str(self.steam_setup)]], env=run_env)
+        self.run_commands([[wine, str(self.steam_setup), "/S"]], env=run_env)
 
     def launch_steam(self, backend: Optional[Backend] = None, game_model: Optional[GameModel] = None) -> None:
         wine = self.ensure_wine()
@@ -3880,7 +3883,7 @@ class MainWindow(QMainWindow):
             return
 
         wine_ok = self.has_wine()
-        dxvk_ok = (self.dxvk_install / "bin" / "dxgi.dll").exists()
+        dxvk_ok = (self.dxvk_install / "bin" / "d3d11.dll").exists()
         mesa_ok = (self.mesa_dir / "opengl32.dll").exists()
 
         steam_installed = (self.steam_dir / "steam.exe").exists()
@@ -4243,6 +4246,9 @@ class MainWindow(QMainWindow):
         for tdir in sorted(target_dirs):
             for dll in DXVK_DLLS:
                 shutil.copy2(dxvk_bin / dll, tdir / dll)
+            for dll in DXVK_OPTIONAL_DLLS:
+                if (dxvk_bin / dll).exists():
+                    shutil.copy2(dxvk_bin / dll, tdir / dll)
             self.log(f"Copied {', '.join(DXVK_DLLS)} -> {tdir}")
 
         self.set_status(f"Patched {game.name} with local DXVK")
@@ -4257,7 +4263,7 @@ class MainWindow(QMainWindow):
         try:
             
             for p in game.game_dir.glob("**/*.dll"):
-                if p.name.lower() in [d.lower() for d in DXVK_DLLS]:
+                if p.name.lower() in [d.lower() for d in DXVK_DLLS + DXVK_OPTIONAL_DLLS]:
                     p.unlink()
                     removed_count += 1
             self.log(f"Removed {removed_count} DXVK/Mesa DLLs from {game.game_dir}")
