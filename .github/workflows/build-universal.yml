@@ -1,4 +1,4 @@
-name: Build MacNCheese DMGs
+name: Build MacNCheese DMG (Intel)
 
 on:
   workflow_dispatch:
@@ -11,29 +11,20 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Apple Silicon
-            runner: macos-14
-            arch_name: silicon
-          - name: Intel
-            runner: macos-13
-            arch_name: intel
-
-    runs-on: ${{ matrix.runner }}
+    name: Build Intel (x86_64)
+    runs-on: macos-latest  # Apple Silicon runner
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure Rosetta 2
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
       - name: Install create-dmg
         run: brew install create-dmg
@@ -41,14 +32,15 @@ jobs:
       - name: Make build script executable
         run: chmod +x scripts/build_dmg.sh
 
-      - name: Build app and DMG
-        run: ./scripts/build_dmg.sh "${{ matrix.arch_name }}"
+      - name: Build Intel DMG
+        run: |
+          arch -x86_64 ./scripts/build_dmg.sh intel
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MacNCheese-${{ matrix.arch_name }}-dmg
-          path: MacNCheese-${{ matrix.arch_name }}.dmg
+          name: MacNCheese-intel-dmg
+          path: MacNCheese-intel.dmg
           retention-days: 7
 
   release:
@@ -58,22 +50,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download silicon artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: MacNCheese-silicon-dmg
-          path: artifacts/silicon
-
-      - name: Download intel artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: MacNCheese-intel-dmg
-          path: artifacts/intel
+          path: artifacts/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/silicon/MacNCheese-silicon.dmg
-            artifacts/intel/MacNCheese-intel.dmg
+          files: artifacts/MacNCheese-intel.dmg
           generate_release_notes: true
