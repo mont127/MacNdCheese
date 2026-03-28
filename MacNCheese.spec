@@ -1,38 +1,47 @@
 # MacNCheese.spec
-# PyInstaller spec file for MacNCheese
-#
-# If you have an icon, drop MacNCheese.icns in the project root and
-# uncomment the icon= line in the BUNDLE section below.
-#
-# Build with:
-#   pyinstaller MacNCheese.spec
-# Or for a specific arch:
-#   arch -x86_64 python3.12 -m PyInstaller MacNCheese.spec
 
 import os
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_submodules
+
+APP_NAME = "MacNCheese"
+MAIN_SCRIPT = "MacNCheese.py"
+ICON_PATH = "assets/MacNCheese.icns"
+BUNDLE_ID = "com.marcel.macncheese"
+VERSION = os.environ.get("MACNCHEESE_VERSION", "0.1.0")
 
 block_cipher = None
 
+datas = [
+    ("installer.sh", "."),
+]
+
+optional_files = [
+    "Add.png",
+    "Wine.png",
+    "Steam.png",
+    "Setting.png",
+]
+
+for f in optional_files:
+    if os.path.exists(f):
+        datas.append((f, "."))
+
+if os.path.exists("gptk"):
+    datas.append(("gptk", "gptk"))
+
 a = Analysis(
-    ['MacNdCheeseARM.py'],
-    pathex=['.'],
+    [MAIN_SCRIPT],
+    pathex=["."],
     binaries=[],
-    datas=[
-        ('installer.sh', '.'),
-        *([('Add.png', '.')] if __import__('os').path.exists('Add.png') else []),
-        *([('Wine.png', '.')] if __import__('os').path.exists('Wine.png') else []),
-        *([('Steam.png', '.')] if __import__('os').path.exists('Steam.png') else []),
-    ],
+    datas=datas,
     hiddenimports=[
-        # PyQt6 sometimes needs these nudged explicitly
-        *collect_submodules('PyQt6'),
+        *collect_submodules("PyQt6"),
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'tkinter',
+        "tkinter",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -51,14 +60,14 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='MacNCheese',
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,       
-    console=False,   # no terminal window
+    upx=False,
+    console=False,
     disable_windowed_traceback=False,
-    target_arch=None,  # controlled at CLI via --target-arch
+    target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
 )
@@ -71,27 +80,25 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='MacNCheese',
+    name=APP_NAME,
 )
 
 app = BUNDLE(
     coll,
-    name='MacNCheese.app',
-    icon='icon.icns',
-    bundle_identifier='com.macncheese.app',
+    name=f"{APP_NAME}.app",
+    icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
+    bundle_identifier=BUNDLE_ID,
     info_plist={
-        'CFBundleName': 'MacNCheese',
-        'CFBundleDisplayName': 'MacNCheese',
-        'CFBundleVersion': '0.1.0',
-        'CFBundleShortVersionString': '0.1.0',
-        'NSHighResolutionCapable': True,
-        'NSMicrophoneUsageDescription': 'MacNCheese requests microphone access for game audio compatibility.',
-        'NSRequiresAquaSystemAppearance': False,  # allows dark mode
-        'LSMinimumSystemVersion': '11.0',
-        # Suppress the "damaged app" prompt on first launch for
-        # unsigned builds distributed outside the App Store
-        'LSEnvironment': {
-            'OBJC_DISABLE_INITIALIZE_FORK_SAFETY': 'YES',
+        "CFBundleName": APP_NAME,
+        "CFBundleDisplayName": APP_NAME,
+        "CFBundleVersion": VERSION,
+        "CFBundleShortVersionString": VERSION,
+        "NSHighResolutionCapable": True,
+        "NSMicrophoneUsageDescription": "MacNCheese requests microphone access for audio-related compatibility features.",
+        "NSRequiresAquaSystemAppearance": False,
+        "LSMinimumSystemVersion": "11.0",
+        "LSEnvironment": {
+            "OBJC_DISABLE_INITIALIZE_FORK_SAFETY": "YES",
         },
     },
 )
