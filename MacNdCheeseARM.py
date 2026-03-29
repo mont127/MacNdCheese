@@ -187,9 +187,9 @@ class SettingsDialog(QDialog):
         self.bottle_icon_edit = QLineEdit()
         self.bottle_icon_edit.setPlaceholderText("Leave empty to use default icon")
 
-        # Remove / Delete buttons
-        danger_row = QWidget()
-        danger_layout = QHBoxLayout(danger_row)
+        # Remove / Delete buttons (hidden for default Steam bottle)
+        self.bottle_danger_row = QWidget()
+        danger_layout = QHBoxLayout(self.bottle_danger_row)
         danger_layout.setContentsMargins(0, 0, 0, 0)
         btn_remove = QPushButton("Remove from List")
         btn_remove.clicked.connect(self._remove_prefix)
@@ -200,11 +200,50 @@ class SettingsDialog(QDialog):
         danger_layout.addWidget(btn_delete)
         danger_layout.addStretch()
 
+        # Open SteamSetup button (shown only for default Steam bottle)
+        self.btn_open_steamsetup = QPushButton("Open SteamSetup")
+        self.btn_open_steamsetup.setToolTip("Download and run SteamSetup.exe to install, repair, or uninstall Steam")
+
+        self.bottle_backend_combo = QComboBox()
+        self.bottle_backend_combo.addItem("Auto (recommended)", LAUNCH_BACKEND_AUTO)
+
+        self.btn_init_prefix = QPushButton("Initialize Prefix")
+        self.btn_init_prefix.setToolTip("Run wineboot to create the Wine prefix (drive_c, registry, etc.)")
+
+        # Tool buttons visible for all bottles
+        tools_row = QWidget()
+        tools_layout = QGridLayout(tools_row)
+        tools_layout.setContentsMargins(0, 0, 0, 0)
+        self.btn_clean_prefix_bottle = QPushButton("Clean Prefix (wineboot -u)")
+        self.btn_kill_wineserver_bottle = QPushButton("Kill Wineserver")
+        self.btn_kill_wineserver_bottle.setStyleSheet("color: #FF5555;")
+        self.btn_unpatch_bottle = QPushButton("Unpatch Game (remove DLLs)")
+        tools_layout.addWidget(self.btn_clean_prefix_bottle, 0, 0)
+        tools_layout.addWidget(self.btn_kill_wineserver_bottle, 0, 1)
+        tools_layout.addWidget(self.btn_unpatch_bottle, 1, 0, 1, 2)
+
+        parent = self.parent()
+        if parent:
+            if hasattr(parent, "init_prefix"):
+                self.btn_init_prefix.clicked.connect(parent.init_prefix)
+            if hasattr(parent, "open_steamsetup"):
+                self.btn_open_steamsetup.clicked.connect(parent.open_steamsetup)
+            if hasattr(parent, "clean_prefix"):
+                self.btn_clean_prefix_bottle.clicked.connect(parent.clean_prefix)
+            if hasattr(parent, "kill_wineserver"):
+                self.btn_kill_wineserver_bottle.clicked.connect(parent.kill_wineserver)
+            if hasattr(parent, "unpatch_selected_game"):
+                self.btn_unpatch_bottle.clicked.connect(parent.unpatch_selected_game)
+
         form.addRow("Prefix path", self.bottle_prefix_display)
         form.addRow("Bottle Name", self.bottle_name_edit)
+        form.addRow("Graphics Backend", self.bottle_backend_combo)
+        form.addRow("Initialize Prefix", self.btn_init_prefix)
         form.addRow("Launcher exe", self._browsable(self.bottle_launcher_edit, dir=False))
         form.addRow("Custom icon (PNG)", self._browsable(self.bottle_icon_edit, dir=False))
-        form.addRow(danger_row)
+        form.addRow(self.btn_open_steamsetup)
+        form.addRow(self.bottle_danger_row)
+        form.addRow("Tools", tools_row)
 
         hint = QLabel("To edit a different bottle: close Settings, select it in the sidebar, then reopen Settings.")
         hint.setWordWrap(True)
@@ -225,6 +264,35 @@ class SettingsDialog(QDialog):
         self.bottle_name_edit.setText(bottle.get("name", ""))
         self.bottle_launcher_edit.setText(bottle.get("launcher_exe", ""))
         self.bottle_icon_edit.setText(bottle.get("icon_path", ""))
+        try:
+            is_default = str(Path(prefix_path).expanduser().resolve()) == str(Path(DEFAULT_PREFIX).expanduser().resolve())
+        except Exception:
+            is_default = False
+        if hasattr(self, "bottle_danger_row"):
+            self.bottle_danger_row.setVisible(not is_default)
+        if hasattr(self, "btn_open_steamsetup"):
+            self.btn_open_steamsetup.setVisible(is_default)
+        if hasattr(self, "btn_init_prefix"):
+            try:
+                already_init = (Path(prefix_path).expanduser() / "drive_c").exists()
+            except Exception:
+                already_init = False
+            self.btn_init_prefix.setVisible(not already_init)
+        if hasattr(self, "bottle_backend_combo"):
+            # Repopulate with currently available backends (parent is fully init'd here)
+            self.bottle_backend_combo.blockSignals(True)
+            self.bottle_backend_combo.clear()
+            self.bottle_backend_combo.addItem("Auto (recommended)", LAUNCH_BACKEND_AUTO)
+            if hasattr(parent, "available_backends"):
+                for _label, _bid in parent.available_backends():
+                    if _bid != LAUNCH_BACKEND_AUTO:
+                        self.bottle_backend_combo.addItem(_label, _bid)
+            self.bottle_backend_combo.blockSignals(False)
+            saved_backend = bottle.get("preferred_backend", LAUNCH_BACKEND_AUTO)
+            for i in range(self.bottle_backend_combo.count()):
+                if self.bottle_backend_combo.itemData(i) == saved_backend:
+                    self.bottle_backend_combo.setCurrentIndex(i)
+                    break
 
     def _build_paths_tab(self) -> QWidget:
         widget = QWidget()
@@ -351,73 +419,164 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        quick_box = QGroupBox("One-Click")
-        quick_layout = QVBoxLayout(quick_box)
-        self.quick_setup_btn = QPushButton("One Click Setup")
-        self.install_tools_btn = QPushButton("Install Tools")
-        self.install_wine_btn = QPushButton("Install Wine")
-        self.install_mesa_btn = QPushButton("Install Mesa")
-        self.build_dxvk_btn = QPushButton("Install DXVK (64-bit)")
-        self.build_dxvk32_btn = QPushButton("Install DXVK (32-bit)")
-        self.init_prefix_btn = QPushButton("Init Prefix")
-        self.clean_prefix_btn = QPushButton("Clean Prefix (wineboot -u)")
-        self.kill_wineserver_btn = QPushButton("Kill Wineserver (pkill)")
-        self.kill_wineserver_btn.setStyleSheet("color: #FF5555;")
-        self.unpatch_game_btn = QPushButton("Unpatch Game (remove DLLs)")
-        self.install_steam_btn = QPushButton("Install Steam")
-        self.install_gptk_full_btn = QPushButton("Install GPTK FULL (Experimental)")
-        self.install_gptk_full_btn.setStyleSheet("color: #FFCC00;") 
-        self.install_d3dmetal3_btn = QPushButton("Install D3DMetal 3 (Prebuilt)")
-        self.install_d3dmetal3_btn.setStyleSheet("color: #00D8D6; font-weight: bold;")
-        self.import_gptk_dlls_btn = QPushButton("Import GPTK DLLs")
-        self.import_gptk_dlls_btn.setStyleSheet("color: #7DD3FC; font-weight: bold;")
-        hint = QLabel("Installs tools, Wine, builds DXVK (64/32), then installs Mesa.")
-        hint.setWordWrap(True)
-        quick_layout.addWidget(self.quick_setup_btn)
-        quick_layout.addWidget(hint)
+        # --- Quick Setup ---
+        quick_box = QGroupBox("Quick Setup")
+        quick_layout = QHBoxLayout(quick_box)
+        self.minimal_setup_btn = QPushButton("Minimal")
+        self.minimal_setup_btn.setToolTip("Installs Tools, Wine, DXVK (64/32), and Mesa.")
+        self.everything_setup_btn = QPushButton("Everything")
+        self.everything_setup_btn.setToolTip("Installs all components.")
+        quick_layout.addWidget(self.minimal_setup_btn)
+        quick_layout.addWidget(self.everything_setup_btn)
         layout.addWidget(quick_box)
 
-        steps_box = QGroupBox("Individual Steps")
-        grid = QGridLayout(steps_box)
-        grid.addWidget(self.install_tools_btn, 0, 0)
-        grid.addWidget(self.install_wine_btn, 0, 1)
-        grid.addWidget(self.install_mesa_btn, 1, 0)
-        grid.addWidget(self.build_dxvk_btn, 1, 1)
-        grid.addWidget(self.build_dxvk32_btn, 2, 0)
-        grid.addWidget(self.init_prefix_btn, 2, 1)
-        grid.addWidget(self.install_steam_btn, 3, 1)
-        grid.addWidget(self.install_gptk_full_btn, 12, 0, 1, 1)
-        grid.addWidget(self.install_d3dmetal3_btn, 12, 1, 1, 1)
-        grid.addWidget(self.clean_prefix_btn, 13, 0, 1, 1)
-        grid.addWidget(self.kill_wineserver_btn, 13, 1, 1, 1)
-        grid.addWidget(self.unpatch_game_btn, 14, 0, 1, 2)
-        grid.addWidget(self.install_gptk_full_btn, 12, 0, 1, 1)
-        grid.addWidget(self.install_d3dmetal3_btn, 12, 1, 1, 1)
-        grid.addWidget(self.import_gptk_dlls_btn, 13, 0, 1, 2)
-        grid.addWidget(self.clean_prefix_btn, 14, 0, 1, 1)
-        grid.addWidget(self.kill_wineserver_btn, 14, 1, 1, 1)
-        grid.addWidget(self.unpatch_game_btn, 15, 0, 1, 2)
-        layout.addWidget(steps_box)
+        # --- Components (checkboxes + Install/Uninstall) ---
+        components_box = QGroupBox("Components")
+        comp_layout = QVBoxLayout(components_box)
+
+        self.cb_install_tools = QCheckBox("Install Tools")
+        self.cb_install_wine = QCheckBox("Install Wine")
+        self.cb_install_mesa = QCheckBox("Install Mesa")
+        self.cb_build_dxvk = QCheckBox("Install DXVK (64-bit)")
+        self.cb_build_dxvk32 = QCheckBox("Install DXVK (32-bit)")
+        self.cb_install_gptk_full = QCheckBox("Install GPTK FULL (Experimental)")
+        self.cb_install_d3dmetal3 = QCheckBox("Install D3DMetal 3 (Prebuilt)")
+        self.cb_import_gptk_dlls = QCheckBox("Import GPTK DLLs")
+
+        _indicator = (
+            "QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px;"
+            " border: 1px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.08); }"
+            "QCheckBox::indicator:checked { background: #4CAF50; border: 1px solid #4CAF50; }"
+            "QCheckBox::indicator:unchecked:hover { border: 1px solid rgba(255,255,255,0.7); }"
+        )
+        for cb, color, bold in (
+            (self.cb_install_tools,     None,      False),
+            (self.cb_install_wine,      None,      False),
+            (self.cb_install_mesa,      None,      False),
+            (self.cb_build_dxvk,        None,      False),
+            (self.cb_build_dxvk32,      None,      False),
+            (self.cb_install_gptk_full, "#FFCC00", True),
+            (self.cb_install_d3dmetal3, "#00D8D6", True),
+            (self.cb_import_gptk_dlls,  "#7DD3FC", True),
+        ):
+            color_css = f" color: {color};" if color else ""
+            weight_css = " font-weight: bold;" if bold else ""
+            cb.setStyleSheet(
+                f"QCheckBox {{ spacing: 8px;{color_css}{weight_css} }}" + _indicator
+            )
+            comp_layout.addWidget(cb)
+
+        self.install_uninstall_btn = QPushButton("Install / Uninstall / Update")
+        comp_layout.addWidget(self.install_uninstall_btn)
+        layout.addWidget(components_box)
         layout.addStretch()
+
+        # (install_action, uninstall_action_or_None)
+        self._component_actions = [
+            (self.cb_install_tools,     "install_tools",               None),
+            (self.cb_install_wine,      "install_wine",                None),
+            (self.cb_install_mesa,      "install_mesa",                None),
+            (self.cb_build_dxvk,        "build_dxvk",                  None),
+            (self.cb_build_dxvk32,      "build_dxvk32",                None),
+            (self.cb_install_gptk_full, "install_gptk_full",           None),
+            (self.cb_install_d3dmetal3, "install_d3dmetal3",           None),
+            (self.cb_import_gptk_dlls,  "choose_and_import_gptk_dlls", None),
+        ]
 
         parent = self.parent()
         if parent:
-            self.quick_setup_btn.clicked.connect(parent.quick_setup)
-            self.install_tools_btn.clicked.connect(parent.install_tools)
-            self.install_wine_btn.clicked.connect(parent.install_wine)
-            self.install_mesa_btn.clicked.connect(parent.install_mesa)
-            self.build_dxvk_btn.clicked.connect(parent.build_dxvk)
-            self.build_dxvk32_btn.clicked.connect(parent.build_dxvk32)
-            self.init_prefix_btn.clicked.connect(parent.init_prefix)
-            self.clean_prefix_btn.clicked.connect(parent.clean_prefix)
-            self.kill_wineserver_btn.clicked.connect(parent.kill_wineserver)
-            self.unpatch_game_btn.clicked.connect(parent.unpatch_selected_game)
-            self.install_steam_btn.clicked.connect(parent.install_steam)
-            self.install_gptk_full_btn.clicked.connect(parent.install_gptk_full)
-            self.install_d3dmetal3_btn.clicked.connect(parent.install_d3dmetal3)
-            self.import_gptk_dlls_btn.clicked.connect(parent.choose_and_import_gptk_dlls)
+            self.minimal_setup_btn.clicked.connect(parent.quick_setup)
+            self.everything_setup_btn.clicked.connect(self._everything_setup)
+            self.install_uninstall_btn.clicked.connect(self._install_uninstall_selected)
 
         return widget
+
+    def _refresh_component_checkboxes(self, parent) -> None:
+        """Check each component's installation state and tick checkboxes accordingly.
+        Uses self (SettingsDialog) for path lookups — always available at build time."""
+
+        def _path(edit_name: str) -> Optional[Path]:
+            try:
+                return Path(getattr(self, edit_name).text()).expanduser()
+            except Exception:
+                return None
+
+        def _is_tools():
+            # install_tools installs: git, p7zip (7z/7zz), winetricks via Homebrew
+            # shutil.which may miss Homebrew paths inside a .app bundle, so check explicitly
+            _brew_dirs = [Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+
+            def _find(name):
+                if shutil.which(name):
+                    return True
+                return any((d / name).exists() for d in _brew_dirs)
+
+            return _find("git") and (_find("7z") or _find("7zz")) and _find("winetricks")
+
+        def _is_wine():
+            try:
+                return parent.has_wine()
+            except Exception:
+                return False
+
+        def _is_mesa():
+            p = _path("mesa_dir_edit")
+            return bool(p and (p / "opengl32.dll").exists())
+
+        def _is_dxvk():
+            p = _path("dxvk_install_edit")
+            return bool(p and all((p / "bin" / dll).exists() for dll in DXVK_DLLS))
+
+        def _is_dxvk32():
+            p = _path("dxvk_install32_edit")
+            return bool(p and all((p / "bin" / dll).exists() for dll in DXVK_DLLS))
+
+        def _is_gptk_full():
+            return (
+                Path("/usr/local/bin/gameportingtoolkit").exists()
+                or bool(shutil.which("gameportingtoolkit"))
+            )
+
+        def _is_d3dmetal3():
+            return (
+                Path.home() / "gptk3" / "Game Porting Toolkit.app"
+                / "Contents" / "Resources" / "wine" / "bin" / "wine64"
+            ).exists()
+
+        def _is_gptk_dlls():
+            p = _path("gptk_dir_edit")
+            if not p:
+                return False
+            dll_dir = p / "lib" / "wine" / "x86_64-windows"
+            return all((dll_dir / dll).exists() for dll in GPTK_REQUIRED_DLLS)
+
+        states = [
+            _is_tools(), _is_wine(), _is_mesa(),
+            _is_dxvk(), _is_dxvk32(),
+            _is_gptk_full(), _is_d3dmetal3(), _is_gptk_dlls(),
+        ]
+        for (cb, _, _), checked in zip(self._component_actions, states):
+            cb.setChecked(checked)
+
+    def _install_uninstall_selected(self) -> None:
+        parent = self.parent()
+        if not parent:
+            return
+        for cb, install_action, uninstall_action in self._component_actions:
+            if not cb.isChecked():
+                continue
+            action = uninstall_action if uninstall_action else install_action
+            method = getattr(parent, action, None)
+            if method:
+                method()
+
+    def _everything_setup(self) -> None:
+        parent = self.parent()
+        if not parent:
+            return
+        for cb, _, _ in self._component_actions:
+            cb.setChecked(True)
+        self._install_selected()
 
     def _build_dev_tab(self) -> QWidget:
         widget = QWidget()
@@ -489,6 +648,9 @@ class SettingsDialog(QDialog):
             self.gptk_dir_edit.setText(parent.gptk_dir_edit.text())
         # Populate bottle tab for the currently active bottle
         self._reload_bottle_fields()
+        # Refresh component checkboxes now that parent is fully initialised
+        if hasattr(self, "_component_actions"):
+            self._refresh_component_checkboxes(parent)
 
     def save_config_to_parent(self) -> None:
         parent = self.parent()
@@ -518,11 +680,17 @@ class SettingsDialog(QDialog):
         # Save per-bottle settings
         if hasattr(parent, "_set_bottle_data") and hasattr(self, "bottle_name_edit"):
             current_prefix = self.prefix_combo.currentText()
+            backend_val = (
+                self.bottle_backend_combo.currentData()
+                if hasattr(self, "bottle_backend_combo")
+                else LAUNCH_BACKEND_AUTO
+            )
             parent._set_bottle_data(
                 current_prefix,
                 name=self.bottle_name_edit.text().strip(),
                 launcher_exe=self.bottle_launcher_edit.text().strip(),
                 icon_path=self.bottle_icon_edit.text().strip(),
+                preferred_backend=backend_val,
             )
             if hasattr(parent, "_sync_sidebar_prefix_buttons"):
                 parent._sync_sidebar_prefix_buttons()
@@ -2048,6 +2216,22 @@ class CreateBottleDialog(QDialog):
         exe_group.addLayout(exe_row)
         form_layout.addLayout(exe_group)
 
+        # Graphics Backend
+        backend_group = QVBoxLayout()
+        backend_group.setSpacing(6)
+        backend_lbl = QLabel("Graphics Backend")
+        backend_lbl.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 12px; font-weight: bold;")
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("Auto (recommended)", LAUNCH_BACKEND_AUTO)
+        _par = self.parent()
+        if _par and hasattr(_par, "available_backends"):
+            for _label, _bid in _par.available_backends():
+                if _bid != LAUNCH_BACKEND_AUTO:
+                    self.backend_combo.addItem(_label, _bid)
+        backend_group.addWidget(backend_lbl)
+        backend_group.addWidget(self.backend_combo)
+        form_layout.addLayout(backend_group)
+
         layout.addLayout(form_layout)
         layout.addStretch()
 
@@ -2339,8 +2523,24 @@ class GameLaunchDialog(QDialog):
         back_lbl = QLabel("Backend:")
         back_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 13px; font-weight: bold; width: 60px;")
         self.backend_combo = QComboBox()
-        for label, value in LAUNCH_BACKENDS:
-            self.backend_combo.addItem(label, value)
+        # Resolve the bottle's preferred backend for the "Bottle Default" label
+        _bottle_backend_label = "Auto (recommended)"
+        if parent and hasattr(parent, "_get_bottle_data") and hasattr(parent, "prefix_combo"):
+            _bdata = parent._get_bottle_data(parent.prefix_combo.currentText())
+            _saved = _bdata.get("preferred_backend", LAUNCH_BACKEND_AUTO)
+            if _saved:
+                for _lbl, _bid in LAUNCH_BACKENDS:
+                    if _bid == _saved:
+                        _bottle_backend_label = _lbl
+                        break
+        self.backend_combo.addItem(f"Bottle Default ({_bottle_backend_label})", "__bottle_default__")
+        # Add only installed backends
+        if parent and hasattr(parent, "available_backends"):
+            for _label, _value in parent.available_backends():
+                self.backend_combo.addItem(_label, _value)
+        else:
+            for _label, _value in LAUNCH_BACKENDS:
+                self.backend_combo.addItem(_label, _value)
         back_row.addWidget(back_lbl)
         back_row.addWidget(self.backend_combo, 1)
         form_layout.addLayout(back_row)
@@ -2439,6 +2639,12 @@ class GameLaunchDialog(QDialog):
 
         if p and hasattr(p, "launch_selected_game"):
             backend_id = self.backend_combo.currentData()
+            if backend_id == "__bottle_default__":
+                if hasattr(p, "_get_bottle_data") and hasattr(p, "prefix_combo"):
+                    bdata = p._get_bottle_data(p.prefix_combo.currentText())
+                    backend_id = bdata.get("preferred_backend", LAUNCH_BACKEND_AUTO)
+                else:
+                    backend_id = LAUNCH_BACKEND_AUTO
             args = self.args_edit.text()
             p.launch_selected_game(self.game, backend_id=backend_id, extra_args=args)   
         self.accept()
@@ -2823,6 +3029,25 @@ class MainWindow(QMainWindow):
             return LAUNCH_BACKEND_D3DMETAL3 if has_gptk3 else LAUNCH_BACKEND_VKD3D
             
         return LAUNCH_BACKEND_D3DMETAL3 if has_gptk3 else LAUNCH_BACKEND_DXVK
+
+    def available_backends(self) -> list[tuple[str, str]]:
+        """Return (label, backend_id) for Auto plus every installed backend."""
+        result: list[tuple[str, str]] = [("Auto (recommended)", LAUNCH_BACKEND_AUTO)]
+        if not hasattr(self, "prefix_combo") or not hasattr(self, "backend_registry"):
+            return result
+        prefix = self.current_prefix_model()
+        dummy = GameModel(name="", appid=None, install_path=Path("/"), exe_path=None)
+        for label, backend_id in LAUNCH_BACKENDS:
+            if backend_id == LAUNCH_BACKEND_AUTO:
+                continue
+            backend = self.backend_registry.get(backend_id)
+            if backend is not None:
+                try:
+                    if backend.is_available(prefix, dummy, self):
+                        result.append((label, backend_id))
+                except Exception:
+                    pass
+        return result
 
     def resolve_backend(self, backend_id: str, game: GameModel, prefix: PrefixModel) -> Backend:
         backend = self.backend_registry.get(backend_id)
@@ -3310,7 +3535,8 @@ class MainWindow(QMainWindow):
             
             # Save per-bottle config from dialog
             name = dlg.name_edit.text().strip() or Path(path_str).name or "Bottle"
-            self._set_bottle_data(str(p), name=name)
+            preferred_backend = dlg.backend_combo.currentData() if hasattr(dlg, "backend_combo") else LAUNCH_BACKEND_AUTO
+            self._set_bottle_data(str(p), name=name, preferred_backend=preferred_backend)
 
             self._sync_sidebar_prefix_buttons()
             
@@ -3332,10 +3558,9 @@ class MainWindow(QMainWindow):
 
             exe_path = dlg.exe_edit.text().strip()
             if exe_path:
-                wine = self.ensure_wine()
-                if wine:
-                    run_env = self.wine_env()
-                    self.run_commands([[wine, exe_path]], env=run_env)
+                # Init the prefix first, then run the installer once it's ready
+                self._pending_bottle_exe = exe_path
+                self.run_installer_action("init_prefix")
             else:
                 self.run_installer_action("init_prefix")
             
@@ -4100,6 +4325,7 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
 
     def on_worker_finished(self, ok: bool, message: str) -> None:
+        completed_action = self.interactive_install_action
         self.set_status(message if ok else f"Failed: {message}")
         self.interactive_install_in_progress = False
         if self._progress_dlg is not None:
@@ -4151,25 +4377,44 @@ class MainWindow(QMainWindow):
         from PyQt6.QtCore import QTimer
 
         if state == 1:
-            self.log("Unified Setup: Prerequisites installed. Checking Steam...")
+            self.log("Unified Setup: Prerequisites installed. Checking prefix & Steam...")
+            QTimer.singleShot(500, self.unified_steam_action)
+        elif state == 3:
+            self.log("Unified Setup: Prefix initialized. Checking Steam...")
             QTimer.singleShot(500, self.unified_steam_action)
         elif state == 15:
             self.log("Unified Setup: SteamSetup.exe downloaded. Starting installation...")
             QTimer.singleShot(500, self.unified_steam_action)
         elif state == 2:
             self.log("Unified Setup: Steam installer executed.")
+            # Clean up temp SteamSetup if we downloaded it
+            tmp = getattr(self, "_steam_setup_tmp", None)
+            if tmp:
+                try:
+                    Path(tmp).unlink(missing_ok=True)
+                except Exception:
+                    pass
+                self._steam_setup_tmp = None
             QTimer.singleShot(500, self.unified_steam_action)
+        elif state == 16:
+            self.log("SteamSetup downloaded. Opening interactively...")
+            self._open_steamsetup_pending = False
+            QTimer.singleShot(300, self.open_steamsetup)
 
         # Handle pending bottle exe after tool install
         pending_exe = getattr(self, "_pending_bottle_exe", None)
         if ok and pending_exe:
-            self._pending_bottle_exe = None
-            wine = self.ensure_wine()
-            if wine:
-                self.log(f"Tools installed. Running pending installer: {pending_exe}")
-                run_env = self.wine_env()
-                self.run_commands([[wine, pending_exe]], env=run_env)
+            if completed_action == "init_prefix":
+                # Prefix just initialised — now run the installer
+                self._pending_bottle_exe = None
+                wine = self.ensure_wine()
+                if wine:
+                    self.log(f"Prefix initialised. Running pending installer: {pending_exe}")
+                    run_env = self.wine_env()
+                    self.run_commands([[wine, pending_exe]], env=run_env)
             else:
+                # Tools just installed — init prefix next, keep _pending_bottle_exe set
+                self.log(f"Tools installed. Initialising prefix before running installer…")
                 self.run_installer_action("init_prefix")
 
         # After a custom-bottle installer finishes, offer to pick the launcher exe
@@ -4575,12 +4820,31 @@ class MainWindow(QMainWindow):
         env = self.request_admin_env()
         if env is None:
             return
-        if not self.steam_setup.exists():
-            QMessageBox.warning(self, APP_NAME, f"SteamSetup.exe not found at {self.steam_setup}")
+        setup_path = getattr(self, "_steam_setup_tmp", None) or self.steam_setup
+        if not Path(setup_path).exists():
+            QMessageBox.warning(self, APP_NAME, f"SteamSetup.exe not found at {setup_path}")
             return
         run_env = env.copy()
         run_env.update(self.wine_env())
-        self.run_commands([[wine, str(self.steam_setup), "/S"]], env=run_env)
+        self.run_commands([[wine, str(setup_path), "/S"]], env=run_env)
+
+    def open_steamsetup(self) -> None:
+        """Open SteamSetup.exe interactively (for repair/reinstall). Downloads if missing."""
+        import tempfile
+        wine = self.ensure_wine()
+        if not wine:
+            return
+        # Use already-downloaded temp file if present, else fall back to configured path
+        setup_path = getattr(self, "_steam_setup_tmp", None) or self.steam_setup
+        if not Path(setup_path).exists():
+            tmp = Path(tempfile.gettempdir()) / "MacNCheese_SteamSetup.exe"
+            self._steam_setup_tmp = tmp
+            self._unified_state = 16
+            self.log("SteamSetup.exe not found. Downloading to temp...")
+            self.run_commands([["curl", "-L", STEAM_URL, "-o", str(tmp)]])
+            return
+        run_env = self.wine_env()
+        self.run_commands([[wine, str(setup_path)]], env=run_env)
 
     def _launch_topbar_exe(self) -> None:
         bottle = self._get_bottle_data(self.prefix_combo.currentText())
@@ -4704,22 +4968,23 @@ class MainWindow(QMainWindow):
             self.run_installer_action("quick_setup", post_action="launch_steam")
             return
 
+        elif not (self.prefix_path / "drive_c").exists():
+            self.set_status("Prefix not initialized. Initializing before installing Steam...")
+            self._unified_state = 3
+            self.run_installer_action("init_prefix")
+            return
+
         elif not steam_installed:
             self.set_status("Steam not installed in prefix. Launching installer...")
 
-            if not self.steam_setup.exists():
-                self.log("SteamSetup.exe missing. Downloading it to Downloads folder...")
+            import tempfile
+            setup_path = getattr(self, "_steam_setup_tmp", None) or self.steam_setup
+            if not Path(setup_path).exists():
+                self.log("SteamSetup.exe missing. Downloading to temp folder...")
+                tmp = Path(tempfile.gettempdir()) / "MacNCheese_SteamSetup.exe"
+                self._steam_setup_tmp = tmp
                 self._unified_state = 15
-                self.steam_setup.parent.mkdir(parents=True, exist_ok=True)
-                self.run_commands([
-                    [
-                        "curl",
-                        "-L",
-                        STEAM_URL,
-                        "-o",
-                        str(self.steam_setup),
-                    ]
-                ])
+                self.run_commands([["curl", "-L", STEAM_URL, "-o", str(tmp)]])
             else:
                 self._unified_state = 2
                 self.install_steam()
@@ -5471,18 +5736,63 @@ class MainWindow(QMainWindow):
                     self.log(f"Failed to read wine log {wine_log_path}: {exc}")
 
             if self.is_unity_game(game):
-                self.show_unity_player_log_for_selected_game()
+                log_path = self.latest_unity_player_log_for_game(game)
+                if log_path and log_path.exists():
+                    try:
+                        text = log_path.read_text(encoding="utf-8", errors="ignore")
+                        lines = text.splitlines()
+                        tail = "\n".join(lines[-200:]) if lines else "(log is empty)"
+                        self.log(f"--- Unity Player.log: {log_path} (last {min(200, len(lines))} lines) ---")
+                        for line in tail.splitlines():
+                            self.log(line)
+                    except Exception as exc:
+                        self.log(f"Failed to read Unity Player.log: {exc}")
 
         self.game_process.finished.connect(_on_game_finished)
         self.game_process.start()
 
     def closeEvent(self, event) -> None:
         self.save_user_settings()
+        self._kill_all_wine_processes()
+        super().closeEvent(event)
+
+    def _kill_all_wine_processes(self) -> None:
+        # 1. Kill tracked QProcesses first
         for proc in (self.game_process, self.steam_process):
             if proc and proc.state() != QProcess.ProcessState.NotRunning:
                 proc.kill()
-                proc.waitForFinished(2000)
-        super().closeEvent(event)
+                proc.waitForFinished(3000)
+
+        # 2. Ask wineserver to exit gracefully for the current prefix
+        try:
+            wineserver = self.wineserver_binary()
+            env = {**os.environ, "WINEPREFIX": str(self.prefix_path)}
+            subprocess.run([wineserver, "-k"], env=env, timeout=5)
+        except Exception:
+            pass
+
+        # 3. SIGTERM any remaining wine/steam child processes, then SIGKILL stragglers
+        wine_patterns = [
+            "wineserver",
+            "wine64",
+            "wine-preloader",
+            "wine",
+            "steam.exe",
+            "steamwebhelper.exe",
+        ]
+        for pattern in wine_patterns:
+            try:
+                subprocess.run(["pkill", "-TERM", "-f", pattern], timeout=3)
+            except Exception:
+                pass
+
+        # Brief wait then force-kill anything still alive
+        time.sleep(1)
+        for pattern in wine_patterns:
+            try:
+                subprocess.run(["pkill", "-KILL", "-f", pattern], timeout=3)
+            except Exception:
+                pass
 
 
 
