@@ -24,6 +24,23 @@ try:
 except ImportError:
     _CA_FILE = None
 
+# Bootstrapping for portable MacNCheese builds
+# If we find a local cacert.pem (bundled in Resources), prioritize it for SSL/TLS
+if getattr(sys, "frozen", False):
+    bundle_dir = Path(sys._MEIPASS)
+    # 1. Check local Resources for cacert.pem (pushed by dmgndappbuilder.sh)
+    possible_cert = bundle_dir / "cacert.pem" 
+    if not possible_cert.exists():
+        # 2. Check standard Resources relative to MacOS binary
+        exe_path = Path(sys.executable).resolve()
+        possible_cert = exe_path.parent.parent / "Resources" / "cacert.pem"
+
+    if possible_cert.exists():
+        _CA_FILE = str(possible_cert)
+        os.environ["SSL_CERT_FILE"] = _CA_FILE
+        os.environ["REQUESTS_CA_BUNDLE"] = _CA_FILE
+
+
 
 def _make_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=_CA_FILE)
@@ -201,6 +218,7 @@ class SettingsDialog(QDialog):
         self.bottle_danger_row = QWidget()
         danger_layout = QHBoxLayout(self.bottle_danger_row)
         danger_layout.setContentsMargins(0, 0, 0, 0)
+
         btn_remove = QPushButton("Remove from List")
         btn_remove.clicked.connect(self._remove_prefix)
         btn_delete = QPushButton("Delete Prefix from Disk")
