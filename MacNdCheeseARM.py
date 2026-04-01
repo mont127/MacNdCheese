@@ -1209,7 +1209,7 @@ class WineSetupDialog(QDialog):
 
 APP_NAME = "MacNCheese"
 
-APP_VERSION = "v5.4.0"
+APP_VERSION = "v5.4.1"
 GITHUB_REPO = "mont127/MacNdCheese"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -4624,13 +4624,9 @@ class MainWindow(QMainWindow):
             return self.wine_binary()
         except Exception as exc:
             msg = str(exc)
-           
+            
             if "wine not found" in msg.lower() or "no such file" in msg.lower():
-                QMessageBox.information(
-                    self,
-                    APP_NAME,
-                    "Wine not found. MacNCheese will now open the installer to set up the environment.",
-                )
+                # self.install_wine() shows the manual setup dialog
                 self.install_wine()
                 return None
             QMessageBox.warning(self, APP_NAME, msg)
@@ -4690,9 +4686,25 @@ class MainWindow(QMainWindow):
             f"exit_status=$?; "
             f"echo; "
             f"echo 'Installer finished with exit code:' $exit_status; "
-            f"echo 'You can run extra commands in this terminal if needed.'; "
+            f"if [ $exit_status -ne 0 ]; then echo 'FAILURE: Problem occurred during installation.'; fi; "
+            f"echo 'You can close this window now or run more commands.'; "
             f"exec bash"
         )
+
+    def run_action_in_terminal(self, action: str) -> None:
+        cmd = self.installer_terminal_command(action)
+        # Use osascript to launch Terminal.app and run the command
+        # We need to escape double quotes and backslashes for AppleScript
+        escaped_cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
+        applescript = f'tell application "Terminal" to do script "{escaped_cmd}" activate'
+        
+        try:
+            subprocess.run(["osascript", "-e", applescript], check=True)
+            self.log(f"Launched native Terminal for action: {action}")
+        except Exception as e:
+            self.log(f"Failed to launch Terminal via osascript: {e}")
+            # Fallback to in-app run if osascript fails
+            self.run_installer_action(action)
 
 
 
@@ -4819,7 +4831,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, APP_NAME, f"Update check failed: {exc}")
 
     def install_tools(self) -> None:
-        self.run_installer_action("install_tools")
+        self.run_action_in_terminal("install_tools")
 
     def install_wine(self) -> None:
         patched = self.patched_wine_binary()
@@ -4837,6 +4849,12 @@ class MainWindow(QMainWindow):
     def install_vkd3d(self) -> None:
         self.run_installer_action("install_vkd3d")
     def quick_setup(self, *, post_action: Optional[str] = None) -> None:
+        if not self.ensure_wine():
+            self.log("Quick setup paused: Wine is required but not installed.")
+            # We don't return here because ensure_wine triggers the install_wine flow.
+            # However, ensure_wine is non-blocking (shows dialogs).
+            # If the user cancels, it returns None.
+            return
         self.run_installer_action("quick_setup", post_action=post_action)
 
 
@@ -4958,6 +4976,11 @@ class MainWindow(QMainWindow):
         p = Path(DEFAULT_PREFIX).expanduser()
         if not p.exists():
             self.log(f"Auto-creating default Steam prefix at {p}...")
+            # Always ensure Wine is present first
+            if not self.ensure_wine():
+                self.log("Auto-creation of default prefix paused: Waiting for manual Wine setup.")
+                return
+
             if self.missing_core_tools():
                 self.log("Dependencies missing for prefix initialization. Running quick setup first...")
                 self.quick_setup(post_action="init_prefix")
