@@ -212,7 +212,6 @@ kill_wineserver() {
 }
 
 quick_setup() {
-    install_wine
     install_dxvk
     install_mesa
 }
