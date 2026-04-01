@@ -333,6 +333,7 @@ class SettingsDialog(QDialog):
         self.prefix_combo.addItems(self.load_prefixes())
         self.prefix_combo.currentTextChanged.connect(self._save_current_prefixes)
 
+        self.wine_bin_edit = QLineEdit(DEFAULT_WINE_BIN)
         self.dxvk_src_edit = QLineEdit(DEFAULT_DXVK_SRC)
         self.dxvk_install_edit = QLineEdit(DEFAULT_DXVK_INSTALL)
         self.dxvk_install32_edit = QLineEdit(DEFAULT_DXVK_INSTALL32)
@@ -342,6 +343,7 @@ class SettingsDialog(QDialog):
         self.vkd3d_dir_edit = QLineEdit(DEFAULT_VKD3D_DIR)
         self.gptk_dir_edit = QLineEdit(DEFAULT_GPTK_DIR)
 
+        form.addRow("Wine binary/path", self._browsable(self.wine_bin_edit, dir=False))
         form.addRow("DXVK source", self._browsable(self.dxvk_src_edit, dir=True))
         form.addRow("DXVK install (64-bit)", self._browsable(self.dxvk_install_edit, dir=True))
         form.addRow("DXVK install (32-bit)", self._browsable(self.dxvk_install32_edit, dir=True))
@@ -643,6 +645,8 @@ class SettingsDialog(QDialog):
             return
         if hasattr(parent, "prefix_combo"):
             self.prefix_combo.setCurrentText(parent.prefix_combo.currentText())
+        if hasattr(parent, "wine_bin_edit"):
+            self.wine_bin_edit.setText(parent.wine_bin_edit.text())
         if hasattr(parent, "dxvk_src_edit"):
             self.dxvk_src_edit.setText(parent.dxvk_src_edit.text())
         if hasattr(parent, "dxvk_install_edit"):
@@ -674,6 +678,8 @@ class SettingsDialog(QDialog):
             parent.prefix_combo.setCurrentText(current)
             if current not in [parent.prefix_combo.itemText(i) for i in range(parent.prefix_combo.count())]:
                 parent.prefix_combo.insertItem(0, current)
+        if hasattr(parent, "wine_bin_edit"):
+            parent.wine_bin_edit.setText(self.wine_bin_edit.text())
         if hasattr(parent, "dxvk_src_edit"):
             parent.dxvk_src_edit.setText(self.dxvk_src_edit.text())
         if hasattr(parent, "dxvk_install_edit"):
@@ -1154,12 +1160,13 @@ QGroupBox::title {
 """
 
 APP_NAME = "MacNCheese"
-APP_VERSION = "v5.3.6"
+APP_VERSION = "v5.3.9"
 GITHUB_REPO = "mont127/MacNdCheese"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 DATA_ROOT = Path.home() / "Library" / "Application Support" / "MacNCheese"
 DEFAULT_PREFIX = str(DATA_ROOT / "bottles" / "wined")
+DEFAULT_WINE_BIN = ""
 DEFAULT_DXVK_SRC = str(DATA_ROOT / "src" / "DXVK-macOS")
 DEFAULT_DXVK_INSTALL = str(DATA_ROOT / "runtime" / "dxvk")
 DEFAULT_DXVK_INSTALL32 = str(DATA_ROOT / "runtime" / "dxvk-32")
@@ -2629,6 +2636,7 @@ class MainWindow(QMainWindow):
 
         self.prefix_combo = self.settings.prefix_combo
         self.prefix_combo.currentTextChanged.connect(self._on_prefix_changed)
+        self.wine_bin_edit = self.settings.wine_bin_edit
         self.dxvk_src_edit = self.settings.dxvk_src_edit
         self.dxvk_install_edit = self.settings.dxvk_install_edit
         self.dxvk_install32_edit = self.settings.dxvk_install32_edit
@@ -2671,6 +2679,17 @@ class MainWindow(QMainWindow):
                     items = [self.prefix_combo.itemText(i) for i in range(self.prefix_combo.count())]
                     if last_prefix in items:
                         self.prefix_combo.setCurrentText(last_prefix)
+                
+                # Load paths
+                if "wine_bin" in data: self.wine_bin_edit.setText(data["wine_bin"])
+                if "dxvk_src" in data: self.dxvk_src_edit.setText(data["dxvk_src"])
+                if "dxvk_install" in data: self.dxvk_install_edit.setText(data["dxvk_install"])
+                if "dxvk_install32" in data: self.dxvk_install32_edit.setText(data["dxvk_install32"])
+                if "steam_setup" in data: self.steam_setup_edit.setText(data["steam_setup"])
+                if "mesa_dir" in data: self.mesa_dir_edit.setText(data["mesa_dir"])
+                if "dxmt_dir" in data: self.dxmt_dir_edit.setText(data["dxmt_dir"])
+                if "vkd3d_dir" in data: self.vkd3d_dir_edit.setText(data["vkd3d_dir"])
+                if "gptk_dir" in data: self.gptk_dir_edit.setText(data["gptk_dir"])
             except Exception:
                 pass
 
@@ -2679,8 +2698,17 @@ class MainWindow(QMainWindow):
             data = {
                 "skip_update_check": self.skip_update_check,
                 "active_prefix": self.prefix_combo.currentText(),
+                "wine_bin": self.wine_bin_edit.text(),
+                "dxvk_src": self.dxvk_src_edit.text(),
+                "dxvk_install": self.dxvk_install_edit.text(),
+                "dxvk_install32": self.dxvk_install32_edit.text(),
+                "steam_setup": self.steam_setup_edit.text(),
+                "mesa_dir": self.mesa_dir_edit.text(),
+                "dxmt_dir": self.dxmt_dir_edit.text(),
+                "vkd3d_dir": self.vkd3d_dir_edit.text(),
+                "gptk_dir": self.gptk_dir_edit.text(),
             }
-            self.user_settings_path.write_text(json.dumps(data))
+            self.user_settings_path.write_text(json.dumps(data, indent=2))
         except Exception:
             pass
 
@@ -4250,6 +4278,21 @@ class MainWindow(QMainWindow):
         if patched:
             return patched
 
+        # 1. Custom override from settings
+        custom = self.wine_bin_edit.text().strip()
+        if custom:
+            cp = Path(custom).expanduser()
+            if cp.exists():
+                if cp.is_dir():
+                    # Try common locations within a Wine distribution directory
+                    for sub in ("bin/wine64", "bin/wine", "wine64", "wine"):
+                        cand = cp / sub
+                        if cand.exists() and cand.is_file():
+                            return str(cand)
+                elif cp.is_file():
+                    return str(cp)
+
+        # 2. Portable and system defaults
         portable_wine = DATA_ROOT / "runtime" / "wine" / "bin" / "wine"
         for candidate in (
             str(portable_wine),
@@ -4275,6 +4318,17 @@ class MainWindow(QMainWindow):
         if patched:
             return patched
 
+        # 1. Look relative to the active wine_binary
+        try:
+            wb = Path(self.wine_binary())
+            # Check same dir as wine, or a sibling bin dir if we found it in a weird way
+            for cand_path in (wb.parent / "wineserver", wb.parent.parent / "bin" / "wineserver"):
+                if cand_path.exists() and cand_path.is_file():
+                    return str(cand_path)
+        except Exception:
+            pass
+
+        # 2. Portable and system defaults
         portable_ws = DATA_ROOT / "runtime" / "wine" / "bin" / "wineserver"
         for candidate in (
             str(portable_ws),
