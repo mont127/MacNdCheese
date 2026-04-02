@@ -61,7 +61,7 @@ PORTABLE_BASE_URL="https://github.com/mont127/CheeseInstallation/releases/downlo
 PORTABLE_DEPS_URL="$PORTABLE_BASE_URL/macncheese_deps_arm64.zip"
 PORTABLE_WINE_URL="$PORTABLE_BASE_URL/wine_arm64.tar.xz"
 
-
+# (PORTABLE_DIR and PATH handled at top)
 WORK_DIR="$(mktemp -d /tmp/macncheese-installer.XXXXXX)"
 BREW_BIN=""
 trap 'stop_sudo_keepalive; rm -rf "$WORK_DIR"' EXIT
