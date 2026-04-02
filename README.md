@@ -12,7 +12,10 @@ MacNCheese is a simple app that lets you install and play Windows games on your 
 💬 **Need help?** Join the [Discord server](https://discord.gg/UPpVShYDaf)!
 
 ---
+##Showcase 
+https://private-user-images.githubusercontent.com/84504416/573255652-81c35744-dc2b-40c9-8202-bf0f2382e71c.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NzUxNjE3NDgsIm5iZiI6MTc3NTE2MTQ0OCwicGF0aCI6Ii84NDUwNDQxNi81NzMyNTU2NTItODFjMzU3NDQtZGMyYi00MGM5LTgyMDItYmYwZjIzODJlNzFjLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA0MDIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNDAyVDIwMjQwOFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPThmMjNmOGFiZWRmZjhmNTQyZjBjMjJmNmU5MzIxMTllMmZlZWFhMDAyZmMyNWJjMzk5M2FhMWNmYmQ4ZTA1YTcmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.aS3bYCvPTeW6ecWdK_btU3inrM_f0ic7yvhqQKH0e_k
 
+---
 ## 🚀 Quickstart Guide
 
 ### Step 1 — Before you begin: download Steam for Windows
