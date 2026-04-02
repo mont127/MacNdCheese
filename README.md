@@ -15,7 +15,8 @@ MacNCheese is a simple app that lets you install and play Windows games on your 
 ## Showcase 
 <p align="center">
   <img src="IMG_0734.png" width="128" alt="MacNCheese icon" />
-</
+</>
+
 ---
 ## 🚀 Quickstart Guide
 
