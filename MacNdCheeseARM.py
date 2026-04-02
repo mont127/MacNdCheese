@@ -15,6 +15,9 @@ import webbrowser
 import platform
 import getpass
 import signal
+import stat
+import tempfile
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Any
@@ -4610,10 +4613,41 @@ class MainWindow(QMainWindow):
             return True, out
         return False, "Xcode Command Line Tools are required before setup can continue. Run 'xcode-select --install', finish the macOS installer, then reopen MacNCheese."
 
+    @contextlib.contextmanager
+    def _admin_askpass_context(self, password: str) -> Iterable[dict[str, str]]:
+        """
+        Creates a secure temporary password file and an askpass helper script.
+        Yields an environment dictionary with SUDO_ASKPASS and MNC_PWD_FILE set.
+        Cleans up temporary files on exit.
+        """
+        pwd_fd, pwd_path = tempfile.mkstemp(prefix="mnc_pwd_")
+        ask_fd, ask_path = tempfile.mkstemp(prefix="mnc_ask_", suffix=".sh")
+        try:
+            with os.fdopen(pwd_fd, 'w') as f:
+                f.write(password)
+            os.chmod(pwd_path, stat.S_IRUSR | stat.S_IWUSR)
+
+            # Create askpass script
+            with os.fdopen(ask_fd, 'w') as f:
+                f.write(f"#!/bin/sh\ncat {shlex.quote(pwd_path)}")
+            os.chmod(ask_path, stat.S_IRWXU)
+
+            env = os.environ.copy()
+            env["SUDO_ASKPASS"] = ask_path
+            env["MNC_PWD_FILE"] = pwd_path
+            # Force sudo to use askpass by setting DISPLAY or other triggers if needed
+            if "DISPLAY" not in env:
+                env["DISPLAY"] = ":0"
+            yield env
+        finally:
+            with contextlib.suppress(Exception):
+                os.unlink(pwd_path)
+            with contextlib.suppress(Exception):
+                os.unlink(ask_path)
+
     def check_admin_access(self, password: str) -> tuple[bool, str]:
-        env = os.environ.copy()
-        env["MNC_SUDO_PASSWORD"] = password
-        rc, out = self._run_shell_check("printf '%s\\n' \"$MNC_SUDO_PASSWORD\" | sudo -S -k -v", env=env)
+        with self._admin_askpass_context(password) as env:
+            rc, out = self._run_shell_check("sudo -A -k -v", env=env)
         if rc == 0:
             return True, ""
         user_name = getpass.getuser()
@@ -4622,7 +4656,7 @@ class MainWindow(QMainWindow):
             return False, f"The macOS account '{user_name}' is not an Administrator account. Use an admin account, then try again."
         return False, "The macOS password was rejected or sudo is unavailable. Enter the same password you use to sign in to macOS, then try again."
 
-    def request_admin_env(self) -> Optional[dict[str, str]]:
+    def request_admin_password(self) -> Optional[str]:
         password, ok = QInputDialog.getText(
             self,
             APP_NAME,
@@ -4630,31 +4664,29 @@ class MainWindow(QMainWindow):
             QLineEdit.EchoMode.Password,
         )
         if ok and password:
-            env = os.environ.copy()
-            env["MNC_SUDO_PASSWORD"] = password
-            return env
+            return password
         return None
 
-    def prepare_installer_env(self) -> Optional[dict[str, str]]:
+    def prepare_installer_env(self) -> Optional[tuple[str, dict[str, str]]]:
+        """Returns (password, base_env) or None if cancelled."""
         clt_ok, clt_msg = self.check_clt_installed()
         if not clt_ok:
             QMessageBox.warning(self, APP_NAME, clt_msg)
             self.set_status("Xcode Command Line Tools required")
             return None
 
-        env = self.request_admin_env()
-        if env is None:
+        password = self.request_admin_password()
+        if password is None:
             self.set_status("Setup cancelled")
             return None
 
-        password = env.get("MNC_SUDO_PASSWORD", "")
         admin_ok, admin_msg = self.check_admin_access(password)
         if not admin_ok:
             QMessageBox.warning(self, APP_NAME, admin_msg)
             self.set_status(admin_msg)
             return None
 
-        return env
+        return password, os.environ.copy()
 
     _ACTION_TITLES: dict[str, str] = {
         "install_tools": "Installing Tools",
@@ -4687,16 +4719,21 @@ class MainWindow(QMainWindow):
                     "macOS will now request your administrator password to install it. "
                     "All other components will then continue installing without sudo."
                 )
-                env = self.prepare_installer_env()
+                res = self.prepare_installer_env()
+                if res:
+                    password, env = res
+                    env["MNC_SUDOLESS"] = "1"
+                else:
+                    return
             else:
+                password = None
                 env = os.environ.copy()
-            
-            if env:
                 env["MNC_SUDOLESS"] = "1"
         else:
-            env = self.prepare_installer_env()
-            if env is None:
+            res = self.prepare_installer_env()
+            if res is None:
                 return
+            password, env = res
 
         script = self.installer_script_path()
         if not script.exists():
@@ -4725,7 +4762,13 @@ class MainWindow(QMainWindow):
             DEFAULT_MESA_URL,
         ]
         title = self._ACTION_TITLES.get(action, f"Running: {action}")
-        self.run_commands([args], env=env, cwd=str(script.parent), progress_title=title)
+        
+        if password:
+            with self._admin_askpass_context(password) as askpass_env:
+                env.update(askpass_env)
+                self.run_commands([args], env=env, cwd=str(script.parent), progress_title=title)
+        else:
+            self.run_commands([args], env=env, cwd=str(script.parent), progress_title=title)
 
 
     def _version_tuple(self, value: str) -> tuple[int, ...]:
