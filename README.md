@@ -59,7 +59,7 @@ Click the **Install Steam** button. The Steam installer will pop up — go throu
 
 ### 🤔 What even is this?
 MacNCheese is a free launcher that runs Windows games on macOS using Wine. It automatically sets up all the technical stuff (graphics translation layers, DLL overrides, etc.) so you don't have to.
-
+its my coping project.
 ### Is it free?
 100% free and open source, forever.
 
