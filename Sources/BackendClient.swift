@@ -159,9 +159,11 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func createBottle(name: String) async {
+    func createBottle(name: String, path: String? = nil) async {
         do {
-            _ = try await send(cmd: "create_bottle", params: ["name": name])
+            var params: [String: Any] = ["name": name]
+            if let path = path { params["path"] = path }
+            _ = try await send(cmd: "create_bottle", params: params)
             await loadBottles()
         } catch {
             lastError = "Failed to create bottle: \(error.localizedDescription)"
