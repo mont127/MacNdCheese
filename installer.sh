@@ -55,7 +55,8 @@ GSTREAMER_URL="https://gstreamer.freedesktop.org/data/pkg/osx/1.28.1/gstreamer-1
 DXVK_PREBUILT_URL="https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz"
 WINE_STABLE_URL="https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0/wine-stable-11.0-osx64.tar.xz"
 DXMT_DEFAULT_URL="https://github.com/3Shain/dxmt/releases/latest/download/dxmt.tar.gz"
-VKD3D_DEFAULT_URL="https://github.com/HansKristian-Work/vkd3d-proton/releases/latest/download/vkd3d-proton-master.tar.zst"
+VKD3D_DEFAULT_URL="https://github.com/mont127/CheeseInstallation/releases/download/v1.0.0/vkd3d-proton.tar.zst"
+GPTK_PACKAGE_URL="https://github.com/mont127/CheeseInstallation/releases/download/v1.0.0/gptk-package.zip"
 
 PORTABLE_BASE_URL="https://github.com/mont127/CheeseInstallation/releases/download/v1.0.0"
 PORTABLE_DEPS_URL="$PORTABLE_BASE_URL/macncheese_deps_arm64.zip"
@@ -343,83 +344,88 @@ install_vkd3d() {
     exit 1
   fi
 
-  mkdir -p "$VKD3D_DIR"
-  archive="$WORK_DIR/vkd3d-proton.tar.zst"
-  unpack_dir="$WORK_DIR/vkd3d-proton"
-  rm -rf "$unpack_dir"
-  mkdir -p "$unpack_dir"
+  # Same layout as DXVK: VKD3D_DIR/x86/ and VKD3D_DIR/x64/
+  mkdir -p "$VKD3D_DIR/x86" "$VKD3D_DIR/x64"
+  archive="$WORK_DIR/vkd3d-proton-archive"
+  extract_dir="$WORK_DIR/vkd3d-prebuilt"
 
-  echo "Downloading VKD3D-Proton from $VKD3D_URL"
+  echo "Step: Downloading and installing VKD3D-Proton DLLs..."
   download_file "$VKD3D_URL" "$archive"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
 
-  local zstd_bin="zstd"
-  if [ -x "$PORTABLE_DIR/bin/zstd" ]; then
-    zstd_bin="$PORTABLE_DIR/bin/zstd"
-  fi
+  # Detect format and extract accordingly
+  case "$VKD3D_URL" in
+    *.tar.zst)
+      # Try multiple zstd paths: homebrew, system, then tar --zstd
+      ZSTD_BIN=""
+      if [ -x /opt/homebrew/bin/zstd ]; then
+        ZSTD_BIN="/opt/homebrew/bin/zstd"
+      elif [ -x /usr/local/bin/zstd ]; then
+        ZSTD_BIN="/usr/local/bin/zstd"
+      elif command -v zstd >/dev/null 2>&1; then
+        ZSTD_BIN="$(command -v zstd)"
+      fi
 
-  if [ -x "$PORTABLE_DIR/bin/unzstd" ]; then
-    "$PORTABLE_DIR/bin/unzstd" -f "$archive"
-    archive_tar="${archive%.zst}"
-  elif command -v unzstd >/dev/null 2>&1; then
-    unzstd -f "$archive"
-    archive_tar="${archive%.zst}"
-  elif command -v "$zstd_bin" >/dev/null 2>&1; then
-    "$zstd_bin" -d -f "$archive" -o "${archive%.zst}"
-    archive_tar="${archive%.zst}"
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY' "$archive" "${archive%.zst}"
-import sys
-from pathlib import Path
-src = Path(sys.argv[1])
-dst = Path(sys.argv[2])
-try:
-    import zstandard as zstd
-except Exception:
-    raise SystemExit("Python zstandard module is required to unpack VKD3D-Proton .tar.zst archives")
-with src.open('rb') as fsrc, dst.open('wb') as fdst:
-    dctx = zstd.ZstdDecompressor()
-    dctx.copy_stream(fsrc, fdst)
-PY
-    archive_tar="${archive%.zst}"
-  else
-    echo "No zstd decompressor found. Install zstd via Homebrew first."
-    exit 1
-  fi
+      if [ -n "$ZSTD_BIN" ]; then
+        "$ZSTD_BIN" -d "$archive" -o "$archive.tar" && tar -xf "$archive.tar" -C "$extract_dir"
+        rm -f "$archive.tar"
+      else
+        tar --zstd -xf "$archive" -C "$extract_dir"
+      fi
+      ;;
+    *.tar.gz|*.tgz)
+      tar -xzf "$archive" -C "$extract_dir"
+      ;;
+    *.zip)
+      unzip -o -q "$archive" -d "$extract_dir"
+      ;;
+    *)
+      tar -xf "$archive" -C "$extract_dir"
+      ;;
+  esac
 
-  tar -xf "$archive_tar" -C "$unpack_dir"
-
-  found_dir=""
+  # Find the x86 dir with d3d12.dll (archive has x86/ and x64/ folders)
+  found_x86=""
   for candidate in \
-    "$unpack_dir" \
-    "$unpack_dir/x64" \
-    "$unpack_dir/lib" \
-    "$unpack_dir/lib64" \
-    "$unpack_dir/vkd3d-proton"; do
-    if [ -f "$candidate/d3d12.dll" ] && [ -f "$candidate/d3d12core.dll" ]; then
-      found_dir="$candidate"
+    "$extract_dir/x86" \
+    "$extract_dir/VKD3D/x86" \
+    "$extract_dir/vkd3d-proton/x86"; do
+    if [ -f "$candidate/d3d12.dll" ]; then
+      found_x86="$candidate"
       break
     fi
   done
-
-  if [ -z "$found_dir" ]; then
-    found_dir="$(find "$unpack_dir" -type f \( -name d3d12.dll -o -name d3d12core.dll \) -print | head -n1 | xargs -I{} dirname "{}" 2>/dev/null || true)"
+  if [ -z "$found_x86" ]; then
+    found_x86="$(find "$extract_dir" -path "*/x86/d3d12.dll" -print | head -n1 | xargs -I{} dirname "{}" 2>/dev/null || true)"
   fi
 
-  if [ -z "$found_dir" ] || [ ! -f "$found_dir/d3d12.dll" ] || [ ! -f "$found_dir/d3d12core.dll" ]; then
-    echo "VKD3D-Proton archive did not contain the expected d3d12.dll and d3d12core.dll files"
+  # Find the x64 dir (may or may not exist)
+  found_x64=""
+  for candidate in \
+    "$extract_dir/x64" \
+    "$extract_dir/VKD3D/x64" \
+    "$extract_dir/vkd3d-proton/x64"; do
+    if [ -f "$candidate/d3d12.dll" ]; then
+      found_x64="$candidate"
+      break
+    fi
+  done
+  if [ -z "$found_x64" ]; then
+    found_x64="$(find "$extract_dir" -path "*/x64/d3d12.dll" -print | head -n1 | xargs -I{} dirname "{}" 2>/dev/null || true)"
+  fi
+
+  if [ -z "$found_x86" ] || [ ! -f "$found_x86/d3d12.dll" ]; then
+    echo "VKD3D-Proton archive did not contain the expected x86/d3d12.dll"
     exit 1
   fi
 
   echo "Installing VKD3D-Proton into $VKD3D_DIR"
-  rm -f "$VKD3D_DIR/d3d12.dll" "$VKD3D_DIR/d3d12core.dll" "$VKD3D_DIR/dxgi.dll"
-  cp -f "$found_dir/d3d12.dll" "$VKD3D_DIR/d3d12.dll"
-  cp -f "$found_dir/d3d12core.dll" "$VKD3D_DIR/d3d12core.dll"
-
-  if [ -f "$found_dir/dxgi.dll" ]; then
-    cp -f "$found_dir/dxgi.dll" "$VKD3D_DIR/dxgi.dll"
+  cp -f "$found_x86/"*.dll "$VKD3D_DIR/x86/"
+  if [ -n "$found_x64" ] && [ -d "$found_x64" ]; then
+    cp -f "$found_x64/"*.dll "$VKD3D_DIR/x64/"
   fi
-
-  echo "VKD3D-Proton installed successfully"
+  echo "VKD3D-Proton installed successfully (x86 + x64)"
 }
 
 install_dxvk() {
@@ -624,6 +630,41 @@ install_dxmt() {
   echo "DXMT installed successfully"
 }
 
+install_gptk_dlls() {
+  GPTK_DLL_DIR="$HOME/gptk/lib/wine/x86_64-windows"
+  mkdir -p "$GPTK_DLL_DIR"
+
+  archive="$WORK_DIR/gptk-package.zip"
+  extract_dir="$WORK_DIR/gptk-package"
+
+  echo "Step: Downloading and installing GPTK DLL package..."
+  download_file "$GPTK_PACKAGE_URL" "$archive"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+  unzip -o -q "$archive" -d "$extract_dir"
+
+  # Find DLLs - they may be flat or in a subfolder
+  found_dir=""
+  if [ -f "$extract_dir/d3d11.dll" ]; then
+    found_dir="$extract_dir"
+  else
+    found_dir="$(find "$extract_dir" -type f -name "d3d11.dll" -print | head -n1 | xargs -I{} dirname "{}" 2>/dev/null || true)"
+  fi
+
+  if [ -z "$found_dir" ] || [ ! -f "$found_dir/d3d11.dll" ]; then
+    echo "GPTK package did not contain the expected DLLs"
+    exit 1
+  fi
+
+  echo "Installing GPTK DLLs into $GPTK_DLL_DIR"
+  for dll in atidxx64.dll d3d10.dll d3d11.dll d3d12.dll dxgi.dll nvapi64.dll nvngx.dll; do
+    if [ -f "$found_dir/$dll" ]; then
+      cp -f "$found_dir/$dll" "$GPTK_DLL_DIR/$dll"
+    fi
+  done
+  echo "GPTK DLL package installed successfully"
+}
+
 init_prefix() {
   ensure_rosetta
   if [ -z "$PREFIX_DIR" ]; then
@@ -693,6 +734,9 @@ case "$ACTION" in
   install_vkd3d)
     install_tools
     install_vkd3d
+    ;;
+  install_gptk_dlls)
+    install_gptk_dlls
     ;;
   init_prefix)
     init_prefix
