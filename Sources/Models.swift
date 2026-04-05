@@ -6,11 +6,21 @@ struct Bottle: Identifiable, Codable, Hashable {
     var name: String
     var iconPath: String?
     var launcherExe: String?
+    var launcherType: String?   // "steam", "custom"; nil treated as "steam" for compat
+    var defaultBackend: String? // "auto", "dxvk", etc.
+
+    /// True when this bottle uses Steam as its launcher.
+    var isSteamBottle: Bool {
+        guard let lt = launcherType else { return true }
+        return lt == "steam"
+    }
 
     enum CodingKeys: String, CodingKey {
         case path, name
         case iconPath = "icon_path"
         case launcherExe = "launcher_exe"
+        case launcherType = "launcher_type"
+        case defaultBackend = "default_backend"
     }
 }
 
@@ -77,5 +87,27 @@ struct BackendsResponse: Codable {
     enum CodingKeys: String, CodingKey {
         case backends
         case autoResolved = "auto_resolved"
+    }
+}
+
+struct ComponentsStatus: Codable {
+    let hasTools: Bool
+    let hasWine: Bool
+    let hasMesa: Bool
+    let hasDxvk64: Bool
+    let hasDxvk32: Bool
+    let hasGptkFull: Bool
+    let hasD3dMetal3: Bool
+    let hasGptk: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case hasTools = "has_tools"
+        case hasWine = "has_wine"
+        case hasMesa = "has_mesa"
+        case hasDxvk64 = "has_dxvk64"
+        case hasDxvk32 = "has_dxvk32"
+        case hasGptkFull = "has_gptk_full"
+        case hasD3dMetal3 = "has_d3dmetal3"
+        case hasGptk = "has_gptk"
     }
 }

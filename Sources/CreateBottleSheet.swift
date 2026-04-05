@@ -4,6 +4,7 @@ struct CreateBottleSheet: View {
     @EnvironmentObject var backend: BackendClient
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var launcherType = "steam"
     @State private var customPath = ""
     @State private var useCustomPath = false
     @State private var isCreating = false
@@ -30,6 +31,23 @@ struct CreateBottleSheet: View {
                 TextField("e.g. My Games", text: $name)
                     .textFieldStyle(.roundedBorder)
             }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Launcher")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $launcherType) {
+                    Label("Steam", systemImage: "play.square.stack.fill").tag("steam")
+                    Label("None (plain Wine)", systemImage: "wineglass").tag("custom")
+                }
+                .pickerStyle(.segmented)
+                Text(launcherType == "steam"
+                     ? "Steam will be used to manage and launch games."
+                     : "No launcher – add games manually.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Custom location", isOn: $useCustomPath)
@@ -74,11 +92,8 @@ struct CreateBottleSheet: View {
                     isCreating = true
                     Task {
                         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if useCustomPath && !customPath.isEmpty {
-                            await backend.createBottle(name: trimmed, path: customPath)
-                        } else {
-                            await backend.createBottle(name: trimmed)
-                        }
+                        let path = useCustomPath && !customPath.isEmpty ? customPath : nil
+                        await backend.createBottle(name: trimmed, path: path, launcherType: launcherType)
                         isCreating = false
                         dismiss()
                     }
@@ -90,7 +105,7 @@ struct CreateBottleSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 420, height: 320)
+        .frame(width: 440, height: 380)
         .background(.ultraThinMaterial)
     }
 }

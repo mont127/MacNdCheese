@@ -5,6 +5,11 @@ struct GameGridView: View {
     let games: [Game]
     @Binding var searchText: String
 
+    private var activeBottle: Bottle? {
+        guard let prefix = backend.activePrefix else { return nil }
+        return backend.bottles.first { $0.path == prefix }
+    }
+
     private let columns = [
         GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)
     ]
@@ -19,19 +24,28 @@ struct GameGridView: View {
 
                 Spacer()
 
-                Button {
-                    guard let prefix = backend.activePrefix else { return }
-                    Task { await backend.launchSteam(prefix: prefix) }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.fill")
-                            .font(.caption)
-                        Text(backend.steamRunning ? "Steam Running" : "Open Steam")
+                if activeBottle?.isSteamBottle ?? true {
+                    Button {
+                        guard let prefix = backend.activePrefix else { return }
+                        if backend.steamRunning {
+                            Task {
+                                await backend.killWineserver(prefix: prefix)
+                                backend.steamRunning = false
+                            }
+                        } else {
+                            Task { await backend.launchSteam(prefix: prefix) }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: backend.steamRunning ? "stop.fill" : "play.fill")
+                                .font(.caption)
+                            Text(backend.steamRunning ? "Close Steam" : "Open Steam")
+                        }
                     }
+                    .buttonStyle(.bordered)
+                    .tint(backend.steamRunning ? .red : .cyan)
+                    .disabled(backend.activePrefix == nil)
                 }
-                .buttonStyle(.bordered)
-                .tint(backend.steamRunning ? .green : .cyan)
-                .disabled(backend.activePrefix == nil)
 
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass")

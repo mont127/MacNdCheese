@@ -14,6 +14,7 @@ struct GameLaunchSheet: View {
     @State private var selectedBackend: String = "auto"
     @State private var availableBackends: [GraphicsBackend] = []
     @State private var loadingBackends = true
+    @State private var retinaMode: Bool = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
 
     private var effectiveExe: String {
         if !selectedExe.isEmpty { return selectedExe }
@@ -118,6 +119,18 @@ struct GameLaunchSheet: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
+                // Retina mode
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(isOn: $retinaMode) {
+                        Text("Retina hi-res mode")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    Text("Enable high resolution for retina screens. Game compatibility might be affected.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 Spacer()
 
                 // Buttons
@@ -184,7 +197,7 @@ struct GameLaunchSheet: View {
         guard !exe.isEmpty else { return }
         isLaunching = true
         Task {
-            await backend.launchGame(prefix: prefix, exe: exe, args: extraArgs, backend: selectedBackend, installDir: game.installDir)
+            await backend.launchGame(prefix: prefix, exe: exe, args: extraArgs, backend: selectedBackend, installDir: game.installDir, retinaMode: retinaMode)
             isLaunching = false
             dismiss()
         }

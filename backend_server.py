@@ -22,7 +22,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +39,8 @@ DEFAULT_PREFIX = str(Path.home() / "wined")
 
 PREFIXES_JSON = Path.home() / ".macncheese_prefixes.json"
 BOTTLES_JSON = Path.home() / ".macncheese_bottles.json"
+
+STEAM_SETUP_URL = "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
 
 APPMANIFEST_RE = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
@@ -207,6 +212,31 @@ def _wine_env(prefix: str) -> Dict[str, str]:
         env["VK_ICD_FILENAMES"] = vk_icd
 
     return env
+
+
+def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
+    """Apply RetinaMode and LogPixels via `wine regedit file.reg`."""
+    retina_val = "y" if retina_mode else "n"
+    dpi_hex = "dc" if retina_mode else "60"  # 220=0xdc, 96=0x60
+    reg_content = (
+        "REGEDIT4\n\n"
+        "[HKEY_CURRENT_USER\\Software\\Wine\\Mac Driver]\n"
+        f'"RetinaMode"="{retina_val}"\n\n'
+        "[HKEY_CURRENT_USER\\Control Panel\\Desktop]\n"
+        f'"LogPixels"=dword:000000{dpi_hex}\n'
+    )
+    try:
+        reg_file = Path(tempfile.gettempdir()) / "wine_retina.reg"
+        reg_file.write_text(reg_content, encoding="utf-8")
+        subprocess.run(
+            [wine, "regedit", str(reg_file)],
+            env=env, timeout=15,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        log(f"Applied regedit: RetinaMode={retina_val}, LogPixels=000000{dpi_hex}")
+    except Exception as exc:
+        log(f"Warning: regedit failed: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # Graphics backend detection & env setup
@@ -712,30 +742,51 @@ def cmd_list_bottles(params: Dict[str, Any]) -> Any:
     bottles = _load_bottles()
     result: List[Dict[str, Any]] = []
     seen: set[str] = set()
+    bottles_base_str = str(BOTTLES_BASE.resolve())
 
     for raw_path in prefixes:
+        if not raw_path or not raw_path.strip():
+            continue  # skip empty paths (ghost bottles)
         key = _resolve_key(raw_path)
+        # Skip the bottles base directory itself – it's the container, not a bottle
+        if key == bottles_base_str:
+            continue
         if key in seen:
             continue
         seen.add(key)
         bottle = bottles.get(key, {})
+        name = bottle.get("name", Path(raw_path).name)
+        if not name:
+            name = Path(raw_path).name or raw_path
         result.append({
             "path": raw_path,
-            "name": bottle.get("name", Path(raw_path).name),
+            "name": name,
             "icon_path": bottle.get("icon_path", ""),
             "launcher_exe": bottle.get("launcher_exe", ""),
+            "launcher_type": bottle.get("launcher_type", "steam"),
+            "default_backend": bottle.get("default_backend", "auto"),
         })
 
     # Include bottles that may not be in the prefixes list
     for key, bottle in bottles.items():
-        if key not in seen:
-            seen.add(key)
-            result.append({
-                "path": key,
-                "name": bottle.get("name", Path(key).name),
-                "icon_path": bottle.get("icon_path", ""),
-                "launcher_exe": bottle.get("launcher_exe", ""),
-            })
+        if not key or not key.strip():
+            continue  # skip ghost entries
+        if key == bottles_base_str:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        name = bottle.get("name", Path(key).name)
+        if not name:
+            name = Path(key).name or key
+        result.append({
+            "path": key,
+            "name": name,
+            "icon_path": bottle.get("icon_path", ""),
+            "launcher_exe": bottle.get("launcher_exe", ""),
+            "launcher_type": bottle.get("launcher_type", "steam"),
+            "default_backend": bottle.get("default_backend", "auto"),
+        })
 
     return result
 
@@ -799,8 +850,15 @@ def cmd_scan_games(params: Dict[str, Any]) -> Any:
             "is_manual": True,
         })
 
-    games.sort(key=lambda g: g["name"].lower())
-    return games
+    # Deduplicate by appid (a game may appear in multiple library roots)
+    seen_ids: set[str] = set()
+    deduped: List[Dict[str, Any]] = []
+    for g in games:
+        if g["appid"] not in seen_ids:
+            seen_ids.add(g["appid"])
+            deduped.append(g)
+    deduped.sort(key=lambda g: g["name"].lower())
+    return deduped
 
 
 def cmd_launch_game(params: Dict[str, Any]) -> Any:
@@ -809,6 +867,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     args = params.get("args", "")
     backend = params.get("backend", "auto")
     install_dir = params.get("install_dir", "")
+    retina_mode = params.get("retina_mode", False)
     if not prefix:
         raise ValueError("Missing 'prefix' parameter")
     if not exe:
@@ -838,6 +897,9 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     # Build env with backend-specific setup
     env = _wine_env(prefix)
     env = _apply_backend_env(env, backend)
+
+    # Apply retina/DPI settings via regedit
+    _apply_retina_regedit(wine, env, retina_mode)
 
     exe_dir = str(exe_path.parent)
     exe_name = exe_path.name
@@ -879,6 +941,7 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     global _steam_process
 
     prefix = params.get("prefix")
+    retina_mode = params.get("retina_mode", False)
     if not prefix:
         raise ValueError("Missing 'prefix' parameter")
 
@@ -889,6 +952,38 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     wine = _find_wine()
     if not wine:
         raise FileNotFoundError("Wine not found. Install Wine first.")
+
+    # Check if this bottle has a custom launcher exe set
+    key = _resolve_key(prefix)
+    bottle_cfg = _load_bottles().get(key, {})
+    launcher_exe = bottle_cfg.get("launcher_exe", "").strip()
+
+    if launcher_exe and Path(launcher_exe).exists():
+        # Launch the custom exe instead of Steam
+        log(f"Using custom launcher_exe: {launcher_exe}")
+        env = _wine_env(prefix)
+        resolved = _resolve_auto_backend()
+        env = _apply_backend_env(env, resolved)
+        _apply_retina_regedit(wine, env, retina_mode)
+        exe_path = Path(launcher_exe)
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", exe_path.stem)
+        log_path = str(Path.home() / f"{safe_name}-wine.log")
+        cmd = (
+            f"cd {shlex.quote(str(exe_path.parent))} && "
+            f"arch -x86_64 {shlex.quote(wine)} "
+            f"{shlex.quote(str(exe_path))} "
+            f"> {shlex.quote(log_path)} 2>&1"
+        )
+        proc = subprocess.Popen(
+            ["bash", "-lc", cmd], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _steam_process = proc
+        log(f"Custom launcher launched with PID {proc.pid}")
+        return {"pid": proc.pid, "log_path": log_path, "already_running": False}
+    elif launcher_exe:
+        log(f"Custom launcher_exe '{launcher_exe}' not found, falling back to Steam")
 
     steam_dir = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
     steam_exe = steam_dir / "steam.exe"
@@ -916,11 +1011,12 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
         except Exception:
             pass
 
+    # Set retina/DPI via wine regedit with a .reg file
+    _apply_retina_regedit(wine, env, retina_mode)
+
     safe_name = "Steam"
     log_path = str(Path.home() / f"{safe_name}-wine.log")
 
-    # Build the command exactly as the original app does:
-    #   wine steam.exe -no-browser -vgui
     cmd = (
         f"cd {shlex.quote(str(steam_dir))} && "
         f"arch -x86_64 {shlex.quote(wine)} "
@@ -943,10 +1039,99 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     return {"pid": proc.pid, "log_path": log_path, "already_running": False}
 
 
+def cmd_launch_launcher(params: Dict[str, Any]) -> Any:
+    """Launch the custom launcher_exe for a non-steam bottle.
+    Falls back to a plain wine explorer if none is set."""
+    global _steam_process
+
+    prefix = params.get("prefix")
+    retina_mode = params.get("retina_mode", False)
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+
+    if _steam_process is not None and _steam_process.poll() is None:
+        return {"already_running": True, "pid": _steam_process.pid}
+
+    wine = _find_wine()
+    if not wine:
+        raise FileNotFoundError("Wine not found. Install Wine first.")
+
+    key = _resolve_key(prefix)
+    bottle_cfg = _load_bottles().get(key, {})
+    launcher_exe = bottle_cfg.get("launcher_exe", "").strip()
+
+    if not launcher_exe or not Path(launcher_exe).exists():
+        raise FileNotFoundError(
+            "No launcher exe configured for this bottle, or the file doesn't exist.\n"
+            "Set one in Settings → Bottle → Launcher exe."
+        )
+
+    env = _wine_env(prefix)
+    resolved = _resolve_auto_backend()
+    env = _apply_backend_env(env, resolved)
+    _apply_retina_regedit(wine, env, retina_mode)
+
+    exe_path = Path(launcher_exe)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", exe_path.stem)
+    log_path = str(Path.home() / f"{safe_name}-wine.log")
+
+    cmd = (
+        f"cd {shlex.quote(str(exe_path.parent))} && "
+        f"arch -x86_64 {shlex.quote(wine)} "
+        f"{shlex.quote(str(exe_path))} "
+        f"> {shlex.quote(log_path)} 2>&1"
+    )
+
+    log(f"Launching custom launcher: bash -lc {cmd!r}")
+    proc = subprocess.Popen(
+        ["bash", "-lc", cmd], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    _steam_process = proc
+    log(f"Custom launcher PID {proc.pid}, log at {log_path}")
+    return {"pid": proc.pid, "log_path": log_path, "already_running": False}
+
+
+_setup_proc: Optional[subprocess.Popen] = None
+
+
+def _download_and_run_steam_setup(prefix: str, wine: str) -> None:
+    """Download SteamSetup.exe and run it in the given prefix (background thread)."""
+    global _setup_proc
+    try:
+        setup_path = Path(tempfile.gettempdir()) / "SteamSetup.exe"
+        if not setup_path.exists():
+            log("Downloading SteamSetup.exe...")
+            urllib.request.urlretrieve(STEAM_SETUP_URL, str(setup_path))
+            log("SteamSetup.exe downloaded.")
+        env = _wine_env(prefix)
+        log(f"Launching SteamSetup.exe in {prefix}")
+        proc = subprocess.Popen(
+            [wine, str(setup_path)],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _setup_proc = proc
+    except Exception as exc:
+        log(f"Warning: failed to run SteamSetup: {exc}")
+
+
+def cmd_get_setup_pid(_params: Dict[str, Any]) -> Any:
+    global _setup_proc
+    running = _setup_proc is not None and _setup_proc.poll() is None
+    return {"running": running}
+
+
 def cmd_create_bottle(params: Dict[str, Any]) -> Any:
     name = params.get("name")
     if not name:
         raise ValueError("Missing 'name' parameter")
+
+    launcher_type = params.get("launcher_type", "steam")
+    default_backend = params.get("default_backend", "auto")
 
     custom_path = params.get("path")
     if custom_path:
@@ -964,10 +1149,12 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
         prefixes.append(path_str)
         _save_prefixes(prefixes)
 
-    # Set bottle name
+    # Set bottle config
     bottles = _load_bottles()
     existing = bottles.get(key, {})
     existing["name"] = name
+    existing["launcher_type"] = launcher_type
+    existing["default_backend"] = default_backend
     bottles[key] = existing
     _save_bottles(bottles)
 
@@ -989,7 +1176,32 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
     else:
         log("Wine not found, skipping wineboot initialization")
 
+    # For Steam bottles, download and run SteamSetup.exe in the background
+    if launcher_type == "steam" and wine:
+        threading.Thread(
+            target=_download_and_run_steam_setup,
+            args=(path_str, wine),
+            daemon=True,
+        ).start()
+
     return {"path": path_str}
+
+
+def cmd_reorder_bottles(params: Dict[str, Any]) -> Any:
+    """Save a new bottle order. `paths` is the ordered list of prefix paths."""
+    paths = params.get("paths")
+    if not isinstance(paths, list):
+        raise ValueError("Missing 'paths' list parameter")
+    # Keep only paths that are already known, discard unknowns
+    existing = set(_resolve_key(p) for p in _load_prefixes())
+    ordered = [p for p in paths if _resolve_key(p) in existing]
+    # Append any that were in existing but not in the new order (safety)
+    ordered_keys = set(_resolve_key(p) for p in ordered)
+    for p in _load_prefixes():
+        if _resolve_key(p) not in ordered_keys:
+            ordered.append(p)
+    _save_prefixes(ordered)
+    return {"ok": True}
 
 
 def cmd_delete_bottle(params: Dict[str, Any]) -> Any:
@@ -1073,20 +1285,11 @@ def cmd_kill_wineserver(params: Dict[str, Any]) -> Any:
 
 def cmd_get_status(params: Dict[str, Any]) -> Any:
     wine = _find_wine()
-    dxvk_installed = (PORTABLE_DIR / "dxvk" / "bin" / "d3d11.dll").exists() or any(
-        (PORTABLE_DIR / d / "d3d11.dll").exists()
-        for d in ("dxvk", "dxvk64", "bin")
-    )
-    mesa_installed = any(
-        (PORTABLE_DIR / d / "opengl32.dll").exists()
-        for d in ("mesa", "mesa64", "bin")
-    )
-
     return {
         "wine_found": wine is not None,
         "wine_path": wine or "",
-        "has_dxvk": dxvk_installed,
-        "has_mesa": mesa_installed,
+        "has_dxvk": _dxvk_available(),
+        "has_mesa": _mesa_available(),
     }
 
 
@@ -1224,6 +1427,23 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
     return {"backends": all_backends, "auto_resolved": auto_resolved}
 
 
+def cmd_get_components_status(params: Dict[str, Any]) -> Any:
+    """Return installation status for each setup component."""
+    has_tools = all(shutil.which(t) is not None for t in ("git", "7z", "winetricks"))
+    dxvk32_install = Path.home() / "dxvk-release-32"
+    has_dxvk32 = (dxvk32_install / "bin" / "d3d11.dll").exists()
+    return {
+        "has_tools": has_tools,
+        "has_wine": _find_wine() is not None,
+        "has_mesa": _mesa_available(),
+        "has_dxvk64": _dxvk_available(),
+        "has_dxvk32": has_dxvk32,
+        "has_gptk_full": _gptk_full_available(),
+        "has_d3dmetal3": _gptk_available(),
+        "has_gptk": _gptk_available(),
+    }
+
+
 def cmd_get_running_games(params: Dict[str, Any]) -> Any:
     alive: List[Dict[str, Any]] = []
     dead_pids: List[int] = []
@@ -1240,6 +1460,12 @@ def cmd_get_running_games(params: Dict[str, Any]) -> Any:
         _running_games.pop(pid, None)
 
     return alive
+
+
+def cmd_get_steam_running(_params: Dict[str, Any]) -> Any:
+    global _steam_process
+    running = _steam_process is not None and _steam_process.poll() is None
+    return {"running": running}
 
 # ---------------------------------------------------------------------------
 # Command dispatch table
@@ -1263,7 +1489,11 @@ COMMANDS: Dict[str, Any] = {
     "add_manual_game": cmd_add_manual_game,
     "detect_exes": cmd_detect_exes,
     "list_backends": cmd_list_backends,
+    "get_components_status": cmd_get_components_status,
     "get_running_games": cmd_get_running_games,
+    "get_steam_running": cmd_get_steam_running,
+    "get_setup_pid": cmd_get_setup_pid,
+    "reorder_bottles": cmd_reorder_bottles,
 }
 
 # ---------------------------------------------------------------------------

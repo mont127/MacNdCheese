@@ -26,6 +26,11 @@ struct SidebarView: View {
                             }
                         }
                 }
+                .onMove { from, to in
+                    var paths = backend.bottles.map { $0.path }
+                    paths.move(fromOffsets: from, toOffset: to)
+                    Task { await backend.reorderBottles(paths: paths) }
+                }
             }
         }
         .listStyle(.sidebar)
@@ -74,8 +79,13 @@ struct BottleRow: View {
                     .lineLimit(1)
             }
         } icon: {
-            Image(systemName: "wineglass")
-                .foregroundStyle(.cyan)
+            if bottle.isSteamBottle {
+                Image(systemName: "play.square.stack.fill")
+                    .foregroundStyle(.blue)
+            } else {
+                Image(systemName: "wineglass")
+                    .foregroundStyle(.cyan)
+            }
         }
         .padding(.vertical, 2)
     }
