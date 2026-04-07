@@ -245,7 +245,8 @@ struct GameLaunchSheet: View {
                 installDir: game.installDir,
                 retinaMode: retinaMode,
                 esync: sync.esync,
-                msync: sync.msync
+                msync: sync.msync,
+                metalHud: metalHud
             )
             isLaunching = false
             dismiss()
