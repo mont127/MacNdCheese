@@ -103,6 +103,7 @@ struct ComponentsStatus: Codable {
     let hasGptkFull: Bool
     let hasD3dMetal3: Bool
     let hasGptk: Bool
+    let hasVkd3d: Bool
     let wineVersion: String?
 
     enum CodingKeys: String, CodingKey {
@@ -116,6 +117,7 @@ struct ComponentsStatus: Codable {
         case hasGptkFull = "has_gptk_full"
         case hasD3dMetal3 = "has_d3dmetal3"
         case hasGptk = "has_gptk"
+        case hasVkd3d = "has_vkd3d"
         case wineVersion = "wine_version"
     }
 }

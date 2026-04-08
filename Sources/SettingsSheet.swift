@@ -405,11 +405,17 @@ struct SetupSettingsTab: View {
                     .padding(8)
                 }
 
-                GroupBox("Components") {
+                GroupBox("Tools") {
                     VStack(alignment: .leading, spacing: 8) {
                         ComponentToggleRow("Tools (git, 7z, winetricks)", isOn: $installTools,
                                           installed: wasTools, updateAvailable: toolsHasUpdate)
                             .disabled(isRunning)
+                    }
+                    .padding(8)
+                }
+
+                GroupBox("Wine (Translation Engine)") {
+                    VStack(alignment: .leading, spacing: 8) {
                         ComponentToggleRow("Wine (Stable)", isOn: $installWineStable,
                                           installed: wasWineStable, updateAvailable: wineStableHasUpdate)
                             .disabled(isRunning)
@@ -417,17 +423,22 @@ struct SetupSettingsTab: View {
                                           isOn: $installWineStaging,
                                           installed: wasWineStaging, updateAvailable: wineStagingHasUpdate)
                             .disabled(isRunning)
-                        ComponentToggleRow("Mesa", isOn: $installMesa, installed: wasMesa)
+                    }
+                    .padding(8)
+                }
+
+                GroupBox("Graphics Engine") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ComponentToggleRow(dxmtLatestName.map { "DXMT (\($0))" } ?? "DXMT",
+                                          isOn: $installGptkFull, installed: wasGptkFull, updateAvailable: dxmtHasUpdate)
                             .disabled(isRunning)
                         ComponentToggleRow("DXVK", isOn: $buildDxvk, installed: wasDxvk)
                             .disabled(isRunning)
-                        Divider()
                         ComponentToggleRow("VKD3D-Proton", isOn: $installVkd3d, installed: wasVkd3d)
-                            .foregroundStyle(.orange).disabled(isRunning)
+                            .disabled(isRunning)
                         ComponentToggleRow("D3DMetal (GPTK DLLs)", isOn: $installD3dMetal, installed: wasD3dMetal)
-                            .foregroundStyle(.cyan).disabled(isRunning)
-                        ComponentToggleRow(dxmtLatestName.map { "DXMT (\($0))" } ?? "DXMT",
-                                          isOn: $installGptkFull, installed: wasGptkFull, updateAvailable: dxmtHasUpdate)
+                            .disabled(isRunning)
+                        ComponentToggleRow("Mesa", isOn: $installMesa, installed: wasMesa)
                             .disabled(isRunning)
                     }
                     .padding(8)
@@ -511,7 +522,7 @@ struct SetupSettingsTab: View {
                 wasWineStaging = status.hasWineStaging; installWineStaging = status.hasWineStaging
                 wasMesa = status.hasMesa;             installMesa = status.hasMesa
                 wasDxvk = status.hasDxvk64;           buildDxvk = status.hasDxvk64
-                wasVkd3d = status.hasGptk;            installVkd3d = status.hasGptk
+                wasVkd3d = status.hasVkd3d;           installVkd3d = status.hasVkd3d
                 wasD3dMetal = status.hasD3dMetal3;    installD3dMetal = status.hasD3dMetal3
                 wasGptkFull = status.hasGptkFull;     installGptkFull = status.hasGptkFull
             }
@@ -578,7 +589,6 @@ struct SetupSettingsTab: View {
                 mesa: mesaDir,
                 mesaUrl: mesaUrl,
                 dxmt: dxmtDir,
-                metalHud: metalHud
                 vkd3d: vkd3dDir
             ) else {
                 isRunning = false

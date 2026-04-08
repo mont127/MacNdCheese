@@ -621,6 +621,17 @@ install_mesa() {
   fi
 }
 
+find_wine_win64_lib() {
+  for wine_app in "Wine Staging.app" "Wine Stable.app"; do
+    candidate="$PORTABLE_DIR/$wine_app/Contents/Resources/wine/lib/wine/x86_64-windows"
+    if [ -d "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 install_dxmt() {
   if [ -z "$DXMT_DIR" ]; then
     echo "Missing DXMT target directory"
@@ -709,6 +720,26 @@ install_dxmt() {
     echo "ERROR: Could not find portable Wine lib dirs — install Wine Stable or Staging first"
     exit 1
   fi
+
+  # Backup original Wine PE DLLs into a stable directory before overwriting.
+  # We skip a DLL if it already looks like a DXMT file (contains "winemetal" strings),
+  # which handles the case where DXMT was installed before backup logic existed.
+  WINE_ORIG_BACKUP_DIR="$PORTABLE_DIR/.dxmt-wine-backups"
+  mkdir -p "$WINE_ORIG_BACKUP_DIR"
+  echo "Backing up original Wine DLLs to $WINE_ORIG_BACKUP_DIR..."
+  for dll in d3d11.dll dxgi.dll d3d10core.dll; do
+    orig="$wine_win64_lib/$dll"
+    backup="$WINE_ORIG_BACKUP_DIR/$dll"
+    if [ -f "$orig" ] && [ ! -f "$backup" ]; then
+      # Skip if the file is already a DXMT DLL (no backup would be valid)
+      if strings "$orig" 2>/dev/null | grep -qi "winemetal"; then
+        echo "Skipping backup of $dll — already a DXMT DLL (no original available)"
+      else
+        cp -f "$orig" "$backup"
+        echo "Backed up: $dll"
+      fi
+    fi
+  done
 
   # This is a builtin-dll build: PE DLLs replace Wine's own in its lib directory
   echo "Installing DXMT PE DLLs into Wine x86_64-windows lib..."
@@ -828,17 +859,53 @@ uninstall_dxvk() {
 
 uninstall_dxmt() {
   echo "Step: Uninstalling DXMT..."
-  rm -f "$DXMT_DIR/d3d11.dll" "$DXMT_DIR/dxgi.dll" "$DXMT_DIR/d3d10core.dll" "$DXMT_DIR/d3d12.dll" 2>/dev/null || true
+  rm -f "$DXMT_DIR/d3d11.dll" "$DXMT_DIR/dxgi.dll" "$DXMT_DIR/d3d10core.dll" "$DXMT_DIR/winemetal.dll" 2>/dev/null || true
+  # Restore original Wine PE DLLs
+  wine_win64_lib="$(find_wine_win64_lib 2>/dev/null || true)"
+  if [ -n "$wine_win64_lib" ]; then
+    WINE_ORIG_BACKUP_DIR="$PORTABLE_DIR/.dxmt-wine-backups"
+    has_backup=0
+    for dll in d3d11.dll dxgi.dll d3d10core.dll; do
+      if [ -f "$WINE_ORIG_BACKUP_DIR/$dll" ]; then
+        has_backup=1
+        break
+      fi
+    done
+    if [ "$has_backup" = "1" ]; then
+      echo "Restoring original Wine DLLs from backup..."
+      for dll in d3d11.dll dxgi.dll d3d10core.dll; do
+        backup="$WINE_ORIG_BACKUP_DIR/$dll"
+        if [ -f "$backup" ]; then
+          cp -f "$backup" "$wine_win64_lib/$dll"
+          rm -f "$backup"
+          echo "Restored: $dll"
+        fi
+      done
+    else
+      echo "No original Wine DLL backups found (DXMT was installed before backup support)."
+      echo "Re-installing portable Wine to restore clean DLLs..."
+      install_portable_wine_staging
+    fi
+    # Always remove winemetal.so from Wine's unix lib
+    wine_unix_lib="$(dirname "$wine_win64_lib" | sed 's|x86_64-windows||')/x86_64-unix"
+    rm -f "$wine_unix_lib/winemetal.so" 2>/dev/null || true
+  fi
   grep -v "^dxmt=" "$VERSION_MARKER" > "${VERSION_MARKER}.tmp" 2>/dev/null || true
   mv "${VERSION_MARKER}.tmp" "$VERSION_MARKER" 2>/dev/null || true
   echo "DXMT removed."
+}
+
+uninstall_vkd3d() {
+  echo "Step: Uninstalling VKD3D-Proton..."
+  rm -rf "$VKD3D_DIR" 2>/dev/null || true
+  echo "VKD3D-Proton removed."
 }
 
 quick_setup() {
   ensure_rosetta
   install_portable_tools
   install_portable_wine
-  install_dxvk
+  install_dxmt
   install_mesa
 }
 
@@ -870,6 +937,9 @@ case "$ACTION" in
     ;;
   uninstall_dxmt)
     uninstall_dxmt
+    ;;
+  uninstall_vkd3d)
+    uninstall_vkd3d
     ;;
   build_dxvk64)
     install_tools

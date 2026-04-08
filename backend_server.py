@@ -313,6 +313,14 @@ def _vkd3d_available() -> bool:
 def _dxmt_available() -> bool:
     return DEFAULT_DXMT_DIR.exists() and (DEFAULT_DXMT_DIR / "d3d11.dll").exists()
 
+def _find_wine_win64_lib() -> Optional[Path]:
+    """Find the portable Wine's x86_64-windows PE DLL directory."""
+    for wine_app in ["Wine Staging.app", "Wine Stable.app"]:
+        candidate = PORTABLE_DIR / wine_app / "Contents" / "Resources" / "wine" / "lib" / "wine" / "x86_64-windows"
+        if candidate.is_dir():
+            return candidate
+    return None
+
 def _find_gptk_wine_root() -> Optional[Path]:
     """Find the GPTK toolkit wine root (contains bin/wine64, lib/, etc.)."""
     candidates = [
@@ -354,12 +362,11 @@ def _gptk_full_available() -> bool:
 
 
 def _resolve_auto_backend() -> str:
-    """Pick the best available backend, matching AutoBackend.resolve() logic."""
-    # Prefer D3DMetal3 (injection) > GPTK (copy) > DXVK > wine builtin
+    """Pick the best available backend: DXMT > D3DMetal > DXVK > Wine builtin."""
+    if _dxmt_available():
+        return BACKEND_DXMT
     if _d3dmetal3_available():
         return BACKEND_D3DMETAL3
-    if _gptk_available():
-        return BACKEND_GPTK
     if _dxvk_available():
         return BACKEND_DXVK
     return BACKEND_WINE
@@ -418,7 +425,9 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
         env.setdefault("VKD3D_CONFIG", "")
 
     elif backend == BACKEND_DXMT:
-        # builtin-dll=true build: DLLs are in Wine's own lib dir, no override needed
+        # builtin-dll=true build: DLLs are in Wine's own lib dir.
+        # Explicitly force builtin so stale native DLLs in the game dir don't win.
+        backend_ovr = "d3d11,d3d10core,dxgi=b"
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
         env.pop("GALLIUM_DRIVER", None)
@@ -671,8 +680,32 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
                 log(f"Copied VKD3D-Proton DLLs -> {tdir}")
 
     elif backend == BACKEND_DXMT:
-        # builtin-dll=true build: DLLs are already in Wine's lib dir — nothing to copy at launch
-        log("DXMT backend: DLLs are in Wine lib dir, no patching needed")
+        _unpatch_dxvk(game_dir)
+        # Verify DXMT DLLs are current in Wine's lib — copy from ~/dxmt/ if needed.
+        wine_lib = _find_wine_win64_lib()
+        if wine_lib:
+            for dll in ("d3d11.dll", "dxgi.dll", "d3d10core.dll", "winemetal.dll"):
+                src = DEFAULT_DXMT_DIR / dll
+                if src.exists():
+                    shutil.copy2(str(src), str(wine_lib / dll))
+            log(f"DXMT: verified/copied DLLs into {wine_lib}")
+        else:
+            log("DXMT: could not find Wine lib dir — DLLs may be stale")
+
+    elif backend == BACKEND_WINE:
+        _unpatch_dxvk(game_dir)
+        # Restore original Wine PE DLLs if DXMT had replaced them.
+        wine_lib = _find_wine_win64_lib()
+        backup_dir = PORTABLE_DIR / ".dxmt-wine-backups"
+        if wine_lib and backup_dir.is_dir():
+            restored = []
+            for dll in ("d3d11.dll", "dxgi.dll", "d3d10core.dll"):
+                backup = backup_dir / dll
+                if backup.exists():
+                    shutil.copy2(str(backup), str(wine_lib / dll))
+                    restored.append(dll)
+            if restored:
+                log(f"Wine builtin: restored original DLLs: {', '.join(restored)}")
 
     elif backend == BACKEND_GPTK:
         # Copy GPTK DLLs into game directory
@@ -1656,9 +1689,10 @@ def _read_version_marker(component: str) -> Optional[str]:
     return None
 
 
-def _get_wine_version() -> Optional[str]:
+def _get_wine_version(wine: Optional[str] = None) -> Optional[str]:
     """Run wine --version and return the raw version string."""
-    wine = _find_wine()
+    if wine is None:
+        wine = _find_wine()
     if not wine:
         return None
     try:
@@ -1748,6 +1782,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_gptk_full": _dxmt_available(),
         "has_d3dmetal3": _gptk_available(),
         "has_gptk": _gptk_available(),
+        "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
     }
 

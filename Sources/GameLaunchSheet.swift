@@ -89,9 +89,9 @@ struct GameLaunchSheet: View {
                     }
                 }
 
-                // Backend picker
+                // Graphics engine picker
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Graphics Backend:")
+                    Text("Graphics Engine:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fontWeight(.semibold)
@@ -102,10 +102,25 @@ struct GameLaunchSheet: View {
                             Text("Detecting...").font(.caption).foregroundStyle(.secondary)
                         }
                     } else {
+                        let mainIds: [String] = ["auto", "dxmt", "d3dmetal3", "dxvk", "vkd3d-proton"]
+                        let experimentalIds: [String] = ["wine", "mesa:llvmpipe", "mesa:zink", "mesa:swr", "gptk", "gptk_full"]
+                        let mainBackends = availableBackends.filter { mainIds.contains($0.backendId) }
+                            .sorted { mainIds.firstIndex(of: $0.backendId) ?? 99 < mainIds.firstIndex(of: $1.backendId) ?? 99 }
+                        let experimentalBackends = availableBackends.filter { experimentalIds.contains($0.backendId) }
+                            .sorted { experimentalIds.firstIndex(of: $0.backendId) ?? 99 < experimentalIds.firstIndex(of: $1.backendId) ?? 99 }
+
                         Picker("", selection: $selectedBackend) {
-                            ForEach(availableBackends) { b in
-                                Text(b.label)
+                            ForEach(mainBackends) { b in
+                                Text(engineLabel(b))
                                     .tag(b.backendId)
+                            }
+                            if !experimentalBackends.isEmpty {
+                                Divider()
+                                Text("— Experimental —").tag("__sep__").disabled(true)
+                                ForEach(experimentalBackends) { b in
+                                    Text(engineLabel(b))
+                                        .tag(b.backendId)
+                                }
                             }
                         }
                         .labelsHidden()
@@ -139,6 +154,7 @@ struct GameLaunchSheet: View {
                     Text("Metal HUD")
                         .font(.caption)
                         .fontWeight(.semibold)
+                }
                 // Synchronization
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Synchronization:")
@@ -235,8 +251,8 @@ struct GameLaunchSheet: View {
         let exe = effectiveExe
         guard !exe.isEmpty else { return }
         isLaunching = true
-        let sync = normalizedSyncSelection()
         Task {
+            let sync = normalizedSyncSelection()
             await backend.launchGame(
                 prefix: prefix,
                 exe: exe,
@@ -244,9 +260,9 @@ struct GameLaunchSheet: View {
                 backend: selectedBackend,
                 installDir: game.installDir,
                 retinaMode: retinaMode,
+                metalHud: metalHud,
                 esync: sync.esync,
-                msync: sync.msync,
-                metalHud: metalHud
+                msync: sync.msync
             )
             isLaunching = false
             dismiss()
@@ -266,6 +282,23 @@ struct GameLaunchSheet: View {
                 detectedExes.insert(path, at: 0)
             }
             selectedExe = path
+        }
+    }
+
+    private func engineLabel(_ b: GraphicsBackend) -> String {
+        switch b.backendId {
+        case "auto":       return "Auto (recommended)"
+        case "dxmt":       return "DXMT (Balanced)"
+        case "d3dmetal3":  return "D3DMetal (Best Performance)"
+        case "dxvk":       return "DXVK (Best Compatibility)"
+        case "vkd3d-proton": return "VKD3D-Proton (D3D12)"
+        case "wine":       return "Wine Builtin"
+        case "mesa:llvmpipe": return "Mesa llvmpipe (CPU)"
+        case "mesa:zink":  return "Mesa Zink (Vulkan)"
+        case "mesa:swr":   return "Mesa SWR (CPU/AVX)"
+        case "gptk":       return "GPTK (D3DMetal, copy DLLs)"
+        case "gptk_full":  return "GPTK Full (Apple Toolkit)"
+        default:           return b.label
         }
     }
 
