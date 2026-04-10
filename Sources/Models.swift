@@ -102,9 +102,9 @@ struct ComponentsStatus: Codable {
     let hasMesa: Bool
     let hasDxvk64: Bool
     let hasDxvk32: Bool
-    let hasGptkFull: Bool
+    let hasDxmt: Bool
+    let hasGptkDlls: Bool
     let hasD3dMetal3: Bool
-    let hasGptk: Bool
     let hasVkd3d: Bool
     let wineVersion: String?
     let hasRpcBridge: Bool
@@ -117,9 +117,9 @@ struct ComponentsStatus: Codable {
         case hasMesa = "has_mesa"
         case hasDxvk64 = "has_dxvk64"
         case hasDxvk32 = "has_dxvk32"
-        case hasGptkFull = "has_gptk_full"
+        case hasDxmt = "has_dxmt"
+        case hasGptkDlls = "has_gptk_dlls"
         case hasD3dMetal3 = "has_d3dmetal3"
-        case hasGptk = "has_gptk"
         case hasVkd3d = "has_vkd3d"
         case wineVersion = "wine_version"
         case hasRpcBridge = "has_rpc_bridge"

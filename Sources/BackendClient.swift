@@ -324,6 +324,19 @@ final class BackendClient: ObservableObject {
         }
     }
 
+<<<<<<< discord-rpc
+=======
+    func getBottleConfig(path: String) async -> [String: Any]? {
+        do {
+            let result = try await send(cmd: "get_bottle_config", params: ["path": path])
+            return result as? [String: Any]
+        } catch {
+            lastError = "Failed to get bottle config: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+>>>>>>> main
     func setBottleConfig(path: String, values: [String: Any]) async {
         var params: [String: Any] = ["path": path]
         for (k, v) in values { params[k] = v }

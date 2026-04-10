@@ -76,6 +76,7 @@ DEFAULT_DXMT_DIR = Path.home() / "dxmt"
 DEFAULT_VKD3D_DIR = Path.home() / "vkd3d-proton"
 DEFAULT_GPTK_DIR = Path.home() / "gptk"
 GPTK3_ROOT = Path.home() / "gptk3" / "Game Porting Toolkit.app"
+D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
 
 DXVK_DLLS = ("d3d11.dll", "d3d10core.dll")
 GPTK_REQUIRED_DLLS = ("atidxx64.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll", "nvapi64.dll", "nvngx.dll")
@@ -417,23 +418,23 @@ def _gptk_available() -> bool:
     return has_dlls and has_wine
 
 def _d3dmetal3_available() -> bool:
-    """Check if D3DMetal injection is possible (CrossOver-style).
-    Requires: override DLLs in x86_64-windows/, D3DMetal.framework + libd3dshared.dylib
-    in external/, and a working wine64 binary.
+    """Check if D3DMetal is available.
+    Requires: GPTK DLLs in x86_64-windows/, and D3DMetal native runtime
+    (D3DMetal.framework + libd3dshared.dylib) in the native dir.
     """
-    wine_root = _find_gptk_wine_root()
-    if not wine_root:
-        return False
     dll_dir = DEFAULT_GPTK_DIR / "lib" / "wine" / "x86_64-windows"
-    external_dir = wine_root / "lib" / "external"
-    return (
+    has_dlls = (
         dll_dir.exists()
         and (dll_dir / "d3d11.dll").exists()
         and (dll_dir / "dxgi.dll").exists()
         and (dll_dir / "d3d12.dll").exists()
-        and (external_dir / "D3DMetal.framework").exists()
-        and (external_dir / "libd3dshared.dylib").exists()
     )
+    has_native = (
+        D3DMETAL_NATIVE_DIR.exists()
+        and (D3DMETAL_NATIVE_DIR / "D3DMetal.framework").exists()
+        and (D3DMETAL_NATIVE_DIR / "libd3dshared.dylib").exists()
+    )
+    return has_dlls and has_native
 
 def _gptk_full_available() -> bool:
     return Path("/usr/local/bin/gameportingtoolkit").exists() or shutil.which("gameportingtoolkit") is not None
@@ -512,58 +513,66 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
         env.pop("MESA_GLTHREAD", None)
 
     elif backend == BACKEND_D3DMETAL3:
-        # D3DMetal3 uses the same env as GPTK (GPTK wine64 + D3DMetal DLLs),
-        # but the caller also auto-launches Steam in Mini Games List mode to
-        # bypass steamwebhelper which crashes under D3DMetal.
-        dll_dir = str(DEFAULT_GPTK_DIR / "lib" / "wine" / "x86_64-windows")
-        wine_root = _find_gptk_wine_root()
-        if wine_root:
-            lib_dir = wine_root / "lib"
-            unix_lib_dir = lib_dir / "wine" / "x86_64-unix"
-            gptk_pe_dir = lib_dir / "wine" / "x86_64-windows"
-            external_lib_dir = lib_dir / "external"
-            env["WINEDLLPATH"] = ":".join([dll_dir, str(gptk_pe_dir)])
-            env["DYLD_LIBRARY_PATH"] = ":".join([str(unix_lib_dir), str(lib_dir), str(external_lib_dir)])
-            env["DYLD_SHARED_REGION"] = "avoid"
-            env["WINEESYNC"] = "1"
-            env["CX_D3DMETALPATH"] = str(external_lib_dir)
-            env["DYLD_FALLBACK_LIBRARY_PATH"] = str(external_lib_dir)
-        wineserver = _find_wineserver()
-        if wineserver:
-            env["WINESERVER"] = wineserver
-        env["WINEPATH"] = dll_dir
-        backend_ovr = "atidxx64,d3d10,d3d11,d3d12,dxgi,nvapi64,nvngx=n,b"
-        env.pop("DXVK_LOG_PATH", None)
-        env.pop("DXVK_LOG_LEVEL", None)
-        env.pop("VKD3D_PROTON_PATH", None)
-        env.pop("DXMT_PATH", None)
-        env.pop("GALLIUM_DRIVER", None)
-        env.pop("MESA_GLTHREAD", None)
+        # D3DMetal3: uses MacNCheese Wine Stable + GPTK DLLs.
+        # DYLD_FALLBACK_LIBRARY_PATH must point to the native macOS D3DMetal
+        # runtime (.dylib / .framework), NOT the Windows .dll dir.
+        mnc_root = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine"
+        mnc_bin = mnc_root / "bin"
+
+        env["PATH"] = f"{mnc_bin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["ROSETTA_ADVERTISE_AVX"] = "1"
+        env["SteamAppId"] = "730"
+        env["SteamGameId"] = "730"
+
+        for var in (
+            "DYLD_LIBRARY_PATH",
+            "DYLD_SHARED_REGION",
+            "WINEDLLPATH",
+            "WINEPATH",
+            "WINESERVER",
+            "DXVK_LOG_PATH",
+            "DXVK_LOG_LEVEL",
+            "VKD3D_PROTON_PATH",
+            "DXMT_PATH",
+            "GALLIUM_DRIVER",
+            "MESA_GLTHREAD",
+        ):
+            env.pop(var, None)
+
+        backend_ovr = "winemenubuilder.exe=d;mscoree=;mshtml=;mf,mfplat,mfreadwrite,mfplay=b;atidxx64,d3d10,d3d11,d3d12,dxgi,nvapi64,nvngx-on-metalfx=n"
 
     elif backend == BACKEND_GPTK:
-        dll_dir = str(DEFAULT_GPTK_DIR / "lib" / "wine" / "x86_64-windows")
-        wine_root = _find_gptk_wine_root()
-        if wine_root:
-            lib_dir = wine_root / "lib"
-            unix_lib_dir = lib_dir / "wine" / "x86_64-unix"
-            gptk_pe_dir = lib_dir / "wine" / "x86_64-windows"
-            external_lib_dir = lib_dir / "external"
-            # WINEDLLPATH ensures Wine loads GPTK's ntdll.dll (has __wine_unix_call)
-            env["WINEDLLPATH"] = ":".join([dll_dir, str(gptk_pe_dir)])
-            env["DYLD_LIBRARY_PATH"] = ":".join([str(unix_lib_dir), str(lib_dir), str(external_lib_dir)])
-            env["DYLD_SHARED_REGION"] = "avoid"
-            env["WINEESYNC"] = "1"
-        wineserver = _find_wineserver()
-        if wineserver:
-            env["WINESERVER"] = wineserver
-        env["WINEPATH"] = dll_dir
-        backend_ovr = "atidxx64,d3d10,d3d11,d3d12,dxgi,nvapi64,nvngx=n,b"
-        env.pop("DXVK_LOG_PATH", None)
-        env.pop("DXVK_LOG_LEVEL", None)
-        env.pop("VKD3D_PROTON_PATH", None)
-        env.pop("DXMT_PATH", None)
-        env.pop("GALLIUM_DRIVER", None)
-        env.pop("MESA_GLTHREAD", None)
+        mnc_root = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine"
+        mnc_bin = mnc_root / "bin"
+
+        env["PATH"] = f"{mnc_bin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join([
+            str(D3DMETAL_NATIVE_DIR),
+            "/usr/local/lib",
+            "/usr/local/opt/freetype/lib",
+            "/usr/local/opt/gnutls/lib",
+            "/usr/lib",
+        ])
+        env["ROSETTA_ADVERTISE_AVX"] = "1"
+        env["SteamAppId"] = "730"
+        env["SteamGameId"] = "730"
+
+        for var in (
+            "DYLD_LIBRARY_PATH",
+            "DYLD_SHARED_REGION",
+            "WINEDLLPATH",
+            "WINEPATH",
+            "WINESERVER",
+            "DXVK_LOG_PATH",
+            "DXVK_LOG_LEVEL",
+            "VKD3D_PROTON_PATH",
+            "DXMT_PATH",
+            "GALLIUM_DRIVER",
+            "MESA_GLTHREAD",
+        ):
+            env.pop(var, None)
+
+        backend_ovr = "winemenubuilder.exe=d;mscoree=;mshtml=;mf,mfplat,mfreadwrite,mfplay=b;atidxx64,d3d10,d3d11,d3d12,dxgi,nvapi64,nvngx-on-metalfx=n"
 
     elif backend == BACKEND_GPTK_FULL:
         wineserver = _find_wineserver()
@@ -574,13 +583,14 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
     # In Wine, first match for a DLL wins, so mandatory comes first.
     # Note: nvapi/nvapi64 disabled unless GPTK backend needs them.
     if backend in (BACKEND_GPTK, BACKEND_D3DMETAL3):
-        mandatory_ovr = "mf,mfplat,mfreadwrite,mfplay=b"
+        # These backends provide a complete override string — no prepending.
+        env["WINEDLLOVERRIDES"] = backend_ovr
     else:
         mandatory_ovr = "nvapi,nvapi64=;mf,mfplat,mfreadwrite,mfplay=b"
-    if backend_ovr:
-        env["WINEDLLOVERRIDES"] = f"{mandatory_ovr};{backend_ovr}"
-    else:
-        env["WINEDLLOVERRIDES"] = mandatory_ovr
+        if backend_ovr:
+            env["WINEDLLOVERRIDES"] = f"{mandatory_ovr};{backend_ovr}"
+        else:
+            env["WINEDLLOVERRIDES"] = mandatory_ovr
 
     # DXVK log dir always created (for Steam launch etc.)
     dxvk_log_dir = str(LOG_DIR / "dxvk")
@@ -595,22 +605,30 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
 def _backend_wine_binary(backend: str, exe: str) -> Optional[str]:
     """Return the wine binary for backends that need a special one, else None."""
     if backend == BACKEND_D3DMETAL3:
-        # D3DMetal3 requires GPTK's wine64 — standard Wine 11.0 can't load the
-        # D3DMetal PE DLLs (its loader classifies them as Wine builtins and
-        # wined3d is used instead). GPTK wine64 has the matching ntdll +
-        # __wine_unix_call + Unix-side d3d11.so that D3DMetal needs.
+        mnc_wine = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine" / "bin" / "wine"
+        if mnc_wine.exists():
+            wine_bin = str(mnc_wine)
+            version = _get_wine_version(wine_bin)
+            log(f"Backend d3dmetal3 using MacNCheese Wine Stable: {wine_bin} ({version})")
+            return wine_bin
         wine_root = _find_gptk_wine_root()
         if wine_root:
             wine_bin = str(wine_root / "bin" / "wine64")
-            log(f"Backend d3dmetal3 using GPTK wine64: {wine_bin} ({_get_wine_version(wine_bin)})")
+            log(f"Backend d3dmetal3 fallback using GPTK wine64: {wine_bin} ({_get_wine_version(wine_bin)})")
             return wine_bin
         return None
     if backend == BACKEND_GPTK:
+        mnc_wine = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine" / "bin" / "wine"
+        if mnc_wine.exists():
+            wine_bin = str(mnc_wine)
+            version = _get_wine_version(wine_bin)
+            log(f"Backend gptk using MacNCheese Wine Stable: {wine_bin} ({version})")
+            return wine_bin
         wine_root = _find_gptk_wine_root()
         if wine_root:
             wine_bin = str(wine_root / "bin" / "wine64")
             version = _get_wine_version(wine_bin)
-            log(f"Backend gptk using GPTK wine: {wine_bin} ({version})")
+            log(f"Backend gptk fallback using GPTK wine: {wine_bin} ({version})")
             return wine_bin
     if backend == BACKEND_GPTK_FULL:
         gptk_bin = "/usr/local/bin/gameportingtoolkit"
@@ -633,6 +651,33 @@ def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
             f"{shlex.quote(exe_full)} {quoted_args} "
             f"> {shlex.quote(log_path)} 2>&1"
         )
+
+    if backend in (BACKEND_GPTK, BACKEND_D3DMETAL3):
+        # Both GPTK and D3DMetal3 use the heredoc-to-zsh pattern so that
+        # DYLD_FALLBACK_LIBRARY_PATH survives macOS SIP stripping.
+        mnc_root = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine"
+        # D3DMetal native runtime: .dylib and .framework files, not Windows .dlls
+        dyld_fallback = ":".join([
+            str(D3DMETAL_NATIVE_DIR),
+            "/usr/local/lib",
+            "/usr/local/opt/freetype/lib",
+            "/usr/local/opt/gnutls/lib",
+            "/usr/lib",
+        ])
+        dll_ovr = "winemenubuilder.exe=d;mscoree=;mshtml=;mf,mfplat,mfreadwrite,mfplay=b;atidxx64,d3d10,d3d11,d3d12,dxgi,nvapi64,nvngx-on-metalfx=n"
+        heredoc = f"""\
+MNC_WINE={shlex.quote(wine)}
+export WINEPREFIX={shlex.quote(prefix)}
+export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld_fallback)}
+export ROSETTA_ADVERTISE_AVX=1
+export WINEDLLOVERRIDES="{dll_ovr}"
+export WINEDEBUG=-all
+export SteamAppId=730
+export SteamGameId=730
+cd {shlex.quote(exe_dir)} || exit 1
+"$MNC_WINE" {shlex.quote('./' + exe_name)} {quoted_args} 2>&1 | tee {shlex.quote(log_path)}
+"""
+        return f"cd ~ && /usr/bin/arch -x86_64 /bin/zsh <<'MNCEOF'\n{heredoc}MNCEOF"
 
     debug_prefix = "WINEDEBUG=+loaddll"
     if backend.startswith("mesa:"):
@@ -786,35 +831,50 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
                 log(f"Wine builtin: restored original DLLs: {', '.join(restored)}")
 
     elif backend == BACKEND_GPTK:
-        # Copy GPTK DLLs into game directory
         gptk_dll_dir = DEFAULT_GPTK_DIR / "lib" / "wine" / "x86_64-windows"
+        gptk_launch_dlls = (
+            "atidxx64.dll",
+            "d3d10.dll",
+            "d3d11.dll",
+            "d3d12.dll",
+            "dxgi.dll",
+            "nvapi64.dll",
+            "nvngx-on-metalfx.dll",
+        )
         if not gptk_dll_dir.exists():
             log(f"GPTK DLL dir not found at {gptk_dll_dir}, skipping patch")
         else:
             _unpatch_dxvk(game_dir)
             for tdir in target_dirs:
                 tdir.mkdir(parents=True, exist_ok=True)
-                for dll in GPTK_REQUIRED_DLLS:
+                for dll in gptk_launch_dlls:
                     src = gptk_dll_dir / dll
                     if src.exists():
                         shutil.copy2(str(src), str(tdir / dll))
-                log(f"Copied GPTK DLLs -> {tdir}")
+                log(f"Copied GPTK launch DLLs -> {tdir}")
 
     elif backend == BACKEND_D3DMETAL3:
-        # D3DMetal3: same DLL patching as GPTK — copy the full GPTK DLL set
-        # into the game directory so GPTK wine64 picks them up as native.
         gptk_dll_dir = DEFAULT_GPTK_DIR / "lib" / "wine" / "x86_64-windows"
+        d3dmetal_dlls = (
+            "atidxx64.dll",
+            "d3d10.dll",
+            "d3d11.dll",
+            "d3d12.dll",
+            "dxgi.dll",
+            "nvapi64.dll",
+            "nvngx-on-metalfx.dll",
+        )
         if not gptk_dll_dir.exists():
             log(f"D3DMetal3: GPTK DLL dir not found at {gptk_dll_dir}, skipping patch")
         else:
             _unpatch_dxvk(game_dir)
             for tdir in target_dirs:
                 tdir.mkdir(parents=True, exist_ok=True)
-                for dll in GPTK_REQUIRED_DLLS:
+                for dll in d3dmetal_dlls:
                     src = gptk_dll_dir / dll
                     if src.exists():
                         shutil.copy2(str(src), str(tdir / dll))
-                log(f"Copied D3DMetal3 (GPTK) DLLs -> {tdir}")
+                log(f"Copied D3DMetal3 DLLs -> {tdir}")
 
     elif backend == BACKEND_GPTK_FULL:
         # This backend needs DXVK/VKD3D DLLs removed (unpatch)
@@ -1138,9 +1198,16 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     backend = params.get("backend", "auto")
     install_dir = params.get("install_dir", "")
     retina_mode = params.get("retina_mode", False)
+<<<<<<< discord-rpc
     metal_hud = params.get("metal_hud", False)
     screen_info = params.get("screen_info", "unknown")
     bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
+=======
+    bottle_cfg = _load_bottles().get(_resolve_key(prefix or ""), {})
+    metal_hud = params.get("metal_hud")
+    if metal_hud is None:
+        metal_hud = bottle_cfg.get("metal_hud", False)
+>>>>>>> main
     esync = params.get("esync")
     if esync is None:
         esync = bottle_cfg.get("game_esync")
@@ -1224,16 +1291,23 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
         backend, wine, exe_dir, exe_name, prefix, exe, quoted_args, log_path
     )
 
+<<<<<<< discord-rpc
     # Start rpc-bridge before the game using the same wine/env so they share the same wineserver
     if bottle_cfg.get("discord_rpc", True):
         _rpc_bridge_start(wine, env)
+=======
+    # Heredoc backends (GPTK, D3DMetal3) set env inside zsh — use bash -c.
+    # Other backends rely on inherited env — use bash -lc.
+    uses_heredoc = backend in (BACKEND_GPTK, BACKEND_D3DMETAL3)
+    shell_args = ["bash", "-c", cmd] if uses_heredoc else ["bash", "-lc", cmd]
+>>>>>>> main
 
     log(
         f"Launching [{backend}] esync={env.get('WINEESYNC', '')} "
-        f"msync={env.get('WINEMSYNC', '')}: bash -lc {cmd!r}"
+        f"msync={env.get('WINEMSYNC', '')}: {' '.join(shell_args[:2])} {cmd!r}"
     )
     proc = subprocess.Popen(
-        ["bash", "-lc", cmd],
+        shell_args,
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1314,45 +1388,68 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
             f"Expected: {steam_exe}"
         )
 
-    env = _wine_env(prefix)
+    # Steam launch: replicate the exact working Terminal heredoc pattern.
+    # All env is set inside the zsh heredoc so DYLD_FALLBACK_LIBRARY_PATH
+    # is visible to the process (macOS strips DYLD_* from inherited env).
+    mnc_root = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine"
+    mnc_wine = mnc_root / "bin" / "wine"
+    if mnc_wine.exists():
+        wine = str(mnc_wine)
 
-    # Steam always launches under standard Wine 11.0 — GPTK's bundled wine
-    # (Wine 8.1 base) has a broken CEF stack that crash-loops steamwebhelper.
-    # Game processes under D3DMetal3 are launched separately via GPTK wine64
-    # in cmd_launch_game; Steam itself stays on clean Wine regardless of
-    # the selected graphics backend.
-    env = _apply_backend_env(env, BACKEND_WINE)
+    # GPTK DLL dir (from installer's install_gptk_dlls)
+    # D3DMetal native runtime (.dylib / .framework), not Windows .dlls
+    dyld_fallback = ":".join([
+        str(D3DMETAL_NATIVE_DIR),
+        "/usr/local/lib",
+        "/usr/local/opt/freetype/lib",
+        "/usr/local/opt/gnutls/lib",
+        "/usr/lib",
+    ])
 
-    # Kill existing wineserver before starting Steam (match original behaviour)
-    wineserver = _find_wineserver()
-    if wineserver:
-        try:
-            subprocess.run(
-                [wineserver, "-k"], env=env, timeout=5,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            time.sleep(1)
-        except Exception:
-            pass
+    # Build a minimal clean env for the outer process
+    env = dict(os.environ)
+    for var in (
+        "GTK_PATH",
+        "GTK_EXE_PREFIX",
+        "GTK_DATA_PREFIX",
+        "GDK_PIXBUF_MODULEDIR",
+        "GDK_PIXBUF_MODULE_FILE",
+        "GTK_IM_MODULE_FILE",
+        "XDG_DATA_DIRS",
+    ):
+        env.pop(var, None)
 
-    # Set retina/DPI via wine regedit with a .reg file
-    _apply_retina_regedit(wine, env, retina_mode)
+    # Apply retina before launch (writes a .reg file via wine regedit)
+    regedit_env = dict(env)
+    regedit_env["WINEPREFIX"] = prefix
+    regedit_env["PATH"] = f"{mnc_root / 'bin'}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    _apply_retina_regedit(wine, regedit_env, retina_mode)
 
     safe_name = "Steam"
     log_path = str(LOG_DIR / f"{safe_name}-wine.log")
 
-    steam_args = "-no-browser -vgui"
+    # The heredoc sets all env inside zsh so DYLD vars survive SIP.
+    heredoc = f"""\
+export MNCROOT={shlex.quote(str(mnc_root))}
+export MNC_WINE={shlex.quote(wine)}
+export WINEPREFIX={shlex.quote(prefix)}
+export PATH="$MNCROOT/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld_fallback)}
+export ROSETTA_ADVERTISE_AVX=1
+unset GTK_PATH GTK_EXE_PREFIX GTK_DATA_PREFIX GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE GTK_IM_MODULE_FILE XDG_DATA_DIRS
+export WINEDLLOVERRIDES="winemenubuilder.exe=d;mscoree=;mshtml="
+export WINEDEBUG=-all
+export WINEDBG=-all
+cd {shlex.quote(str(steam_dir))} || exit 1
+rm -rf config/htmlcache appcache/httpcache appcache/htmlcache
+"$MNC_WINE" steam.exe -tcp > {shlex.quote(log_path)} 2>&1
+"""
 
-    cmd = (
-        f"cd {shlex.quote(str(steam_dir))} && "
-        f"arch -x86_64 {shlex.quote(wine)} "
-        f"{shlex.quote(str(steam_exe))} {steam_args} "
-        f"> {shlex.quote(log_path)} 2>&1"
-    )
+    cmd = f"cd ~ && /usr/bin/arch -x86_64 /bin/zsh <<'MNCEOF'\n{heredoc}MNCEOF"
 
-    log(f"Launching Steam: bash -lc {cmd!r}")
+    log(f"Launching Steam: {cmd!r}")
     proc = subprocess.Popen(
-        ["bash", "-lc", cmd],
+        ["bash", "-c", cmd],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1566,7 +1663,11 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     config = dict(bottles.get(key, {}))
     config.setdefault("game_esync", True)
     config.setdefault("game_msync", True)
+<<<<<<< discord-rpc
     config.setdefault("discord_rpc", True)
+=======
+    config.setdefault("metal_hud", False)
+>>>>>>> main
     return config
 
 
@@ -1859,9 +1960,25 @@ def cmd_get_update_info(params: Dict[str, Any]) -> Any:
     }
 
 
+def _portable_tools_available() -> bool:
+    """Check if portable toolchain is present enough for app use."""
+    bin_dir = PORTABLE_DIR / "bin"
+    # Need at least 7zz/7z and git
+    has_7z = (bin_dir / "7zz").exists() or (bin_dir / "7z").exists()
+    has_git = (bin_dir / "git").exists()
+    return has_7z and has_git
+
+def _gptk_dlls_available() -> bool:
+    """Check if GPTK DLL package is installed (just the DLLs, not the full toolkit)."""
+    dll_dir = DEFAULT_GPTK_DIR / "lib" / "wine" / "x86_64-windows"
+    if not dll_dir.exists():
+        return False
+    required = ("d3d11.dll", "d3d12.dll", "dxgi.dll")
+    return all((dll_dir / name).exists() for name in required)
+
 def cmd_get_components_status(params: Dict[str, Any]) -> Any:
     """Return installation status for each setup component."""
-    has_tools = all(_tool_available(t) for t in ("git", "7z", "winetricks"))
+    has_tools = _portable_tools_available() or all(_tool_available(t) for t in ("git", "7z"))
     dxvk32_install = Path.home() / "dxvk-release-32"
     has_dxvk32 = (dxvk32_install / "bin" / "d3d11.dll").exists()
     has_wine_stable = _find_wine_stable() is not None
@@ -1875,9 +1992,9 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_mesa": _mesa_available(),
         "has_dxvk64": _dxvk_available(),
         "has_dxvk32": has_dxvk32,
-        "has_gptk_full": _dxmt_available(),
-        "has_d3dmetal3": _gptk_available(),
-        "has_gptk": _gptk_available(),
+        "has_dxmt": _dxmt_available(),
+        "has_gptk_dlls": _gptk_dlls_available(),
+        "has_d3dmetal3": _d3dmetal3_available(),
         "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
         "has_rpc_bridge": _rpc_bridge_available(),
@@ -2097,16 +2214,27 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
     dxmt: str = params.get("dxmt", "")
     vkd3d: str = params.get("vkd3d", "")
 
+    if not actions:
+        raise ValueError("No actions specified")
+    if not installer_path or not Path(installer_path).exists():
+        raise FileNotFoundError(f"installer.sh not found at: {installer_path}")
+
     import uuid
     job_id = str(uuid.uuid4())
     job: Dict[str, Any] = {"lines": [], "done": False, "failed": False, "current": ""}
     _install_jobs[job_id] = job
 
+    def _friendly_action(action: str) -> str:
+        verb = "Uninstalling" if action.startswith("uninstall_") else "Installing"
+        name = action.replace("install_", "").replace("uninstall_", "").replace("_", " ").title()
+        return f"{verb} {name}"
+
     def _run() -> None:
         env = {**os.environ, "MNC_SUDOLESS": "1"}
         for action in actions:
-            job["current"] = action
-            job["lines"].append(f"=== {action} ===")
+            friendly = _friendly_action(action)
+            job["current"] = friendly
+            job["lines"].append(f"=== {friendly} ===")
             try:
                 proc = subprocess.Popen(
                     [installer_path, action, prefix, dxvk_src, dxvk64, dxvk32, mesa, mesa_url, dxmt, "", vkd3d],
@@ -2120,12 +2248,15 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
                     job["lines"].append(line.rstrip())
                 proc.wait()
                 if proc.returncode != 0:
-                    job["lines"].append(f"!!! {action} failed (exit {proc.returncode})")
+                    job["lines"].append(f"!!! {friendly} failed (exit {proc.returncode})")
                     job["failed"] = True
+                else:
+                    job["lines"].append(f"--- {friendly} completed successfully ---")
             except Exception as exc:
-                job["lines"].append(f"!!! {action} error: {exc}")
+                job["lines"].append(f"!!! {friendly} error: {exc}")
                 job["failed"] = True
-        job["lines"].append("=== Done! ===")
+        job["current"] = ""
+        job["lines"].append("=== All tasks finished ===")
         job["done"] = True
 
     t = threading.Thread(target=_run, daemon=True)

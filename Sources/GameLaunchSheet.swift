@@ -217,6 +217,7 @@ struct GameLaunchSheet: View {
         .task {
             await loadExes()
             await loadBackends()
+            await loadBottleDefaults()
         }
     }
 
@@ -237,6 +238,12 @@ struct GameLaunchSheet: View {
             selectedBackend = "auto"
         }
         loadingBackends = false
+    }
+
+    private func loadBottleDefaults() async {
+        guard let prefix = backend.activePrefix,
+              let config = await backend.getBottleConfig(path: prefix) else { return }
+        metalHud = config["metal_hud"] as? Bool ?? false
     }
 
     private func normalizedSyncSelection() -> (esync: Bool, msync: Bool) {
