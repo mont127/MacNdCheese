@@ -901,6 +901,43 @@ uninstall_vkd3d() {
   echo "VKD3D-Proton removed."
 }
 
+RPC_BRIDGE_DIR="$PORTABLE_DIR/rpc-bridge"
+RPC_BRIDGE_URL="https://github.com/EnderIce2/rpc-bridge/releases/latest/download/bridge.zip"
+
+install_rpc_bridge() {
+  echo "Step: Installing rpc-bridge..."
+  mkdir -p "$RPC_BRIDGE_DIR"
+  archive="$WORK_DIR/rpc-bridge.zip"
+  curl -fsSL "$RPC_BRIDGE_URL" -o "$archive"
+  unzip -o -q "$archive" -d "$RPC_BRIDGE_DIR"
+  # Install the macOS LaunchAgent (creates the /tmp symlink Discord needs)
+  launchd_sh="$RPC_BRIDGE_DIR/launchd.sh"
+  if [ -f "$launchd_sh" ]; then
+    chmod +x "$launchd_sh"
+    "$launchd_sh" install || true
+    plist="$HOME/Library/LaunchAgents/com.enderice2.rpc-bridge.plist"
+    if [ -f "$plist" ]; then
+      chmod 644 "$plist"
+      launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || true
+    fi
+    echo "rpc-bridge LaunchAgent installed."
+  fi
+  echo "rpc-bridge installed."
+}
+
+uninstall_rpc_bridge() {
+  echo "Step: Uninstalling rpc-bridge..."
+  plist="$HOME/Library/LaunchAgents/com.enderice2.rpc-bridge.plist"
+  launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || \
+    launchctl unload "$plist" 2>/dev/null || true
+  launchd_sh="$RPC_BRIDGE_DIR/launchd.sh"
+  if [ -f "$launchd_sh" ]; then
+    "$launchd_sh" remove 2>/dev/null || true
+  fi
+  rm -rf "$RPC_BRIDGE_DIR"
+  echo "rpc-bridge removed."
+}
+
 quick_setup() {
   ensure_rosetta
   install_portable_tools
@@ -961,6 +998,12 @@ case "$ACTION" in
     ;;
   install_gptk_dlls)
     install_gptk_dlls
+    ;;
+  install_rpc_bridge)
+    install_rpc_bridge
+    ;;
+  uninstall_rpc_bridge)
+    uninstall_rpc_bridge
     ;;
   init_prefix)
     init_prefix

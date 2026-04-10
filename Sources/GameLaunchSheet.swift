@@ -144,7 +144,7 @@ struct GameLaunchSheet: View {
                             .font(.caption)
                             .fontWeight(.semibold)
                     }
-                    Text("Enable high resolution for retina screens. Game compatibility might be affected.")
+                    Text("Enable high resolution for retina screens. Game performance might be affected.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -262,7 +262,9 @@ struct GameLaunchSheet: View {
                 retinaMode: retinaMode,
                 metalHud: metalHud,
                 esync: sync.esync,
-                msync: sync.msync
+                msync: sync.msync,
+                gameName: game.name,
+                steamAppId: game.isManual ? "" : game.appid
             )
             isLaunching = false
             dismiss()

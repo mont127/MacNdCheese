@@ -15,6 +15,13 @@ Response: {"id": 1, "ok": true, "data": ...}
 
 from __future__ import annotations
 
+import sys as _sys
+import os as _os
+# Vendored packages bundled inside MacNCheese.app/Contents/Resources/
+_resources_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _resources_dir not in _sys.path:
+    _sys.path.insert(0, _resources_dir)
+
 import base64
 import io
 import json
@@ -77,6 +84,74 @@ SKIP_EXE_TOKENS = (
     "crash", "reporter", "setup", "install", "unins",
     "helper", "bootstrap", "diagnostics", "dxwebsetup",
 )
+
+# ---------------------------------------------------------------------------
+# Discord Rich Presence — rpc-bridge (https://github.com/EnderIce2/rpc-bridge)
+# ---------------------------------------------------------------------------
+# rpc-bridge runs bridge.exe inside Wine as a Windows service.
+# It intercepts the game's own Discord RPC calls and forwards them to the
+# native Discord client via the macOS LaunchAgent installed by launchd.sh.
+
+RPC_BRIDGE_DIR = PORTABLE_DIR / "rpc-bridge"
+RPC_BRIDGE_EXE = RPC_BRIDGE_DIR / "bridge.exe"
+RPC_BRIDGE_LAUNCHD = RPC_BRIDGE_DIR / "launchd.sh"
+
+
+def _rpc_bridge_available() -> bool:
+    return RPC_BRIDGE_EXE.exists()
+
+
+def _rpc_bridge_start(wine: str, env: dict) -> None:
+    """Install (or re-register) and start rpc-bridge using the exact same Wine/env as the game."""
+    if not _rpc_bridge_available():
+        return
+    try:
+        result = subprocess.run(
+            [wine, "sc", "start", "rpc-bridge"],
+            env=env, timeout=15,
+            capture_output=True, text=True,
+        )
+        log(f"rpc-bridge: sc start rc={result.returncode} stdout={result.stdout.strip()!r}")
+        time.sleep(2)
+    except Exception as exc:
+        log(f"rpc-bridge: start failed: {exc}")
+
+
+def _rpc_bridge_install_prefix(prefix: str) -> None:
+    """Install bridge.exe as a Windows service inside the given Wine prefix."""
+    if not _rpc_bridge_available():
+        log("rpc-bridge: bridge.exe not found, skipping install")
+        return
+    wine = _find_wine_for_bottle("auto")
+    env = _wine_env(prefix)
+    try:
+        result = subprocess.run(
+            [wine, str(RPC_BRIDGE_EXE), "--install"],
+            env=env, timeout=30,
+            capture_output=True, text=True,
+        )
+        log(f"rpc-bridge: install stdout={result.stdout.strip()!r} stderr={result.stderr.strip()!r} rc={result.returncode}")
+        log(f"rpc-bridge: installed service in prefix {prefix}")
+    except Exception as exc:
+        log(f"rpc-bridge: install failed: {exc}")
+
+
+def _rpc_bridge_uninstall_prefix(prefix: str) -> None:
+    """Remove bridge.exe Windows service from the given Wine prefix."""
+    if not _rpc_bridge_available():
+        return
+    wine = _find_wine()
+    env = _wine_env(prefix)
+    try:
+        subprocess.run(
+            [wine, str(RPC_BRIDGE_EXE), "--uninstall"],
+            env=env, timeout=30,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        log(f"rpc-bridge: uninstalled service from prefix {prefix}")
+    except Exception as exc:
+        log(f"rpc-bridge: uninstall failed: {exc}")
+
 
 # Centralised log directory (wine logs, dxvk logs, app log)
 LOG_DIR = Path.home() / "Library" / "Logs" / "MacNCheese"
@@ -255,13 +330,16 @@ def _wine_env(prefix: str) -> Dict[str, str]:
 
 
 def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
-    """Apply RetinaMode and LogPixels via `wine regedit file.reg`."""
+    """Apply RetinaMode, Resolution and LogPixels via `wine regedit file.reg`."""
     retina_val = "y" if retina_mode else "n"
     dpi_hex = "dc" if retina_mode else "60"  # 220=0xdc, 96=0x60
+    # "Resolution"="auto" forces Wine to recalculate screen size on next launch,
+    # preventing the top-left-corner artifact when switching retina mode.
     reg_content = (
         "REGEDIT4\n\n"
         "[HKEY_CURRENT_USER\\Software\\Wine\\Mac Driver]\n"
-        f'"RetinaMode"="{retina_val}"\n\n'
+        f'"RetinaMode"="{retina_val}"\n'
+        '"Resolution"="auto"\n\n'
         "[HKEY_CURRENT_USER\\Control Panel\\Desktop]\n"
         f'"LogPixels"=dword:000000{dpi_hex}\n'
     )
@@ -273,7 +351,7 @@ def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
             env=env, timeout=15,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        log(f"Applied regedit: RetinaMode={retina_val}, LogPixels=000000{dpi_hex}")
+        log(f"Applied regedit: RetinaMode={retina_val}, Resolution=auto, LogPixels=000000{dpi_hex}")
     except Exception as exc:
         log(f"Warning: regedit failed: {exc}")
 
@@ -931,6 +1009,7 @@ def cmd_list_bottles(params: Dict[str, Any]) -> Any:
             "wine_binary": bottle.get("wine_binary", "auto"),
             "game_esync": bottle.get("game_esync", True),
             "game_msync": bottle.get("game_msync", True),
+            "discord_rpc": bottle.get("discord_rpc", True),
         })
 
     # Include bottles that may not be in the prefixes list
@@ -955,6 +1034,7 @@ def cmd_list_bottles(params: Dict[str, Any]) -> Any:
             "wine_binary": bottle.get("wine_binary", "auto"),
             "game_esync": bottle.get("game_esync", True),
             "game_msync": bottle.get("game_msync", True),
+            "discord_rpc": bottle.get("discord_rpc", True),
         })
 
     return result
@@ -1059,6 +1139,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     install_dir = params.get("install_dir", "")
     retina_mode = params.get("retina_mode", False)
     metal_hud = params.get("metal_hud", False)
+    screen_info = params.get("screen_info", "unknown")
     bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
     esync = params.get("esync")
     if esync is None:
@@ -1070,6 +1151,9 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
         raise ValueError("Missing 'prefix' parameter")
     if not exe:
         raise ValueError("Missing 'exe' parameter")
+
+    log(f"[display] screens: {screen_info}")
+    log(f"[display] retina_mode={retina_mode}")
 
     exe_path = Path(exe)
     if not exe_path.exists():
@@ -1139,6 +1223,10 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     cmd = _backend_launch_cmd(
         backend, wine, exe_dir, exe_name, prefix, exe, quoted_args, log_path
     )
+
+    # Start rpc-bridge before the game using the same wine/env so they share the same wineserver
+    if bottle_cfg.get("discord_rpc", True):
+        _rpc_bridge_start(wine, env)
 
     log(
         f"Launching [{backend}] esync={env.get('WINEESYNC', '')} "
@@ -1478,6 +1566,7 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     config = dict(bottles.get(key, {}))
     config.setdefault("game_esync", True)
     config.setdefault("game_msync", True)
+    config.setdefault("discord_rpc", True)
     return config
 
 
@@ -1495,6 +1584,13 @@ def cmd_set_bottle_config(params: Dict[str, Any]) -> Any:
     for k, v in params.items():
         if k not in skip_keys:
             existing[k] = v
+
+    # If discord_rpc changed, install or uninstall the bridge service in the prefix
+    if "discord_rpc" in params:
+        if params["discord_rpc"]:
+            threading.Thread(target=_rpc_bridge_install_prefix, args=(path,), daemon=True).start()
+        else:
+            threading.Thread(target=_rpc_bridge_uninstall_prefix, args=(path,), daemon=True).start()
 
     bottles[key] = existing
     _save_bottles(bottles)
@@ -1784,6 +1880,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_gptk": _gptk_available(),
         "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
+        "has_rpc_bridge": _rpc_bridge_available(),
     }
 
 

@@ -7,6 +7,7 @@ final class BackendClient: ObservableObject {
     @Published var bottles: [Bottle] = []
     @Published var games: [Game] = []
     @Published var status: BackendStatus?
+    @Published var componentsStatus: ComponentsStatus?
     @Published var isConnected = false
     @Published var activePrefix: String? {
         didSet { UserDefaults.standard.set(activePrefix, forKey: "lastActivePrefix") }
@@ -136,11 +137,15 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true) async {
+    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "") async {
         do {
+            let screenInfo = NSScreen.screens.map { s in
+                "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"
+            }.joined(separator: " | ")
             let result = try await send(cmd: "launch_game", params: [
                 "prefix": prefix, "exe": exe, "args": args, "backend": backend, "install_dir": installDir,
-                "retina_mode": retinaMode, "metal_hud": metalHud, "esync": esync, "msync": msync
+                "retina_mode": retinaMode, "metal_hud": metalHud, "esync": esync, "msync": msync,
+                "screen_info": screenInfo, "game_name": gameName, "steam_appid": steamAppId,
             ])
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode(LaunchResult.self, from: data) {
@@ -319,7 +324,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func setBottleConfig(path: String, values: [String: String]) async {
+    func setBottleConfig(path: String, values: [String: Any]) async {
         var params: [String: Any] = ["path": path]
         for (k, v) in values { params[k] = v }
         do {
@@ -346,6 +351,7 @@ final class BackendClient: ObservableObject {
             let result = try await send(cmd: "get_components_status")
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode(ComponentsStatus.self, from: data) {
+                self.componentsStatus = decoded
                 return decoded
             }
         } catch {

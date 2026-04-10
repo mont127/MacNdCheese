@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "MacNCheese",
-            path: "Sources"
+            path: "Sources",
+            exclude: ["Info.plist"]
         )
     ]
 )

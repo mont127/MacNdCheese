@@ -59,6 +59,7 @@ struct BottleSettingsTab: View {
     @State private var launcherExe = ""
     @State private var iconPath = ""
     @State private var wineBinary = "auto"
+    @State private var discordRpc = true
     @State private var isInitializing = false
     @State private var isCleaning = false
 
@@ -114,6 +115,15 @@ struct BottleSettingsTab: View {
                             Text("Staging").tag("staging")
                         }
                         .labelsHidden()
+                    }
+
+                    // Discord RPC — only show if rpc-bridge is installed
+                    if backend.componentsStatus?.hasRpcBridge == true {
+                        SettingsRow(label: "Discord Rich Presence") {
+                            Toggle("", isOn: $discordRpc)
+                                .labelsHidden()
+                                .onChange(of: discordRpc) { saveBottleConfig() }
+                        }
                     }
 
                     Divider()
@@ -213,6 +223,7 @@ struct BottleSettingsTab: View {
             launcherExe = bottle.launcherExe ?? ""
             iconPath = bottle.iconPath ?? ""
             wineBinary = bottle.wineBinary ?? "auto"
+            discordRpc = bottle.discordRpc ?? true
         }
     }
 
@@ -224,6 +235,7 @@ struct BottleSettingsTab: View {
                 "launcher_exe": launcherExe,
                 "icon_path": iconPath,
                 "wine_binary": wineBinary,
+                "discord_rpc": discordRpc,
             ])
         }
     }
@@ -346,6 +358,7 @@ struct SetupSettingsTab: View {
     @State private var installVkd3d = false
     @State private var installD3dMetal = false
     @State private var installGptkFull = false
+    @State private var installRpcBridge = false
 
     // Baseline installed state (used to detect installs vs uninstalls)
     @State private var wasTools = false
@@ -356,6 +369,7 @@ struct SetupSettingsTab: View {
     @State private var wasVkd3d = false
     @State private var wasD3dMetal = false
     @State private var wasGptkFull = false
+    @State private var wasRpcBridge = false
 
     // Update availability per component
     @State private var toolsHasUpdate = false
@@ -409,6 +423,9 @@ struct SetupSettingsTab: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ComponentToggleRow("Tools (git, 7z, winetricks)", isOn: $installTools,
                                           installed: wasTools, updateAvailable: toolsHasUpdate)
+                            .disabled(isRunning)
+                        ComponentToggleRow("Discord RPC Bridge", isOn: $installRpcBridge,
+                                          installed: wasRpcBridge)
                             .disabled(isRunning)
                     }
                     .padding(8)
@@ -525,6 +542,7 @@ struct SetupSettingsTab: View {
                 wasVkd3d = status.hasVkd3d;           installVkd3d = status.hasVkd3d
                 wasD3dMetal = status.hasD3dMetal3;    installD3dMetal = status.hasD3dMetal3
                 wasGptkFull = status.hasGptkFull;     installGptkFull = status.hasGptkFull
+                wasRpcBridge = status.hasRpcBridge;   installRpcBridge = status.hasRpcBridge
             }
             isLoadingStatus = false
 
@@ -571,6 +589,7 @@ struct SetupSettingsTab: View {
         plan(installVkd3d,       wasVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
         plan(installD3dMetal,    wasD3dMetal,    install: "install_gptk_dlls",    uninstall: "uninstall_d3dmetal")
         plan(installGptkFull,    wasGptkFull,    install: "install_dxmt",         uninstall: "uninstall_dxmt")
+        plan(installRpcBridge,   wasRpcBridge,   install: "install_rpc_bridge",   uninstall: "uninstall_rpc_bridge")
 
         let allActions = uninstallActions + installActions
         guard !allActions.isEmpty else { return }
