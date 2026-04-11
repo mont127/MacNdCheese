@@ -48,24 +48,35 @@ ls -la assets/MacNCheese.icns
 
 echo ""
 echo "Building Swift executable (release) for $TARGET_ARCH..."
+
 pushd Sources >/dev/null
+
 swift build -c release $SWIFT_ARCH_ARGS 2>&1
 SWIFT_BIN="$(swift build -c release $SWIFT_ARCH_ARGS --show-bin-path)/MacNCheese"
+
 echo "Binary: $SWIFT_BIN"
+
+popd >/dev/null
+
 
 echo ""
 echo "Creating .app bundle..."
-APP_ROOT="../build/MacNCheese.app"
+
+APP_ROOT="build/MacNCheese.app"
 CONTENTS="$APP_ROOT/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
+
 mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$SWIFT_BIN" "$MACOS/MacNCheese"
-popd >/dev/null
+
+if [ ! -f icon.icns ]; then
+  echo "ERROR: icon.icns not found"
+  exit 1
+fi
 
 cp icon.icns "$RESOURCES/MacNCheese.icns"
-
 cp backend_server.py "$RESOURCES/backend_server.py"
 cp installer.sh "$RESOURCES/installer.sh"
 chmod +x "$RESOURCES/installer.sh"
