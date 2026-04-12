@@ -96,7 +96,7 @@ The graphics backend didn't load properly. Try:
 1. Making sure Wine is installed (click Install Wine)
 2. Switching backends (try DXVK)
 3. Re-launching the game
-4. DO NOT RUN GAMES USING STEAM only the launcher 
+4. You can run games from steam if you want GPTK support
 ### Do Steam and the game need to be in the same Wine prefix?
 Yes. Keep everything in the same prefix (the default one is fine) and it'll all work together.
 
