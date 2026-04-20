@@ -197,7 +197,7 @@ wine "YourGame.exe"
 
 [![Contributors](https://contrib.rocks/image?repo=mont127/MacNdCheese)](https://github.com/mont127/MacNdCheese/graphs/contributors)
 
-shout out to @spaceddoutt, Dexicmaji and @realmaitreal
+shout out to @spaceddoutt, @Dexicmaji and @realmaitreal
 
 Want to contribute? PRs are welcome!
 
