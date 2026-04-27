@@ -9,7 +9,7 @@
 ### A configurable runtime that can behave like Proton if tuned correctly
 MacNCheese is a simple app that lets you install and play Windows games on your Mac using Wine, with all the graphics stuff (DXVK, MoltenVK, Vulkan…) handled automatically so you don't have to touch the terminal.
 
-💬 **Need help?** Join the [Discord server](https://discord.gg/UPpVShYDaf)!
+ **Need help?** Join the [Discord server](https://discord.gg/UPpVShYDaf)!
 
 ---
 ## Showcase 
@@ -18,7 +18,7 @@ MacNCheese is a simple app that lets you install and play Windows games on your 
 </>
 
 ---
-## 🚀 Quickstart Guide
+##  Quickstart Guide
 
 ### Step 1 — Before you begin: download Steam for Windows
 Go to [store.steampowered.com](https://store.steampowered.com/about/) and download **SteamSetup.exe** (the Windows version). Save it to your **Downloads** folder. You'll need this later.
