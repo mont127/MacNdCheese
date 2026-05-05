@@ -113,7 +113,7 @@ Because setting this up manually is painful, repetitive, and full of obscure com
 - macOS with [Homebrew](https://brew.sh/) installed
 - Xcode Command Line Tools (`xcode-select --install`)
 
-**Run from source:**
+**Run from source:** (Outdated)
 ```bash
 git clone https://github.com/mont127/MacNdCheese/
 cd MacNdCheese
