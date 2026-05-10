@@ -216,6 +216,10 @@ MacNCheese wouldn't exist without these incredible open source projects:
 | [DXMT](https://github.com/3Shain/dxmt) | Translates DirectX 11 → Metal directly |
 | [Whisky](https://github.com/Whisky-App/Whisky) | The inspiration and predecessor |
 
+And also These People:
+@gcenx https://github.com/Gcenx
+@3Shain https://github.com/3Shain
+
 ---
 
 Made with ❤️ for Mac gamers everywhere.
