@@ -1,5 +1,60 @@
 import SwiftUI
 
+private enum InstallerPathStore {
+    static let dxvkSrcKey = "installerPaths.dxvkSrc"
+    static let dxvkInstallKey = "installerPaths.dxvkInstall"
+    static let dxvkInstall32Key = "installerPaths.dxvkInstall32"
+    static let steamSetupKey = "installerPaths.steamSetup"
+    static let mesaDirKey = "installerPaths.mesaDir"
+    static let dxmtDirKey = "installerPaths.dxmtDir"
+    static let vkd3dDirKey = "installerPaths.vkd3dDir"
+    static let gptkDirKey = "installerPaths.gptkDir"
+
+    static var defaultDXVKSrc: String { NSHomeDirectory() + "/DXVK-macOS" }
+    static var defaultDXVKInstall: String { NSHomeDirectory() + "/dxvk-release" }
+    static var defaultDXVKInstall32: String { NSHomeDirectory() + "/dxvk-release-32" }
+    static var defaultSteamSetup: String { NSHomeDirectory() + "/Downloads/SteamSetup.exe" }
+    static var defaultMesaDir: String { NSHomeDirectory() + "/mesa/x64" }
+    static var defaultDXMTDir: String { NSHomeDirectory() + "/dxmt" }
+    static var defaultVKD3DDir: String { NSHomeDirectory() + "/vkd3d-proton" }
+    static var defaultGPTKDir: String {
+        let home = NSHomeDirectory()
+        let bundledCandidate = home + "/macndcheese/gptk"
+        return FileManager.default.fileExists(atPath: bundledCandidate) ? bundledCandidate : home + "/gptk"
+    }
+
+    static func current() -> InstallerPaths {
+        InstallerPaths(
+            dxvkSrc: value(for: dxvkSrcKey, default: defaultDXVKSrc),
+            dxvkInstall64: value(for: dxvkInstallKey, default: defaultDXVKInstall),
+            dxvkInstall32: value(for: dxvkInstall32Key, default: defaultDXVKInstall32),
+            steamSetup: value(for: steamSetupKey, default: defaultSteamSetup),
+            mesaDir: value(for: mesaDirKey, default: defaultMesaDir),
+            dxmtDir: value(for: dxmtDirKey, default: defaultDXMTDir),
+            vkd3dDir: value(for: vkd3dDirKey, default: defaultVKD3DDir),
+            gptkDir: value(for: gptkDirKey, default: defaultGPTKDir)
+        )
+    }
+
+    private static func value(for key: String, default defaultValue: String) -> String {
+        guard let stored = UserDefaults.standard.string(forKey: key), !stored.isEmpty else {
+            return defaultValue
+        }
+        return stored
+    }
+}
+
+private struct InstallerPaths {
+    let dxvkSrc: String
+    let dxvkInstall64: String
+    let dxvkInstall32: String
+    let steamSetup: String
+    let mesaDir: String
+    let dxmtDir: String
+    let vkd3dDir: String
+    let gptkDir: String
+}
+
 struct SettingsSheet: View {
     @EnvironmentObject var backend: BackendClient
     @Environment(\.dismiss) private var dismiss
@@ -27,6 +82,7 @@ struct SettingsSheet: View {
                 Text("Bottle").tag("bottle")
                 Text("Paths").tag("paths")
                 Text("Setup").tag("setup")
+                Text("Diagnose").tag("diagnose")
                 Text("Logs").tag("logs")
             }
             .pickerStyle(.segmented)
@@ -40,13 +96,14 @@ struct SettingsSheet: View {
                 case "bottle": BottleSettingsTab()
                 case "paths": PathsSettingsTab()
                 case "setup": SetupSettingsTab()
+                case "diagnose": DiagnoseSettingsTab()
                 case "logs": LogsSettingsTab()
                 default: EmptyView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 620, height: 540)
+        .frame(width: 680, height: 620)
         .background(.ultraThinMaterial)
     }
 }
@@ -62,6 +119,8 @@ struct BottleSettingsTab: View {
     @State private var metalHud = false
     @State private var isInitializing = false
     @State private var isCleaning = false
+    @State private var isOpeningWinecfg = false
+    @State private var isMoving = false
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -159,6 +218,19 @@ struct BottleSettingsTab: View {
                         }
 
                         ActionButton(
+                            title: "Winecfg",
+                            subtitle: "Open Wine configuration",
+                            icon: "slider.horizontal.3",
+                            isLoading: isOpeningWinecfg
+                        ) {
+                            isOpeningWinecfg = true
+                            Task {
+                                await backend.openWinecfg(prefix: bottle.path)
+                                isOpeningWinecfg = false
+                            }
+                        }
+
+                        ActionButton(
                             title: "Open SteamSetup",
                             subtitle: "Install or repair Steam",
                             icon: "arrow.down.circle"
@@ -172,6 +244,15 @@ struct BottleSettingsTab: View {
                             icon: "folder"
                         ) {
                             Task { await backend.openPrefixFolder(prefix: bottle.path) }
+                        }
+
+                        ActionButton(
+                            title: "Move Prefix",
+                            subtitle: "Move this bottle folder",
+                            icon: "folder.badge.gearshape",
+                            isLoading: isMoving
+                        ) {
+                            movePrefix(path: bottle.path)
                         }
 
                         ActionButton(
@@ -272,6 +353,22 @@ struct BottleSettingsTab: View {
             }
         }
     }
+
+    private func movePrefix(path: String) {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.title = "Move Prefix"
+        panel.prompt = "Move"
+        panel.nameFieldStringValue = URL(fileURLWithPath: path).lastPathComponent
+        panel.directoryURL = URL(fileURLWithPath: path).deletingLastPathComponent()
+        if panel.runModal() == .OK, let url = panel.url {
+            isMoving = true
+            Task {
+                _ = await backend.moveBottle(path: path, destinationPath: url.path)
+                isMoving = false
+            }
+        }
+    }
 }
 
 // MARK: - Paths Tab
@@ -279,18 +376,14 @@ struct BottleSettingsTab: View {
 struct PathsSettingsTab: View {
     @EnvironmentObject var backend: BackendClient
 
-    @State private var dxvkSrc = NSHomeDirectory() + "/DXVK-macOS"
-    @State private var dxvkInstall = NSHomeDirectory() + "/dxvk-release"
-    @State private var dxvkInstall32 = NSHomeDirectory() + "/dxvk-release-32"
-    @State private var steamSetup = NSHomeDirectory() + "/Downloads/SteamSetup.exe"
-    @State private var mesaDir = NSHomeDirectory() + "/mesa/x64"
-    @State private var dxmtDir = NSHomeDirectory() + "/dxmt"
-    @State private var vkd3dDir = NSHomeDirectory() + "/vkd3d-proton"
-    @State private var gptkDir: String = {
-        // Try to find gptk dir next to the backend script
-        let candidate = NSHomeDirectory() + "/macndcheese/gptk"
-        return FileManager.default.fileExists(atPath: candidate) ? candidate : NSHomeDirectory() + "/gptk"
-    }()
+    @AppStorage(InstallerPathStore.dxvkSrcKey) private var dxvkSrc = InstallerPathStore.defaultDXVKSrc
+    @AppStorage(InstallerPathStore.dxvkInstallKey) private var dxvkInstall = InstallerPathStore.defaultDXVKInstall
+    @AppStorage(InstallerPathStore.dxvkInstall32Key) private var dxvkInstall32 = InstallerPathStore.defaultDXVKInstall32
+    @AppStorage(InstallerPathStore.steamSetupKey) private var steamSetup = InstallerPathStore.defaultSteamSetup
+    @AppStorage(InstallerPathStore.mesaDirKey) private var mesaDir = InstallerPathStore.defaultMesaDir
+    @AppStorage(InstallerPathStore.dxmtDirKey) private var dxmtDir = InstallerPathStore.defaultDXMTDir
+    @AppStorage(InstallerPathStore.vkd3dDirKey) private var vkd3dDir = InstallerPathStore.defaultVKD3DDir
+    @AppStorage(InstallerPathStore.gptkDirKey) private var gptkDir = InstallerPathStore.defaultGPTKDir
 
     var body: some View {
         ScrollView {
@@ -561,13 +654,8 @@ struct SetupSettingsTab: View {
         }
 
         let prefix = backend.activePrefix ?? home + "/wined"
-        let dxvkSrc = home + "/DXVK-macOS"
-        let dxvkInstall64 = home + "/dxvk-release"
-        let dxvkInstall32 = home + "/dxvk-release-32"
-        let mesaDir = home + "/mesa/x64"
+        let pathSettings = InstallerPathStore.current()
         let mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
-        let dxmtDir = home + "/dxmt"
-        let vkd3dDir = home + "/vkd3d-proton"
 
         // Plan actions: install if toggled on, uninstall if toggled off but was installed
         var uninstallActions: [String] = []
@@ -596,13 +684,14 @@ struct SetupSettingsTab: View {
                 installerPath: installerPath,
                 actions: allActions,
                 prefix: prefix,
-                dxvkSrc: dxvkSrc,
-                dxvk64: dxvkInstall64,
-                dxvk32: dxvkInstall32,
-                mesa: mesaDir,
+                dxvkSrc: pathSettings.dxvkSrc,
+                dxvk64: pathSettings.dxvkInstall64,
+                dxvk32: pathSettings.dxvkInstall32,
+                mesa: pathSettings.mesaDir,
                 mesaUrl: mesaUrl,
-                dxmt: dxmtDir,
-                vkd3d: vkd3dDir
+                dxmt: pathSettings.dxmtDir,
+                vkd3d: pathSettings.vkd3dDir,
+                gptkDir: pathSettings.gptkDir
             ) else {
                 isRunning = false
                 return
@@ -662,6 +751,372 @@ struct ComponentToggleRow: View {
                     .padding(.vertical, 2)
                     .background(.green.opacity(0.15), in: Capsule())
             }
+        }
+    }
+}
+
+// MARK: - Diagnose Tab
+
+struct DiagnoseSettingsTab: View {
+    @EnvironmentObject var backend: BackendClient
+    @State private var diagnosis: CheeseDiagnosis?
+    @State private var isDiagnosing = false
+    @State private var pendingRepair: CheeseRepairAction?
+
+    @State private var repairJobId: String?
+    @State private var repairLogLines: [String] = []
+    @State private var repairLogOffset = 0
+    @State private var repairCurrentAction = ""
+    @State private var repairDone = false
+    @State private var repairFailed = false
+    @State private var isRepairing = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Diagnose Cheese")
+                            .font(.headline)
+                        Text(activePrefixLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        runDiagnosis()
+                    } label: {
+                        Label(isDiagnosing ? "Scanning" : "Run Diagnosis", systemImage: "stethoscope")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.cyan)
+                    .disabled(isDiagnosing || isRepairing)
+                }
+
+                if isDiagnosing {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Scanning MacNCheese, Wine and the selected prefix...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let diagnosis {
+                    DiagnosisSummaryView(diagnosis: diagnosis)
+
+                    if !diagnosis.repairs.isEmpty {
+                        GroupBox("Suggested Repairs") {
+                            VStack(spacing: 10) {
+                                ForEach(diagnosis.repairs) { repair in
+                                    RepairActionRow(repair: repair, disabled: isDiagnosing || isRepairing) {
+                                        pendingRepair = repair
+                                    }
+                                }
+                            }
+                            .padding(8)
+                        }
+                    }
+
+                    GroupBox("Checks") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(diagnosis.checks) { check in
+                                DiagnosticCheckRow(check: check)
+                            }
+                        }
+                        .padding(8)
+                    }
+                } else if !isDiagnosing {
+                    VStack(alignment: .center, spacing: 8) {
+                        Image(systemName: "stethoscope")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                        Text("Run a diagnosis to scan for missing components, corrupted Wine files and prefix loader failures.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 44)
+                }
+
+                if isRepairing || repairDone {
+                    repairProgressView
+                }
+
+                if let error = backend.lastError {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .onAppear {
+            if diagnosis == nil {
+                runDiagnosis()
+            }
+        }
+        .confirmationDialog(
+            "Run Repair?",
+            isPresented: Binding(
+                get: { pendingRepair != nil },
+                set: { if !$0 { pendingRepair = nil } }
+            ),
+            presenting: pendingRepair
+        ) { repair in
+            Button(repair.title, role: repair.destructive ? .destructive : nil) {
+                runRepair(repair)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRepair = nil
+            }
+        } message: { repair in
+            Text(repair.details)
+        }
+    }
+
+    private var activePrefixLabel: String {
+        let prefix = backend.activePrefix ?? NSHomeDirectory() + "/wined"
+        return prefix.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+
+    private var repairStatusColor: Color {
+        if isRepairing { return .secondary }
+        return repairFailed ? .red : .green
+    }
+
+    private var repairProgressView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                if isRepairing {
+                    ProgressView().controlSize(.small)
+                } else if repairFailed {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                } else {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+
+                Text(isRepairing
+                     ? (repairCurrentAction.isEmpty ? "Repair running..." : repairCurrentAction)
+                     : (repairFailed ? "Repair finished with errors" : "Repair complete"))
+                    .font(.caption)
+                    .foregroundColor(repairStatusColor)
+
+                Spacer()
+
+                if repairDone {
+                    Button("Dismiss") { clearRepairState() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(repairLogLines.joined(separator: "\n"))
+                        .font(.system(.caption2, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .id("repairLogBottom")
+                }
+                .frame(height: 130)
+                .background(.black.opacity(0.25))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .onChange(of: repairLogLines) {
+                    proxy.scrollTo("repairLogBottom", anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    private func runDiagnosis() {
+        guard !isDiagnosing else { return }
+        isDiagnosing = true
+        Task {
+            diagnosis = await backend.diagnoseCheese(prefix: backend.activePrefix)
+            isDiagnosing = false
+        }
+    }
+
+    private func clearRepairState() {
+        repairJobId = nil
+        repairLogLines = []
+        repairLogOffset = 0
+        repairCurrentAction = ""
+        repairDone = false
+        repairFailed = false
+        isRepairing = false
+    }
+
+    private func runRepair(_ repair: CheeseRepairAction) {
+        pendingRepair = nil
+        clearRepairState()
+        isRepairing = true
+
+        Task {
+            guard let jobId = await backend.runCheeseRepair(action: repair.id, prefix: backend.activePrefix) else {
+                isRepairing = false
+                return
+            }
+            repairJobId = jobId
+
+            while true {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let progress = await backend.getInstallProgress(jobId: jobId, offset: repairLogOffset) else {
+                    break
+                }
+
+                repairLogLines.append(contentsOf: progress.lines)
+                repairLogOffset = progress.totalLines
+                repairCurrentAction = progress.current
+
+                if progress.done {
+                    repairDone = true
+                    repairFailed = progress.failed
+                    isRepairing = false
+                    await backend.loadStatus()
+                    diagnosis = await backend.diagnoseCheese(prefix: backend.activePrefix)
+                    break
+                }
+            }
+        }
+    }
+}
+
+struct DiagnosisSummaryView: View {
+    let diagnosis: CheeseDiagnosis
+
+    private var errorCount: Int {
+        diagnosis.checks.filter { $0.status == "error" }.count
+    }
+
+    private var warningCount: Int {
+        diagnosis.checks.filter { $0.status == "warning" }.count
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: errorCount > 0 ? "xmark.octagon.fill" : (warningCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"))
+                .foregroundStyle(errorCount > 0 ? .red : (warningCount > 0 ? .yellow : .green))
+                .font(.title3)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(diagnosis.summary)
+                    .fontWeight(.semibold)
+                Text("Generated \(diagnosis.generatedAt)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(10)
+        .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct DiagnosticCheckRow: View {
+    let check: CheeseDiagnosticCheck
+
+    private var color: Color {
+        switch check.status {
+        case "ok": return .green
+        case "warning": return .yellow
+        case "error": return .red
+        default: return .blue
+        }
+    }
+
+    private var icon: String {
+        switch check.status {
+        case "ok": return "checkmark.circle.fill"
+        case "warning": return "exclamationmark.triangle.fill"
+        case "error": return "xmark.octagon.fill"
+        default: return "info.circle.fill"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                    .frame(width: 18)
+                Text(check.title)
+                    .fontWeight(.medium)
+                Spacer()
+                Text(check.status.uppercased())
+                    .font(.caption2)
+                    .foregroundStyle(color)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(color.opacity(0.14), in: Capsule())
+            }
+
+            Text(check.message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if !check.details.isEmpty {
+                Text(check.details)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+}
+
+struct RepairActionRow: View {
+    let repair: CheeseRepairAction
+    let disabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: repair.destructive ? "exclamationmark.arrow.triangle.2.circlepath" : "wrench.and.screwdriver")
+                .foregroundStyle(repair.destructive ? .orange : .cyan)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(repair.title)
+                        .fontWeight(.medium)
+                    if repair.recommended {
+                        Text("Recommended")
+                            .font(.caption2)
+                            .foregroundStyle(.cyan)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.cyan.opacity(0.14), in: Capsule())
+                    }
+                }
+                Text(repair.details)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Button("Run") { action() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(disabled)
         }
     }
 }
