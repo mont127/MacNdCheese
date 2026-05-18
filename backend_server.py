@@ -23,6 +23,9 @@ if _resources_dir not in _sys.path:
     _sys.path.insert(0, _resources_dir)
 
 import base64
+import datetime
+import filecmp
+import html as html_lib
 import io
 import json
 import os
@@ -40,9 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+
 
 PORTABLE_DIR = Path.home() / "Library" / "Application Support" / "MacNCheese" / "deps"
 VERSION_MARKER = PORTABLE_DIR / ".mnc_versions"
@@ -56,7 +57,7 @@ STEAM_SETUP_URL = "https://cdn.fastly.steamstatic.com/client/installer/SteamSetu
 
 APPMANIFEST_RE = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
-# Graphics backend IDs (must match MacNCheese.py)
+
 BACKEND_AUTO = "auto"
 BACKEND_WINE = "wine"
 BACKEND_DXVK = "dxvk"
@@ -69,7 +70,7 @@ BACKEND_GPTK = "gptk"
 BACKEND_GPTK_FULL = "gptk_full"
 BACKEND_D3DMETAL3 = "d3dmetal3"
 
-# Default paths for graphics components
+
 DEFAULT_DXVK_INSTALL = Path.home() / "dxvk-release"
 DEFAULT_MESA_DIR = Path.home() / "mesa" / "x64"
 DEFAULT_DXMT_DIR = Path.home() / "dxmt"
@@ -85,6 +86,33 @@ SKIP_EXE_TOKENS = (
     "crash", "reporter", "setup", "install", "unins",
     "helper", "bootstrap", "diagnostics", "dxwebsetup",
 )
+
+PREFIX_DLL_VERIFY_FILES = (
+    "ntdll.dll",
+    "kernel32.dll",
+    "kernelbase.dll",
+    "msvcrt.dll",
+    "ucrtbase.dll",
+    "advapi32.dll",
+    "sechost.dll",
+    "ws2_32.dll",
+    "rpcrt4.dll",
+    "bcrypt.dll",
+    "crypt32.dll",
+    "combase.dll",
+    "ole32.dll",
+    "user32.dll",
+    "gdi32.dll",
+    "shell32.dll",
+    "shlwapi.dll",
+    "wininet.dll",
+    "winhttp.dll",
+    "version.dll",
+    "start.exe",
+    "cmd.exe",
+)
+
+PREFIX_LOADER_DLLS = {"ntdll.dll", "kernel32.dll", "kernelbase.dll"}
 
 # ---------------------------------------------------------------------------
 # Discord Rich Presence — rpc-bridge (https://github.com/EnderIce2/rpc-bridge)
@@ -160,9 +188,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 (LOG_DIR / "dxvk").mkdir(exist_ok=True)
 APP_LOG_PATH = LOG_DIR / "macncheese.log"
 
-# ---------------------------------------------------------------------------
-# Logging helper (stderr + persistent app log file)
-# ---------------------------------------------------------------------------
+
 
 def log(msg: str) -> None:
     print(f"[backend] {msg}", file=sys.stderr, flush=True)
@@ -173,9 +199,7 @@ def log(msg: str) -> None:
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# JSON helpers for config files
-# ---------------------------------------------------------------------------
+
 
 def _read_json(path: Path, default: Any = None) -> Any:
     try:
@@ -213,9 +237,7 @@ def _resolve_key(path: str) -> str:
     except Exception:
         return path
 
-# ---------------------------------------------------------------------------
-# Wine / wineserver discovery
-# ---------------------------------------------------------------------------
+
 
 def _find_wine_stable() -> Optional[str]:
     for name in ("wine64", "wine"):
@@ -295,21 +317,22 @@ def _find_moltenvk_icd() -> str:
     for lib in lib_candidates:
         if lib.exists():
             manifest_dir = Path.home() / ".config" / "macncheese" / "vulkan" / "icd.d"
-            manifest_dir.mkdir(parents=True, exist_ok=True)
-            manifest = manifest_dir / "MoltenVK_icd.json"
-            manifest.write_text(json.dumps({
-                "file_format_version": "1.0.0",
-                "ICD": {
-                    "library_path": str(lib),
-                    "api_version": "1.2.0",
-                },
-            }, indent=2))
-            return str(manifest)
+            try:
+                manifest_dir.mkdir(parents=True, exist_ok=True)
+                manifest = manifest_dir / "MoltenVK_icd.json"
+                manifest.write_text(json.dumps({
+                    "file_format_version": "1.0.0",
+                    "ICD": {
+                        "library_path": str(lib),
+                        "api_version": "1.2.0",
+                    },
+                }, indent=2))
+                return str(manifest)
+            except Exception as exc:
+                log(f"MoltenVK manifest write failed: {exc}")
+                return str(lib)
     return ""
 
-# ---------------------------------------------------------------------------
-# Wine environment builder
-# ---------------------------------------------------------------------------
 
 def _wine_env(prefix: str) -> Dict[str, str]:
     """Base Wine environment — matches original MainWindow.wine_env().
@@ -357,9 +380,7 @@ def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
         log(f"Warning: regedit failed: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# Optional esync/msync env helper
-# ---------------------------------------------------------------------------
+
 def _apply_sync_env(env: Dict[str, str], esync: Optional[bool], msync: Optional[bool]) -> Dict[str, str]:
     """Apply optional per-launch esync/msync flags.
 
@@ -374,9 +395,7 @@ def _apply_sync_env(env: Dict[str, str], esync: Optional[bool], msync: Optional[
     return env
 
 
-# ---------------------------------------------------------------------------
-# Graphics backend detection & env setup
-# ---------------------------------------------------------------------------
+
 
 def _dxvk_available() -> bool:
     return all((DEFAULT_DXVK_INSTALL / "bin" / dll).exists() for dll in DXVK_DLLS)
@@ -1194,6 +1213,17 @@ def cmd_scan_games(params: Dict[str, Any]) -> Any:
     return deduped
 
 
+def cmd_get_steam_description(params: Dict[str, Any]) -> Any:
+    appid = str(params.get("appid", "")).strip()
+    if not appid:
+        raise ValueError("Missing 'appid' parameter")
+    description = _fetch_steam_description(appid) or ""
+    return {
+        "appid": appid,
+        "description": description,
+    }
+
+
 def cmd_launch_game(params: Dict[str, Any]) -> Any:
     prefix = params.get("prefix")
     exe = params.get("exe")
@@ -1561,7 +1591,11 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
 
     custom_path = params.get("path")
     if custom_path:
-        bottle_path = Path(custom_path)
+        selected_path = Path(custom_path).expanduser()
+        if selected_path.name == name:
+            bottle_path = selected_path
+        else:
+            bottle_path = selected_path / name
     else:
         bottle_path = BOTTLES_BASE / name
     bottle_path.mkdir(parents=True, exist_ok=True)
@@ -1628,6 +1662,75 @@ def cmd_reorder_bottles(params: Dict[str, Any]) -> Any:
             ordered.append(p)
     _save_prefixes(ordered)
     return {"ok": True}
+
+
+def cmd_move_bottle(params: Dict[str, Any]) -> Any:
+    """Move a prefix directory and update all MacNCheese bottle references."""
+    path = params.get("path")
+    destination_path = params.get("destination_path")
+    destination_parent = params.get("destination_parent")
+    if not path:
+        raise ValueError("Missing 'path' parameter")
+    if not destination_path and not destination_parent:
+        raise ValueError("Missing destination path")
+
+    source = Path(path).expanduser().resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"Prefix not found: {source}")
+
+    if destination_path:
+        destination = Path(destination_path).expanduser().resolve()
+    else:
+        destination_root = Path(destination_parent).expanduser().resolve()
+        if destination_root == source:
+            return {"path": str(source), "unchanged": True}
+        destination = destination_root / source.name
+
+    if destination == source:
+        return {"path": str(source), "unchanged": True}
+    if str(destination).startswith(str(source) + os.sep):
+        raise ValueError("Choose a destination outside the current prefix")
+    if destination.exists():
+        raise FileExistsError(f"Destination already exists: {destination}")
+
+    old_key = _resolve_key(path)
+    new_path = str(destination)
+    new_key = _resolve_key(new_path)
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    log(f"Moving prefix {source} -> {destination}")
+    shutil.move(str(source), str(destination))
+
+    try:
+        prefixes = _load_prefixes()
+        updated_prefixes: List[str] = []
+        replaced = False
+        for existing in prefixes:
+            if _resolve_key(existing) == old_key:
+                if new_path not in updated_prefixes:
+                    updated_prefixes.append(new_path)
+                replaced = True
+            elif _resolve_key(existing) != new_key:
+                updated_prefixes.append(existing)
+        if not replaced and new_path not in updated_prefixes:
+            updated_prefixes.append(new_path)
+        _save_prefixes(updated_prefixes)
+
+        bottles = _load_bottles()
+        config = bottles.pop(old_key, {})
+        if config:
+            bottles[new_key] = config
+        _save_bottles(bottles)
+    except Exception:
+        log(f"Move config update failed; rolling back {destination} -> {source}")
+        try:
+            if destination.exists() and not source.exists():
+                shutil.move(str(destination), str(source))
+        except Exception as rollback_exc:
+            log(f"Move rollback failed: {rollback_exc}")
+        raise
+
+    return {"path": new_path}
 
 
 def cmd_delete_bottle(params: Dict[str, Any]) -> Any:
@@ -1799,6 +1902,32 @@ def cmd_clean_prefix(params: Dict[str, Any]) -> Any:
     return None
 
 
+def cmd_open_winecfg(params: Dict[str, Any]) -> Any:
+    """Open winecfg for the selected prefix."""
+    prefix = params.get("prefix")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+
+    key = _resolve_key(prefix)
+    bottle_cfg = _load_bottles().get(key, {})
+    wine_pref = str(bottle_cfg.get("wine_binary", "auto") or "auto")
+    wine = _find_wine_for_bottle(wine_pref)
+    if not wine:
+        raise FileNotFoundError("Wine not found")
+
+    env = _wine_env(prefix)
+    log(f"open_winecfg: {wine} winecfg for {prefix}")
+    proc = subprocess.Popen(
+        [wine, "winecfg"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    _running_games[proc.pid] = proc
+    return {"pid": proc.pid}
+
+
 def cmd_run_exe(params: Dict[str, Any]) -> Any:
     """Run an arbitrary .exe inside a prefix (for installers, SteamSetup, etc.)."""
     prefix = params.get("prefix")
@@ -1906,6 +2035,9 @@ def _get_wine_version(wine: Optional[str] = None) -> Optional[str]:
 _github_cache: Dict[str, Any] = {}
 _GITHUB_CACHE_TTL = 3600  # 1 hour
 
+_steam_cache: Dict[str, Any] = {}
+_STEAM_CACHE_TTL = 24 * 3600  # 24 hours
+
 
 def _fetch_latest_github_release(owner: str, repo: str) -> Optional[Dict[str, Any]]:
     """Fetch latest release info from GitHub API, with 1-hour cache."""
@@ -1921,6 +2053,61 @@ def _fetch_latest_github_release(owner: str, repo: str) -> Optional[Dict[str, An
             _github_cache[cache_key] = (time.time(), data)
             return data
     except Exception:
+        return None
+
+
+def _steam_html_to_text(raw: str) -> str:
+    """Convert Steam store HTML snippets into readable plain text."""
+    if not raw:
+        return ""
+
+    text = raw
+    text = re.sub(r"(?is)<script.*?>.*?</script>", "", text)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", "", text)
+    text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", text)
+    text = re.sub(r"(?i)<\s*/\s*p\s*>", "\n\n", text)
+    text = re.sub(r"(?i)<\s*/\s*div\s*>", "\n", text)
+    text = re.sub(r"(?i)<\s*/\s*li\s*>", "\n", text)
+    text = re.sub(r"(?i)<\s*li[^>]*>", "• ", text)
+    text = re.sub(r"(?i)<\s*/?\s*h[1-6][^>]*>", "\n\n", text)
+    text = re.sub(r"(?i)<\s*p[^>]*>", "", text)
+    text = re.sub(r"(?i)<\s*div[^>]*>", "", text)
+    text = re.sub(r"(?i)<\s*span[^>]*>", "", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _fetch_steam_description(appid: str) -> Optional[str]:
+    """Fetch and cache the Steam store extended description for an app id."""
+    appid = str(appid).strip()
+    if not appid.isdigit():
+        return None
+
+    cache_key = f"steam/{appid}"
+    cached = _steam_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _STEAM_CACHE_TTL:
+        return cached[1]
+
+    try:
+        url = f"https://store.steampowered.com/api/appdetails?appids={appid}&l=en&cc=us"
+        req = urllib.request.Request(url, headers={"User-Agent": "MacNCheese/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read())
+        app_data = payload.get(appid, {})
+        if not app_data.get("success"):
+            _steam_cache[cache_key] = (time.time(), None)
+            return None
+
+        data = app_data.get("data", {})
+        raw_html = data.get("detailed_description") or data.get("about_the_game") or data.get("short_description") or ""
+        description = _steam_html_to_text(raw_html)
+        _steam_cache[cache_key] = (time.time(), description or None)
+        return description or None
+    except Exception as exc:
+        log(f"Failed to fetch Steam description for {appid}: {exc}")
         return None
 
 
@@ -1998,6 +2185,767 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
         "has_rpc_bridge": _rpc_bridge_available(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cheese diagnostics
+# ---------------------------------------------------------------------------
+
+def _is_apple_silicon() -> bool:
+    try:
+        uname = os.uname()
+        return uname.sysname == "Darwin" and uname.machine == "arm64"
+    except Exception:
+        return False
+
+
+def _run_probe(args: List[str], env: Optional[Dict[str, str]] = None, timeout: int = 30) -> tuple[int, str]:
+    """Run a short diagnostic probe and return (returncode, combined output)."""
+    try:
+        result = subprocess.run(
+            args,
+            env=env,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+        )
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        if len(output) > 5000:
+            output = output[-5000:]
+        return result.returncode, output
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or "") + (exc.stderr or "")).strip()
+        return 124, f"Timed out after {timeout}s\n{output}".strip()
+    except Exception as exc:
+        return 127, f"{type(exc).__name__}: {exc}"
+
+
+def _diag_check(
+    check_id: str,
+    title: str,
+    status: str,
+    message: str,
+    details: str = "",
+    repair_actions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    return {
+        "id": check_id,
+        "title": title,
+        "status": status,
+        "message": message,
+        "details": details,
+        "repair_actions": repair_actions or [],
+    }
+
+
+def _add_repair(
+    repairs: Dict[str, Dict[str, Any]],
+    repair_id: str,
+    title: str,
+    details: str,
+    destructive: bool = False,
+    recommended: bool = False,
+) -> None:
+    current = repairs.get(repair_id)
+    if current:
+        current["recommended"] = bool(current.get("recommended")) or recommended
+        current["destructive"] = bool(current.get("destructive")) or destructive
+        return
+    repairs[repair_id] = {
+        "id": repair_id,
+        "title": title,
+        "details": details,
+        "destructive": destructive,
+        "recommended": recommended,
+    }
+
+
+def _find_installer_script() -> Optional[Path]:
+    candidates = [
+        Path(_resources_dir) / "installer.sh",
+        Path.home() / "macndcheese" / "installer.sh",
+        Path.cwd() / "installer.sh",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _tail_text(path: Path, limit: int = 65536) -> str:
+    try:
+        with path.open("rb") as f:
+            try:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - limit))
+            except Exception:
+                pass
+            return f.read(limit).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _installed_wine_apps() -> List[Dict[str, Any]]:
+    apps: List[Dict[str, Any]] = []
+    for label, dirname, finder in (
+        ("Stable", "Wine Stable.app", _find_wine_stable),
+        ("Staging", "Wine Staging.app", _find_wine_staging),
+    ):
+        app_dir = PORTABLE_DIR / dirname
+        if not app_dir.exists():
+            continue
+        wine_root = app_dir / "Contents" / "Resources" / "wine"
+        bin_dir = wine_root / "bin"
+        apps.append({
+            "label": label,
+            "dirname": dirname,
+            "app_dir": app_dir,
+            "wine_root": wine_root,
+            "wine_bin": finder(),
+            "bin_dir": bin_dir,
+            "win64_lib": wine_root / "lib" / "wine" / "x86_64-windows",
+            "unix_lib": wine_root / "lib" / "wine" / "x86_64-unix",
+        })
+    return apps
+
+
+def _file_sizes(path_a: Path, path_b: Path) -> str:
+    try:
+        size_a = path_a.stat().st_size
+    except Exception:
+        size_a = -1
+    try:
+        size_b = path_b.stat().st_size
+    except Exception:
+        size_b = -1
+    return f"wine={size_a} prefix={size_b}"
+
+
+def _compare_file_content(path_a: Path, path_b: Path) -> bool:
+    try:
+        if path_a.stat().st_size != path_b.stat().st_size:
+            return False
+        return filecmp.cmp(str(path_a), str(path_b), shallow=False)
+    except Exception:
+        return False
+
+
+def _stable_prefix_dll_sources() -> List[Dict[str, Any]]:
+    stable_root = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine" / "lib" / "wine"
+    return [
+        {
+            "arch": "x64",
+            "wine_dir": stable_root / "x86_64-windows",
+            "prefix_dir": "drive_c/windows/system32",
+        },
+        {
+            "arch": "x86",
+            "wine_dir": stable_root / "i386-windows",
+            "prefix_dir": "drive_c/windows/syswow64",
+        },
+    ]
+
+
+def _diagnose_stable_prefix_dlls(prefix: str, repairs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    prefix_path = Path(prefix).expanduser()
+    sections: List[str] = []
+    source_missing: List[str] = []
+    prefix_missing: List[str] = []
+    mismatched: List[str] = []
+    checked = 0
+
+    for source in _stable_prefix_dll_sources():
+        wine_dir: Path = source["wine_dir"]
+        prefix_dir = prefix_path / source["prefix_dir"]
+        arch = source["arch"]
+
+        if not wine_dir.is_dir():
+            source_missing.append(f"{arch}: {wine_dir}")
+            continue
+        if not prefix_dir.is_dir():
+            prefix_missing.append(f"{arch}: {source['prefix_dir']}/")
+            continue
+
+        arch_checked = 0
+        arch_missing = 0
+        arch_mismatched = 0
+        for name in PREFIX_DLL_VERIFY_FILES:
+            stable_file = wine_dir / name
+            prefix_file = prefix_dir / name
+            if not stable_file.exists():
+                source_missing.append(f"{arch}: {name}")
+                continue
+            checked += 1
+            arch_checked += 1
+            if not prefix_file.exists():
+                prefix_missing.append(f"{arch}: {name}")
+                arch_missing += 1
+                continue
+            if not _compare_file_content(stable_file, prefix_file):
+                mismatched.append(f"{arch}: {name} ({_file_sizes(stable_file, prefix_file)})")
+                arch_mismatched += 1
+
+        sections.append(
+            f"{arch}: checked {arch_checked}, missing {arch_missing}, mismatched {arch_mismatched}"
+        )
+
+    details: List[str] = []
+    details.extend(sections)
+    if source_missing:
+        details.append("Missing in Wine Stable:")
+        details.extend(f"  {item}" for item in source_missing[:16])
+        if len(source_missing) > 16:
+            details.append(f"  ... {len(source_missing) - 16} more")
+    if prefix_missing:
+        details.append("Missing in prefix:")
+        details.extend(f"  {item}" for item in prefix_missing[:16])
+        if len(prefix_missing) > 16:
+            details.append(f"  ... {len(prefix_missing) - 16} more")
+    if mismatched:
+        details.append("Different from Wine Stable:")
+        details.extend(f"  {item}" for item in mismatched[:16])
+        if len(mismatched) > 16:
+            details.append(f"  ... {len(mismatched) - 16} more")
+
+    if not source_missing and checked == 0:
+        return _diag_check(
+            "prefix_dlls",
+            "Prefix DLL verification",
+            "info",
+            "Wine Stable DLL directories were not found, so the selected prefix could not be compared.",
+        )
+
+    if source_missing:
+        _add_repair(
+            repairs,
+            "reinstall_wine_stable",
+            "Reinstall Wine Stable",
+            "Backs up the current Wine Stable app and installs a fresh copy through installer.sh.",
+            destructive=True,
+            recommended=True,
+        )
+
+    if prefix_missing or mismatched:
+        _add_repair(
+            repairs,
+            "repair_prefix",
+            "Repair selected prefix",
+            "Runs wineboot -u for the selected bottle/prefix.",
+            recommended=True,
+        )
+        _add_repair(
+            repairs,
+            "sync_prefix_stable_dlls",
+            "Sync prefix DLLs from Wine Stable",
+            "Backs up the selected prefix's core runtime DLLs, then copies clean Wine Stable versions into system32/syswow64.",
+            destructive=True,
+        )
+
+    loader_names = {
+        item.split(":", 1)[1].strip().split(" ", 1)[0].lower()
+        for item in prefix_missing + mismatched
+        if ":" in item
+    }
+    if loader_names.intersection(PREFIX_LOADER_DLLS):
+        _add_repair(
+            repairs,
+            "backup_recreate_prefix",
+            "Back up and recreate prefix",
+            "Moves the selected prefix to a timestamped backup and creates a fresh Wine prefix.",
+            destructive=True,
+        )
+        return _diag_check(
+            "prefix_dlls",
+            "Prefix DLL verification",
+            "error",
+            "The selected prefix has core loader DLLs that do not match Wine Stable.",
+            "\n".join(details),
+            ["repair_prefix", "sync_prefix_stable_dlls", "backup_recreate_prefix"],
+        )
+
+    if source_missing:
+        return _diag_check(
+            "prefix_dlls",
+            "Prefix DLL verification",
+            "error",
+            "Wine Stable is missing files needed to verify the selected prefix.",
+            "\n".join(details),
+            ["reinstall_wine_stable"],
+        )
+
+    if prefix_missing or mismatched:
+        return _diag_check(
+            "prefix_dlls",
+            "Prefix DLL verification",
+            "warning",
+            "Some selected-prefix runtime DLLs do not match Wine Stable.",
+            "\n".join(details),
+            ["repair_prefix", "sync_prefix_stable_dlls"],
+        )
+
+    return _diag_check(
+        "prefix_dlls",
+        "Prefix DLL verification",
+        "ok",
+        f"Selected prefix core runtime DLLs match Wine Stable ({checked} files checked).",
+        "\n".join(details),
+    )
+
+
+def _diagnose_logs(repairs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    candidates: List[Path] = []
+    if APP_LOG_PATH.exists():
+        candidates.append(APP_LOG_PATH)
+    try:
+        wine_logs = sorted(
+            LOG_DIR.glob("*-wine.log"),
+            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            reverse=True,
+        )
+        candidates.extend(wine_logs[:6])
+    except Exception:
+        pass
+
+    hits: List[str] = []
+    patterns = [
+        ("could not load kernel32.dll", "Wine could not load kernel32.dll"),
+        ("status c0000135", "Wine reported status c0000135"),
+        ("_invalid_parameter", "Wine hit _invalid_parameter"),
+        ("0xc0000417", "Wine hit exception 0xc0000417"),
+        ("couldn't start debugger", "Wine could not start winedbg"),
+    ]
+
+    for path in candidates:
+        text = _tail_text(path).lower()
+        if not text:
+            continue
+        matched = [label for needle, label in patterns if needle in text]
+        if matched:
+            hits.append(f"{path.name}: {', '.join(matched)}")
+
+    if not candidates:
+        return _diag_check(
+            "logs",
+            "Recent logs",
+            "info",
+            "No MacNCheese logs have been created yet.",
+        )
+
+    if hits:
+        _add_repair(
+            repairs,
+            "repair_prefix",
+            "Repair selected prefix",
+            "Runs wineboot -u for the selected bottle/prefix.",
+            recommended=True,
+        )
+        _add_repair(
+            repairs,
+            "reinstall_wine_stable",
+            "Reinstall Wine Stable",
+            "Backs up the current Wine Stable app and installs a fresh copy through installer.sh.",
+            destructive=True,
+        )
+        details = "\n".join(hits)
+        return _diag_check(
+            "logs",
+            "Recent logs",
+            "warning",
+            "Recent logs contain early Wine loader/crash patterns.",
+            details,
+            ["repair_prefix", "reinstall_wine_stable"],
+        )
+
+    return _diag_check(
+        "logs",
+        "Recent logs",
+        "ok",
+        f"Checked {len(candidates)} recent log file(s); no known Wine loader patterns found.",
+    )
+
+
+def cmd_diagnose_cheese(params: Dict[str, Any]) -> Any:
+    """Scan the MacNCheese runtime for common install, Wine and prefix problems."""
+    prefix = str(params.get("prefix") or DEFAULT_PREFIX)
+    checks: List[Dict[str, Any]] = []
+    repairs: Dict[str, Dict[str, Any]] = {}
+
+    installer = _find_installer_script()
+    if installer:
+        checks.append(_diag_check(
+            "installer",
+            "Installer script",
+            "ok",
+            f"Found installer.sh at {installer}.",
+        ))
+    else:
+        checks.append(_diag_check(
+            "installer",
+            "Installer script",
+            "error",
+            "installer.sh was not found, so automated component repairs cannot run.",
+        ))
+
+    if _is_apple_silicon():
+        rc, output = _run_probe(["/usr/bin/arch", "-x86_64", "/usr/bin/true"], timeout=10)
+        if rc == 0:
+            checks.append(_diag_check(
+                "rosetta",
+                "Rosetta 2",
+                "ok",
+                "Rosetta can run x86_64 commands.",
+            ))
+        else:
+            _add_repair(
+                repairs,
+                "install_rosetta",
+                "Install Rosetta 2",
+                "Runs softwareupdate --install-rosetta --agree-to-license.",
+                recommended=True,
+            )
+            checks.append(_diag_check(
+                "rosetta",
+                "Rosetta 2",
+                "error",
+                "Rosetta cannot run x86_64 commands.",
+                output,
+                ["install_rosetta"],
+            ))
+    else:
+        checks.append(_diag_check(
+            "rosetta",
+            "Rosetta 2",
+            "info",
+            "This Mac is not reporting Apple Silicon, so Rosetta is not required.",
+        ))
+
+    if PORTABLE_DIR.exists():
+        checks.append(_diag_check(
+            "portable_dir",
+            "MacNCheese deps",
+            "ok",
+            f"Dependency directory exists: {PORTABLE_DIR}.",
+        ))
+    else:
+        _add_repair(
+            repairs,
+            "quick_setup",
+            "Run quick setup",
+            "Installs Rosetta, portable tools, Wine Stable, DXMT and Mesa through installer.sh.",
+            recommended=True,
+        )
+        checks.append(_diag_check(
+            "portable_dir",
+            "MacNCheese deps",
+            "warning",
+            f"Dependency directory is missing: {PORTABLE_DIR}.",
+            repair_actions=["quick_setup"],
+        ))
+
+    components = cmd_get_components_status({})
+    missing_components: List[str] = []
+    if not components.get("has_tools"):
+        missing_components.append("tools")
+        _add_repair(
+            repairs,
+            "install_tools",
+            "Install portable tools",
+            "Installs the portable git/7z/wget tool bundle through installer.sh.",
+        )
+    if not components.get("has_wine"):
+        missing_components.append("Wine")
+        _add_repair(
+            repairs,
+            "install_wine_stable",
+            "Install Wine Stable",
+            "Installs the MacNCheese Wine Stable bundle through installer.sh.",
+            recommended=True,
+        )
+    if missing_components:
+        checks.append(_diag_check(
+            "components",
+            "Setup components",
+            "warning",
+            "Missing setup component(s): " + ", ".join(missing_components) + ".",
+            repair_actions=["install_tools", "install_wine_stable"],
+        ))
+    else:
+        checks.append(_diag_check(
+            "components",
+            "Setup components",
+            "ok",
+            "Required setup components are present.",
+            f"Wine version: {components.get('wine_version') or 'unknown'}",
+        ))
+
+    wine_apps = _installed_wine_apps()
+    if not wine_apps:
+        _add_repair(
+            repairs,
+            "install_wine_stable",
+            "Install Wine Stable",
+            "Installs the MacNCheese Wine Stable bundle through installer.sh.",
+            recommended=True,
+        )
+        checks.append(_diag_check(
+            "wine_selection",
+            "Wine selection",
+            "error",
+            "No portable Wine app is installed.",
+            repair_actions=["install_wine_stable"],
+        ))
+    else:
+        labels = [app["label"] for app in wine_apps]
+        if len(wine_apps) > 1:
+            _add_repair(
+                repairs,
+                "backup_wine_staging",
+                "Keep Stable only",
+                "Moves Wine Staging into a diagnostic backup folder so Auto uses only Wine Stable.",
+                destructive=True,
+                recommended=True,
+            )
+            checks.append(_diag_check(
+                "wine_selection",
+                "Wine selection",
+                "warning",
+                "More than one portable Wine build is installed: " + ", ".join(labels) + ".",
+                "The known kernel32.dll reports in the issue thread were often debugged by keeping a single Wine build, preferably Wine Stable.",
+                ["backup_wine_staging"],
+            ))
+        elif labels[0] == "Staging":
+            _add_repair(
+                repairs,
+                "install_wine_stable",
+                "Install Wine Stable",
+                "Installs the MacNCheese Wine Stable bundle through installer.sh.",
+                recommended=True,
+            )
+            checks.append(_diag_check(
+                "wine_selection",
+                "Wine selection",
+                "warning",
+                "Only Wine Staging is installed. Auto can use it, but Wine Stable is the safer default for this app.",
+                repair_actions=["install_wine_stable"],
+            ))
+        else:
+            checks.append(_diag_check(
+                "wine_selection",
+                "Wine selection",
+                "ok",
+                "Only Wine Stable is installed.",
+            ))
+
+    for app in wine_apps:
+        missing: List[str] = []
+        if not app["wine_bin"] or not Path(str(app["wine_bin"])).exists():
+            missing.append("bin/wine or bin/wine64")
+        for dll in ("kernel32.dll", "ntdll.dll"):
+            if not (app["win64_lib"] / dll).exists():
+                missing.append(f"x86_64-windows/{dll}")
+        if not app["unix_lib"].exists():
+            missing.append("x86_64-unix")
+
+        if missing:
+            action = "reinstall_wine_stable" if app["label"] == "Stable" else "backup_wine_staging"
+            _add_repair(
+                repairs,
+                action,
+                "Reinstall Wine Stable" if action == "reinstall_wine_stable" else "Keep Stable only",
+                "Backs up the broken Wine app and repairs the Wine selection.",
+                destructive=True,
+                recommended=True,
+            )
+            checks.append(_diag_check(
+                f"wine_integrity_{app['label'].lower()}",
+                f"Wine {app['label']} integrity",
+                "error",
+                f"Wine {app['label']} is missing key runtime file(s).",
+                ", ".join(missing),
+                [action],
+            ))
+        else:
+            checks.append(_diag_check(
+                f"wine_integrity_{app['label'].lower()}",
+                f"Wine {app['label']} integrity",
+                "ok",
+                f"Wine {app['label']} has the expected loader files.",
+            ))
+
+    wine = _find_wine()
+    if wine:
+        version_cmd = [wine, "--version"]
+        if _is_apple_silicon():
+            version_cmd = ["/usr/bin/arch", "-x86_64", wine, "--version"]
+        rc, output = _run_probe(version_cmd, timeout=15)
+        if rc == 0 and output:
+            status = "ok"
+            message = f"Wine responds under x86_64: {output.splitlines()[0]}"
+            if "wine-11.0" not in output and "wine-11." not in output:
+                status = "info"
+                message = f"Wine responds, but it is not a Wine 11.x build: {output.splitlines()[0]}"
+            checks.append(_diag_check(
+                "wine_version",
+                "Wine version probe",
+                status,
+                message,
+            ))
+        else:
+            _add_repair(
+                repairs,
+                "reinstall_wine_stable",
+                "Reinstall Wine Stable",
+                "Backs up the current Wine Stable app and installs a fresh copy through installer.sh.",
+                destructive=True,
+                recommended=True,
+            )
+            checks.append(_diag_check(
+                "wine_version",
+                "Wine version probe",
+                "error",
+                "Wine did not respond to --version under x86_64.",
+                output,
+                ["reinstall_wine_stable"],
+            ))
+
+    prefix_path = Path(prefix).expanduser()
+    if not prefix_path.exists():
+        _add_repair(
+            repairs,
+            "repair_prefix",
+            "Repair selected prefix",
+            "Creates/updates the selected prefix with wineboot -u.",
+            recommended=True,
+        )
+        checks.append(_diag_check(
+            "prefix_files",
+            "Selected prefix",
+            "warning",
+            f"Selected prefix does not exist yet: {prefix_path}.",
+            repair_actions=["repair_prefix"],
+        ))
+    else:
+        missing_prefix = []
+        for rel in ("drive_c", "system.reg", "user.reg", "drive_c/windows/system32"):
+            if not (prefix_path / rel).exists():
+                missing_prefix.append(rel)
+        if missing_prefix:
+            _add_repair(
+                repairs,
+                "repair_prefix",
+                "Repair selected prefix",
+                "Runs wineboot -u for the selected bottle/prefix.",
+                recommended=True,
+            )
+            checks.append(_diag_check(
+                "prefix_files",
+                "Selected prefix",
+                "warning",
+                "The selected prefix is missing expected Wine files.",
+                ", ".join(missing_prefix),
+                ["repair_prefix"],
+            ))
+        else:
+            checks.append(_diag_check(
+                "prefix_files",
+                "Selected prefix",
+                "ok",
+                "The selected prefix has the expected registry and drive_c structure.",
+            ))
+
+        checks.append(_diagnose_stable_prefix_dlls(str(prefix_path), repairs))
+
+        if wine:
+            env = _wine_env(str(prefix_path))
+            smoke_cmd = [wine, "cmd", "/c", "ver"]
+            if _is_apple_silicon():
+                smoke_cmd = ["/usr/bin/arch", "-x86_64", wine, "cmd", "/c", "ver"]
+            rc, output = _run_probe(smoke_cmd, env=env, timeout=45)
+            if rc == 0:
+                checks.append(_diag_check(
+                    "prefix_smoke",
+                    "Prefix smoke test",
+                    "ok",
+                    "Wine can run a minimal cmd.exe command in the selected prefix.",
+                ))
+            else:
+                smoke_actions = ["repair_prefix", "reinstall_wine_stable"]
+                _add_repair(
+                    repairs,
+                    "repair_prefix",
+                    "Repair selected prefix",
+                    "Runs wineboot -u for the selected bottle/prefix.",
+                    recommended=True,
+                )
+                _add_repair(
+                    repairs,
+                    "reinstall_wine_stable",
+                    "Reinstall Wine Stable",
+                    "Backs up the current Wine Stable app and installs a fresh copy through installer.sh.",
+                    destructive=True,
+                )
+                lowered = output.lower()
+                message = "Wine could not run a minimal cmd.exe command in the selected prefix."
+                if "kernel32.dll" in lowered or "c0000135" in lowered:
+                    message = "Wine hit the kernel32.dll/c0000135 loader failure in this prefix."
+                    _add_repair(
+                        repairs,
+                        "backup_recreate_prefix",
+                        "Back up and recreate prefix",
+                        "Moves the selected prefix to a timestamped backup and creates a fresh Wine prefix.",
+                        destructive=True,
+                    )
+                    smoke_actions.append("backup_recreate_prefix")
+                checks.append(_diag_check(
+                    "prefix_smoke",
+                    "Prefix smoke test",
+                    "error",
+                    message,
+                    output,
+                    smoke_actions,
+                ))
+
+    steam_dir = prefix_path / "drive_c" / "Program Files (x86)" / "Steam"
+    if steam_dir.exists():
+        _add_repair(
+            repairs,
+            "clear_steam_caches",
+            "Clear Steam caches",
+            "Deletes Steam html/app/http cache folders inside the selected prefix.",
+        )
+        checks.append(_diag_check(
+            "steam",
+            "Steam install",
+            "ok",
+            "Steam exists in the selected prefix.",
+        ))
+    else:
+        checks.append(_diag_check(
+            "steam",
+            "Steam install",
+            "info",
+            "Steam is not installed in the selected prefix yet.",
+        ))
+
+    checks.append(_diagnose_logs(repairs))
+
+    errors = sum(1 for check in checks if check["status"] == "error")
+    warnings = sum(1 for check in checks if check["status"] == "warning")
+    if errors:
+        summary = f"Found {errors} error(s) and {warnings} warning(s)."
+    elif warnings:
+        summary = f"Found {warnings} warning(s), no blocking errors."
+    else:
+        summary = "No blocking problems found."
+
+    return {
+        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "prefix": str(prefix_path),
+        "summary": summary,
+        "checks": checks,
+        "repairs": list(repairs.values()),
     }
 
 
@@ -2202,6 +3150,219 @@ def cmd_get_steam_running(_params: Dict[str, Any]) -> Any:
 
 _install_jobs: Dict[str, Dict] = {}
 
+
+def _remove_version_marker(component: str) -> None:
+    if not VERSION_MARKER.exists():
+        return
+    try:
+        lines = [
+            line for line in VERSION_MARKER.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if not line.startswith(f"{component}=")
+        ]
+        VERSION_MARKER.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    except Exception as exc:
+        log(f"Failed to update version marker for {component}: {exc}")
+
+
+def _diagnostic_backup_path(path: Path) -> Path:
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_root = PORTABLE_DIR / ".diagnose-backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    return backup_root / f"{path.name}.{stamp}"
+
+
+def _job_append(job: Dict[str, Any], line: str) -> None:
+    job["lines"].append(line)
+
+
+def _run_job_command(
+    job: Dict[str, Any],
+    args: List[str],
+    env: Optional[Dict[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> int:
+    _job_append(job, "$ " + " ".join(shlex.quote(str(arg)) for arg in args))
+    proc = subprocess.Popen(
+        args,
+        env=env,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        _job_append(job, line.rstrip())
+    proc.wait()
+    _job_append(job, f"exit {proc.returncode}")
+    return int(proc.returncode or 0)
+
+
+def _run_installer_action_for_repair(job: Dict[str, Any], action: str, prefix: str) -> int:
+    installer = _find_installer_script()
+    if not installer:
+        raise FileNotFoundError("installer.sh not found")
+    env = {**os.environ, "MNC_SUDOLESS": "1"}
+    # Preserve installer.sh positional layout. Most repair actions only need the
+    # action and prefix, so the remaining path arguments are intentionally blank.
+    args = [
+        "/bin/bash",
+        str(installer),
+        action,
+        prefix,
+        "", "", "", "", "", "", "", "", "",
+    ]
+    return _run_job_command(job, args, env=env)
+
+
+def cmd_run_cheese_repair(params: Dict[str, Any]) -> Any:
+    """Run a selected diagnosis repair as an installer-style background job."""
+    action = str(params.get("action") or "")
+    prefix = str(params.get("prefix") or DEFAULT_PREFIX)
+    if not action:
+        raise ValueError("Missing 'action' parameter")
+
+    import uuid
+    job_id = str(uuid.uuid4())
+    job: Dict[str, Any] = {"lines": [], "done": False, "failed": False, "current": ""}
+    _install_jobs[job_id] = job
+
+    def _run() -> None:
+        job["current"] = action.replace("_", " ").title()
+        _job_append(job, f"=== {job['current']} ===")
+        try:
+            if action == "install_rosetta":
+                rc = _run_job_command(
+                    job,
+                    ["/usr/sbin/softwareupdate", "--install-rosetta", "--agree-to-license"],
+                )
+                job["failed"] = rc != 0
+
+            elif action == "install_tools":
+                job["failed"] = _run_installer_action_for_repair(job, "install_tools", prefix) != 0
+
+            elif action == "install_wine_stable":
+                job["failed"] = _run_installer_action_for_repair(job, "install_wine", prefix) != 0
+
+            elif action == "quick_setup":
+                job["failed"] = _run_installer_action_for_repair(job, "quick_setup", prefix) != 0
+
+            elif action == "repair_prefix":
+                wine = _find_wine()
+                if not wine:
+                    raise FileNotFoundError("Wine not found")
+                Path(prefix).expanduser().mkdir(parents=True, exist_ok=True)
+                rc = _run_job_command(job, [wine, "wineboot", "-u"], env=_wine_env(prefix))
+                job["failed"] = rc != 0
+
+            elif action == "backup_recreate_prefix":
+                wine = _find_wine()
+                if not wine:
+                    raise FileNotFoundError("Wine not found")
+                prefix_path = Path(prefix).expanduser()
+                if prefix_path.exists():
+                    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                    backup_path = prefix_path.with_name(f"{prefix_path.name}.diagnose-backup-{stamp}")
+                    _job_append(job, f"Moving {prefix_path} to {backup_path}")
+                    shutil.move(str(prefix_path), str(backup_path))
+                prefix_path.mkdir(parents=True, exist_ok=True)
+                rc = _run_job_command(job, [wine, "wineboot", "-u"], env=_wine_env(str(prefix_path)))
+                job["failed"] = rc != 0
+
+            elif action == "reinstall_wine_stable":
+                stable_app = PORTABLE_DIR / "Wine Stable.app"
+                if stable_app.exists():
+                    backup = _diagnostic_backup_path(stable_app)
+                    _job_append(job, f"Moving {stable_app} to {backup}")
+                    shutil.move(str(stable_app), str(backup))
+                    _remove_version_marker("wine_stable")
+                job["failed"] = _run_installer_action_for_repair(job, "install_wine", prefix) != 0
+
+            elif action == "backup_wine_staging":
+                staging_app = PORTABLE_DIR / "Wine Staging.app"
+                if staging_app.exists():
+                    backup = _diagnostic_backup_path(staging_app)
+                    _job_append(job, f"Moving {staging_app} to {backup}")
+                    shutil.move(str(staging_app), str(backup))
+                    _remove_version_marker("wine_staging")
+                else:
+                    _job_append(job, "Wine Staging.app is already absent.")
+
+            elif action == "sync_prefix_stable_dlls":
+                prefix_path = Path(prefix).expanduser()
+                if not prefix_path.exists():
+                    raise FileNotFoundError(f"Prefix not found: {prefix_path}")
+                stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup_root = prefix_path / ".macncheese-dll-backups" / stamp
+                copied = 0
+                backed_up = 0
+                missing_sources: List[str] = []
+
+                for source in _stable_prefix_dll_sources():
+                    wine_dir: Path = source["wine_dir"]
+                    prefix_dir = prefix_path / source["prefix_dir"]
+                    if not wine_dir.is_dir():
+                        missing_sources.append(str(wine_dir))
+                        continue
+                    prefix_dir.mkdir(parents=True, exist_ok=True)
+
+                    for name in PREFIX_DLL_VERIFY_FILES:
+                        stable_file = wine_dir / name
+                        if not stable_file.exists():
+                            missing_sources.append(str(stable_file))
+                            continue
+                        target = prefix_dir / name
+                        if target.exists():
+                            backup = backup_root / source["prefix_dir"] / name
+                            backup.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(str(target), str(backup))
+                            backed_up += 1
+                        shutil.copy2(str(stable_file), str(target))
+                        copied += 1
+
+                if missing_sources:
+                    _job_append(job, "Missing Wine Stable source files:")
+                    for item in missing_sources[:20]:
+                        _job_append(job, f"  {item}")
+                    if len(missing_sources) > 20:
+                        _job_append(job, f"  ... {len(missing_sources) - 20} more")
+                    job["failed"] = True
+                _job_append(job, f"Backed up {backed_up} existing prefix file(s) to {backup_root}")
+                _job_append(job, f"Copied {copied} Wine Stable runtime file(s) into the selected prefix.")
+
+            elif action == "clear_steam_caches":
+                steam_dir = Path(prefix).expanduser() / "drive_c" / "Program Files (x86)" / "Steam"
+                targets = [
+                    steam_dir / "config" / "htmlcache",
+                    steam_dir / "appcache" / "httpcache",
+                    steam_dir / "appcache" / "htmlcache",
+                ]
+                removed = 0
+                for target in targets:
+                    if target.exists():
+                        _job_append(job, f"Removing {target}")
+                        shutil.rmtree(str(target), ignore_errors=True)
+                        removed += 1
+                _job_append(job, f"Removed {removed} Steam cache folder(s).")
+
+            else:
+                raise ValueError(f"Unknown repair action: {action}")
+
+        except Exception as exc:
+            _job_append(job, f"!!! Repair failed: {exc}")
+            job["failed"] = True
+        finally:
+            job["current"] = ""
+            if job.get("failed"):
+                _job_append(job, "=== Repair finished with errors ===")
+            else:
+                _job_append(job, "=== Repair finished successfully ===")
+            job["done"] = True
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"job_id": job_id}
+
+
 def cmd_run_installer(params: Dict[str, Any]) -> Any:
     actions: List[str] = params.get("actions", [])
     installer_path: str = params.get("installer_path", "")
@@ -2213,6 +3374,7 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
     mesa_url: str = params.get("mesa_url", "")
     dxmt: str = params.get("dxmt", "")
     vkd3d: str = params.get("vkd3d", "")
+    gptk_dir: str = params.get("gptk_dir", "")
 
     if not actions:
         raise ValueError("No actions specified")
@@ -2237,7 +3399,7 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
             job["lines"].append(f"=== {friendly} ===")
             try:
                 proc = subprocess.Popen(
-                    [installer_path, action, prefix, dxvk_src, dxvk64, dxvk32, mesa, mesa_url, dxmt, "", vkd3d],
+                    [installer_path, action, prefix, dxvk_src, dxvk64, dxvk32, mesa, mesa_url, dxmt, "", vkd3d, gptk_dir],
                     env=env,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -2287,15 +3449,18 @@ def cmd_get_install_progress(params: Dict[str, Any]) -> Any:
 COMMANDS: Dict[str, Any] = {
     "list_bottles": cmd_list_bottles,
     "scan_games": cmd_scan_games,
+    "get_steam_description": cmd_get_steam_description,
     "launch_game": cmd_launch_game,
     "launch_steam": cmd_launch_steam,
     "create_bottle": cmd_create_bottle,
+    "move_bottle": cmd_move_bottle,
     "delete_bottle": cmd_delete_bottle,
     "get_bottle_config": cmd_get_bottle_config,
     "set_bottle_config": cmd_set_bottle_config,
     "kill_wineserver": cmd_kill_wineserver,
     "init_prefix": cmd_init_prefix,
     "clean_prefix": cmd_clean_prefix,
+    "open_winecfg": cmd_open_winecfg,
     "run_exe": cmd_run_exe,
     "open_prefix_folder": cmd_open_prefix_folder,
     "get_status": cmd_get_status,
@@ -2304,6 +3469,8 @@ COMMANDS: Dict[str, Any] = {
     "list_backends": cmd_list_backends,
     "get_components_status": cmd_get_components_status,
     "get_update_info": cmd_get_update_info,
+    "diagnose_cheese": cmd_diagnose_cheese,
+    "run_cheese_repair": cmd_run_cheese_repair,
     "get_running_games": cmd_get_running_games,
     "get_steam_running": cmd_get_steam_running,
     "get_setup_pid": cmd_get_setup_pid,
