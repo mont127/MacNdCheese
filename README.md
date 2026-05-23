@@ -58,6 +58,9 @@ Click the **Install Steam** / **Run installer** button. The Steam installer will
 ##  FAQ
 
 ## Mewgenics runs.
+Wait like 30 seconds for startup make sure to launch with silent steam.
+
+
 
 ### 🤔 What even is this?
 MacNCheese is a free launcher that runs Windows games on macOS using Wine. It automatically sets up all the technical stuff (graphics translation layers, DLL overrides, etc.) so you don't have to.
