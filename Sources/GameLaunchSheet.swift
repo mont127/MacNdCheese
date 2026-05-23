@@ -66,7 +66,7 @@ struct GameLaunchSheet: View {
                         // EXE picker
                         VStack(alignment: .leading, spacing: 4) {
                             Text("EXE:")
-                                .font(.caption)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .fontWeight(.semibold)
 
@@ -94,7 +94,7 @@ struct GameLaunchSheet: View {
                         // Graphics engine picker
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Graphics Engine:")
-                                .font(.caption)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .fontWeight(.semibold)
 
@@ -132,7 +132,7 @@ struct GameLaunchSheet: View {
                         // Args
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Args:")
-                                .font(.caption)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .fontWeight(.semibold)
                             TextField("Optional launch arguments…", text: $extraArgs)
@@ -161,7 +161,7 @@ struct GameLaunchSheet: View {
                         // Synchronization
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Synchronization:")
-                                .font(.caption)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .fontWeight(.semibold)
 
@@ -185,7 +185,7 @@ struct GameLaunchSheet: View {
                         // Custom env vars
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Env Vars:")
-                                .font(.caption)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .fontWeight(.semibold)
                             ZStack(alignment: .topLeading) {
@@ -245,7 +245,7 @@ struct GameLaunchSheet: View {
         }
         .padding(24)
         .frame(minWidth: 480, minHeight: 400)
-        .background(.ultraThinMaterial)
+        .background(Color(.windowBackgroundColor))
         .task {
             await loadExes()
             await loadBackends()

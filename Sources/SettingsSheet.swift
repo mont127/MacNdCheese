@@ -57,40 +57,23 @@ private struct InstallerPaths {
 
 struct SettingsSheet: View {
     @EnvironmentObject var backend: BackendClient
-    @State private var selectedTab = "bottle"
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Tab picker
-            Picker("", selection: $selectedTab) {
-                Text("Bottle").tag("bottle")
-                Text("Paths").tag("paths")
-                Text("Setup").tag("setup")
-                Text("D3DMetal").tag("d3dmetal")
-                Text("Diagnose").tag("diagnose")
-                Text("Logs").tag("logs")
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-
-            Divider().padding(.top, 12)
-
-            // Tab content
-            Group {
-                switch selectedTab {
-                case "bottle": BottleSettingsTab()
-                case "paths": PathsSettingsTab()
-                case "setup": SetupSettingsTab()
-                case "d3dmetal": D3DMetalSettingsTab()
-                case "diagnose": DiagnoseSettingsTab()
-                case "logs": LogsSettingsTab()
-                default: EmptyView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        TabView {
+            BottleSettingsTab()
+                .tabItem { Label("Bottle", systemImage: "wineglass") }
+            PathsSettingsTab()
+                .tabItem { Label("Paths", systemImage: "folder") }
+            SetupSettingsTab()
+                .tabItem { Label("Setup", systemImage: "arrow.down.circle") }
+            D3DMetalSettingsTab()
+                .tabItem { Label("D3DMetal", systemImage: "cube.transparent") }
+            DiagnoseSettingsTab()
+                .tabItem { Label("Diagnose", systemImage: "stethoscope") }
+            LogsSettingsTab()
+                .tabItem { Label("Logs", systemImage: "doc.text") }
         }
-        .frame(minWidth: 600, minHeight: 540)
+        .frame(minWidth: 620, minHeight: 560)
     }
 }
 
@@ -180,6 +163,7 @@ struct D3DMetalSettingsTab: View {
                     for k in d3dmetalKnobs { values[k.id] = k.defaultValue }
                     save()
                 }
+                .buttonStyle(.bordered)
                 .controlSize(.small)
 
                 Divider()
@@ -252,6 +236,8 @@ struct BottleSettingsTab: View {
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
     @State private var isMoving = false
+    @State private var showDeleteConfirm = false
+    @State private var showKillConfirm = false
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -283,7 +269,7 @@ struct BottleSettingsTab: View {
                             TextField("Leave empty for Steam (default)", text: $launcherExe)
                                 .textFieldStyle(.roundedBorder)
                                 .onSubmit { saveBottleConfig() }
-                            Button("Browse") { browseLauncherExe() }
+                            Button("Browse…") { browseLauncherExe() }
                         }
                     }
 
@@ -293,7 +279,7 @@ struct BottleSettingsTab: View {
                             TextField("Leave empty for default", text: $iconPath)
                                 .textFieldStyle(.roundedBorder)
                                 .onSubmit { saveBottleConfig() }
-                            Button("Browse") { browseIcon() }
+                            Button("Browse…") { browseIcon() }
                         }
                     }
 
@@ -392,7 +378,7 @@ struct BottleSettingsTab: View {
                             icon: "xmark.octagon",
                             tint: .red
                         ) {
-                            Task { await backend.killWineserver(prefix: bottle.path) }
+                            showKillConfirm = true
                         }
 
                         ActionButton(
@@ -401,7 +387,7 @@ struct BottleSettingsTab: View {
                             icon: "trash",
                             tint: .red
                         ) {
-                            Task { await backend.deleteBottle(path: bottle.path) }
+                            showDeleteConfirm = true
                         }
                     }
 
@@ -424,6 +410,28 @@ struct BottleSettingsTab: View {
         }
         .onAppear { loadFields() }
         .onChange(of: backend.activePrefix) { loadFields() }
+        .alert("Kill Wineserver?", isPresented: $showKillConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Kill", role: .destructive) {
+                if let bottle = activeBottle {
+                    Task { await backend.killWineserver(prefix: bottle.path) }
+                }
+            }
+        } message: {
+            Text("This will forcefully stop all Wine processes for this bottle.")
+        }
+        .alert("Delete Bottle?", isPresented: $showDeleteConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                if let bottle = activeBottle {
+                    Task { await backend.deleteBottle(path: bottle.path) }
+                }
+            }
+        } message: {
+            if let bottle = activeBottle {
+                Text("This will permanently delete \"\(bottle.name)\" and all its contents from disk. This cannot be undone.")
+            }
+        }
     }
 
     private func loadFields() {
@@ -537,15 +545,27 @@ struct PathRow: View {
     @Binding var path: String
     let isDir: Bool
 
+    private var pathExists: Bool {
+        path.isEmpty || FileManager.default.fileExists(atPath: path)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !pathExists {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.yellow)
+                        .help("Path does not exist")
+                }
+            }
             HStack {
                 TextField(label, text: $path)
                     .textFieldStyle(.roundedBorder)
-                Button("Browse") {
+                Button("Browse…") {
                     if isDir {
                         let panel = NSOpenPanel()
                         panel.canChooseFiles = false
@@ -613,6 +633,9 @@ struct SetupSettingsTab: View {
     @State private var installCurrentAction: String = ""
     @State private var installDone: Bool = false
     @State private var installFailed: Bool = false
+    @State private var installTotalActions: Int = 0
+    @State private var installCompletedActions: Int = 0
+    @State private var installLastSeenAction: String = ""
 
     var body: some View {
         ScrollView {
@@ -705,7 +728,15 @@ struct SetupSettingsTab: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             if isRunning {
-                                ProgressView().controlSize(.small)
+                                if installTotalActions > 1 {
+                                    ProgressView(value: Double(installCompletedActions), total: Double(installTotalActions))
+                                        .frame(width: 80)
+                                    Text("\(installCompletedActions)/\(installTotalActions)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ProgressView().controlSize(.small)
+                                }
                             } else if installFailed {
                                 Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
                             } else {
@@ -733,7 +764,7 @@ struct SetupSettingsTab: View {
                                     .id("logBottom")
                             }
                             .frame(height: 140)
-                            .background(.black.opacity(0.25))
+                            .background(Color(.textBackgroundColor))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .onChange(of: installLogLines) {
                                 proxy.scrollTo("logBottom", anchor: .bottom)
@@ -769,6 +800,9 @@ struct SetupSettingsTab: View {
         installCurrentAction = ""
         installDone = false
         installFailed = false
+        installTotalActions = 0
+        installCompletedActions = 0
+        installLastSeenAction = ""
     }
 
     private func loadComponentStatus() {
@@ -845,6 +879,7 @@ struct SetupSettingsTab: View {
         let mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
 
         clearInstallState()
+        installTotalActions = actions.count
         isRunning = true
 
         Task {
@@ -873,6 +908,10 @@ struct SetupSettingsTab: View {
                 }
                 installLogLines.append(contentsOf: progress.lines)
                 installLogOffset = progress.totalLines
+                if !progress.current.isEmpty && progress.current != installLastSeenAction {
+                    installLastSeenAction = progress.current
+                    installCompletedActions = min(installCompletedActions + 1, installTotalActions)
+                }
                 installCurrentAction = progress.current
                 if progress.done {
                     installDone = true
@@ -905,14 +944,14 @@ struct ComponentToggleRow: View {
             Toggle(label, isOn: $isOn)
             Spacer()
             if updateAvailable {
-                Text("Update available")
+                Label("Update available", systemImage: "arrow.down.circle.fill")
                     .font(.caption2)
                     .foregroundStyle(.yellow)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(.yellow.opacity(0.15), in: Capsule())
             } else if installed {
-                Text("Installed")
+                Label("Installed", systemImage: "checkmark.circle.fill")
                     .font(.caption2)
                     .foregroundStyle(.green)
                     .padding(.horizontal, 6)
@@ -998,7 +1037,7 @@ struct DiagnoseSettingsTab: View {
                         .padding(8)
                     }
                 } else if !isDiagnosing {
-                    VStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .center, spacing: 12) {
                         Image(systemName: "stethoscope")
                             .font(.largeTitle)
                             .foregroundStyle(.secondary)
@@ -1006,6 +1045,12 @@ struct DiagnoseSettingsTab: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
+                        Button {
+                            runDiagnosis()
+                        } label: {
+                            Label("Run Diagnosis", systemImage: "stethoscope")
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 44)
@@ -1092,7 +1137,7 @@ struct DiagnoseSettingsTab: View {
                         .id("repairLogBottom")
                 }
                 .frame(height: 130)
-                .background(.black.opacity(0.25))
+                .background(Color(.textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .onChange(of: repairLogLines) {
                     proxy.scrollTo("repairLogBottom", anchor: .bottom)
@@ -1183,7 +1228,7 @@ struct DiagnosisSummaryView: View {
             Spacer()
         }
         .padding(10)
-        .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1237,7 +1282,7 @@ struct DiagnosticCheckRow: View {
                     .lineLimit(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                    .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
             }
         }
     }
@@ -1251,7 +1296,7 @@ struct RepairActionRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: repair.destructive ? "exclamationmark.arrow.triangle.2.circlepath" : "wrench.and.screwdriver")
-                .foregroundStyle(repair.destructive ? .orange : .cyan)
+                .foregroundStyle(repair.destructive ? Color.orange : Color.accentColor)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1261,10 +1306,10 @@ struct RepairActionRow: View {
                     if repair.recommended {
                         Text("Recommended")
                             .font(.caption2)
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(Color.accentColor)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(.cyan.opacity(0.14), in: Capsule())
+                            .background(Color.accentColor.opacity(0.14), in: Capsule())
                     }
                 }
                 Text(repair.details)
@@ -1312,17 +1357,22 @@ struct LogsSettingsTab: View {
                 .controlSize(.small)
             }
 
-           
-            if !logFiles.isEmpty {
+            HStack {
+                Text("Log file:")
+                    .foregroundStyle(.secondary)
                 Picker("Log file:", selection: Binding(
                     get: { selectedLog ?? "" },
                     set: { selectedLog = $0; loadSelectedLog() }
                 )) {
+                    if logFiles.isEmpty {
+                        Text("No logs found").tag("")
+                    }
                     ForEach(logFiles, id: \.path) { file in
                         Text(file.name).tag(file.path)
                     }
                 }
                 .labelsHidden()
+                .disabled(logFiles.isEmpty)
             }
 
           
@@ -1334,7 +1384,7 @@ struct LogsSettingsTab: View {
                         .textSelection(.enabled)
                         .id("logBottom")
                 }
-                .background(.black.opacity(0.2))
+                .background(Color(.textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .onChange(of: logText) {
                     proxy.scrollTo("logBottom", anchor: .bottom)

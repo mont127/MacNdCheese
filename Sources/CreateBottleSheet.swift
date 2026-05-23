@@ -105,6 +105,6 @@ struct CreateBottleSheet: View {
         }
         .padding(24)
         .frame(minWidth: 380, minHeight: 320)
-        .background(.ultraThinMaterial)
+        .background(Color(.windowBackgroundColor))
     }
 }

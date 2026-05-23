@@ -1,6 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+extension UTType {
+    static let macNCheeseGameId = UTType(exportedAs: "com.macncheese.game-appid")
+}
+
 struct GameGridView: View {
     @EnvironmentObject var backend: BackendClient
     let games: [Game]
@@ -35,108 +39,108 @@ struct GameGridView: View {
             : orderedGames.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            // Top bar
-            HStack {
-                Text("Library")
-                    .font(.title2)
-                    .fontWeight(.bold)
+    private var launcherName: String {
+        guard let bottle = activeBottle else { return "Steam" }
+        if let exe = bottle.launcherExe, !exe.isEmpty {
+            return URL(fileURLWithPath: exe).deletingPathExtension().lastPathComponent
+        }
+        return bottle.isSteamBottle ? "Steam" : "Launcher"
+    }
 
-                Spacer()
-
-                if let bottle = activeBottle {
-                    let hasCustomExe = !(bottle.launcherExe ?? "").isEmpty
-                    let launcherName: String = {
-                        if let exe = bottle.launcherExe, !exe.isEmpty {
-                            return URL(fileURLWithPath: exe).deletingPathExtension().lastPathComponent
+    @ViewBuilder
+    private var scrollContent: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(displayedGames) { game in
+                    GameCardView(
+                        game: game,
+                        onMoveToFront: { moveToFront(game.appid) },
+                        onMoveToBack: { moveToBack(game.appid) }
+                    )
+                    .opacity(draggingAppid == game.appid ? 0.45 : 1.0)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(
+                                dropTargetAppid == game.appid ? Color.accentColor : Color.clear,
+                                lineWidth: 2
+                            )
+                    )
+                    .onDrag {
+                        draggingAppid = game.appid
+                        let provider = NSItemProvider()
+                        provider.registerDataRepresentation(
+                            forTypeIdentifier: UTType.macNCheeseGameId.identifier,
+                            visibility: .ownProcess
+                        ) { completion in
+                            completion(Data(game.appid.utf8), nil)
+                            return nil
                         }
-                        return bottle.isSteamBottle ? "Steam" : "Launcher"
-                    }()
-                    if bottle.isSteamBottle || hasCustomExe {
-                        Button {
-                            guard let prefix = backend.activePrefix else { return }
-                            if backend.steamRunning {
-                                Task {
-                                    await backend.killWineserver(prefix: prefix)
-                                    backend.steamRunning = false
-                                }
-                            } else {
-                                Task {
-                                    if bottle.isSteamBottle {
-                                        await backend.launchSteam(prefix: prefix)
-                                    } else {
-                                        await backend.launchLauncher(prefix: prefix)
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: backend.steamRunning ? "stop.fill" : "play.fill")
-                                    .font(.caption)
-                                Text(backend.steamRunning ? "Close \(launcherName)" : "Open \(launcherName)")
-                            }
+                        return provider
+                    }
+                    .onDrop(
+                        of: [.macNCheeseGameId],
+                        isTargeted: Binding(
+                            get: { dropTargetAppid == game.appid },
+                            set: { targeted in dropTargetAppid = targeted ? game.appid : nil }
+                        )
+                    ) { (_: [NSItemProvider]) -> Bool in
+                        guard let from = draggingAppid, from != game.appid else {
+                            draggingAppid = nil; return false
                         }
-                        .buttonStyle(.bordered)
-                        .tint(backend.steamRunning ? .red : nil)
-                        .disabled(backend.activePrefix == nil)
+                        moveGame(from: from, before: game.appid)
+                        draggingAppid = nil
+                        return true
                     }
                 }
-
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search games...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .frame(width: 200)
-                }
-                .padding(8)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             }
             .padding(.horizontal, 24)
-            .padding(.vertical, 16)
+            .padding(.bottom, 24)
+        }
+        .contentMargins(.top, 20, for: .scrollContent)
+        .scrollClipDisabled()
+    }
 
-            // Game grid
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(displayedGames) { game in
-                        GameCardView(
-                            game: game,
-                            onMoveToFront: { moveToFront(game.appid) },
-                            onMoveToBack: { moveToBack(game.appid) }
-                        )
-                        .opacity(draggingAppid == game.appid ? 0.45 : 1.0)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14)
-                                .stroke(
-                                    dropTargetAppid == game.appid ? Color.cyan : Color.clear,
-                                    lineWidth: 2
-                                )
-                        )
-                        .onDrag {
-                            draggingAppid = game.appid
-                            return NSItemProvider(object: game.appid as NSString)
-                        }
-                        .onDrop(
-                            of: [UTType.plainText],
-                            isTargeted: Binding(
-                                get: { dropTargetAppid == game.appid },
-                                set: { targeted in
-                                    dropTargetAppid = targeted ? game.appid : nil
-                                }
-                            )
-                        ) { _ in
-                            guard let from = draggingAppid, from != game.appid else {
-                                draggingAppid = nil; return false
+    @ViewBuilder
+    private var gameScrollView: some View {
+        if #available(macOS 26, *) {
+            scrollContent.scrollEdgeEffectStyle(.automatic, for: .top)
+        } else {
+            scrollContent
+        }
+    }
+
+    var body: some View {
+        gameScrollView
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                if let bottle = activeBottle,
+                   bottle.isSteamBottle || !(bottle.launcherExe ?? "").isEmpty {
+                    Button {
+                        guard let prefix = backend.activePrefix else { return }
+                        if backend.steamRunning {
+                            Task {
+                                await backend.killWineserver(prefix: prefix)
+                                backend.steamRunning = false
                             }
-                            moveGame(from: from, before: game.appid)
-                            draggingAppid = nil
-                            return true
+                        } else {
+                            Task {
+                                if bottle.isSteamBottle {
+                                    await backend.launchSteam(prefix: prefix)
+                                } else {
+                                    await backend.launchLauncher(prefix: prefix)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: backend.steamRunning ? "stop.fill" : "play.fill")
+                                .font(.caption)
+                            Text(backend.steamRunning ? "Close \(launcherName)" : "Open \(launcherName)")
                         }
                     }
+                    .buttonStyle(.bordered)
+                    .tint(backend.steamRunning ? .red : Color.accentColor)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 24)
             }
         }
         .onAppear { gameOrder = games.map { $0.appid } }
@@ -219,7 +223,7 @@ struct GameCardView: View {
 
                         if isHovering {
                             RoundedRectangle(cornerRadius: 12)
-                                .fill(.black.opacity(0.35))
+                                .fill(Color.primary.opacity(0.3))
                                 .frame(height: 220)
                         }
 
@@ -243,7 +247,7 @@ struct GameCardView: View {
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.white)
                             .padding(7)
-                            .background(.black.opacity(0.55), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .padding(8)
@@ -255,7 +259,7 @@ struct GameCardView: View {
 
             // Game name
             Text(game.name)
-                .font(.caption)
+                .font(.subheadline)
                 .fontWeight(.medium)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
@@ -267,16 +271,17 @@ struct GameCardView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isHovering ? Color.cyan.opacity(0.5) : Color.white.opacity(0.1),
+                    isHovering ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08),
                     lineWidth: 1
                 )
         )
         .scaleEffect(isHovering ? 1.02 : 1.0)
-        .shadow(color: isHovering ? .cyan.opacity(0.2) : .clear, radius: 12)
+        .shadow(color: isHovering ? Color.accentColor.opacity(0.2) : .clear, radius: 12)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in isHovering = hovering }
         .onAppear { loadCover() }
         .contextMenu {
+            Button("Launch") { directLaunch() }
             Button("Launch Options…") { showLaunchOptions = true }
             if let exe = game.exe {
                 Button("Show in Finder") {

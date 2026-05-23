@@ -20,6 +20,17 @@ struct ContentView: View {
         return backend.bottles.first { $0.path == prefix }
     }
 
+    private var detailTitle: String {
+        if showStore { return "Store" }
+        if let bottle = activeBottle { return bottle.name }
+        return "MacNCheese"
+    }
+
+    private var detailSubtitle: String {
+        if showStore || backend.activePrefix == nil { return "" }
+        return "Library"
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
@@ -29,22 +40,36 @@ struct ContentView: View {
 
                 if showStore {
                     StoreView()
+                        .transition(.opacity)
                 } else if backend.activePrefix == nil {
                     NoPrefixView(showCreateBottle: $showCreateBottle)
+                        .transition(.opacity)
                 } else if backend.games.isEmpty {
                     if activeBottle?.isSteamBottle ?? true {
                         SteamLandingView()
+                            .transition(.opacity)
                     } else {
                         EmptyBottleLandingView()
+                            .transition(.opacity)
                     }
                 } else {
                     GameGridView(games: filteredGames, searchText: $searchText)
+                        .transition(.opacity)
                 }
             }
-            .background(.ultraThinMaterial)
+            .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
+            .animation(.easeInOut(duration: 0.22), value: showStore)
+            .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
+            .background(Color(.windowBackgroundColor))
+            .navigationTitle(detailTitle)
+            .navigationSubtitle(detailSubtitle)
         }
         .onChange(of: backend.activePrefix) { _, _ in showStore = false }
         .navigationSplitViewStyle(.balanced)
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search games")
+        .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
+            showCreateBottle = true
+        }
         .sheet(isPresented: $showCreateBottle) {
             CreateBottleSheet()
         }
@@ -56,9 +81,6 @@ struct ContentView: View {
             // doesn't draw a highlighted bottle row.
             if isStore { /* no-op */ }
         }
-        .onChange(of: announcements.hasNewAnnouncement) { _, hasNew in
-            if hasNew { showAnnouncement = true }
-        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -67,6 +89,7 @@ struct ContentView: View {
                     Image(systemName: "gear")
                 }
                 .help("Settings")
+                .accessibilityLabel("Settings")
             }
 
             if announcements.hasNewAnnouncement {
@@ -78,6 +101,7 @@ struct ContentView: View {
                             .symbolRenderingMode(.multicolor)
                     }
                     .help("New Announcement")
+                    .accessibilityLabel("New Announcement")
                 }
             }
         }
@@ -106,13 +130,18 @@ struct SteamLandingView: View {
 
             Image(systemName: "gamecontroller.fill")
                 .font(.system(size: 80))
-                .foregroundStyle(.cyan.opacity(0.8))
+                .foregroundStyle(Color.accentColor.opacity(0.8))
                 .padding(.bottom, 8)
 
             Text(customExeName?.uppercased() ?? "STEAM")
                 .font(.system(.largeTitle, design: .default).weight(.bold))
                 .tracking(4)
                 .foregroundStyle(.primary)
+
+            Text(customExeName != nil ? "Launch to browse your games." : "Launch Steam to browse and install games.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
 
             Spacer().frame(height: 32)
 
@@ -197,7 +226,7 @@ struct NoPrefixView: View {
         VStack(spacing: 12) {
             Image(systemName: "plus.circle")
                 .font(.system(size: 56))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accentColor.opacity(0.8))
             Text("No bottle selected")
                 .font(.title)
                 .fontWeight(.bold)
@@ -237,7 +266,7 @@ struct EmptyBottleLandingView: View {
             Spacer()
             Image(systemName: "wineglass")
                 .font(.system(size: 72))
-                .foregroundStyle(.cyan.opacity(0.8))
+                .foregroundStyle(Color.accentColor.opacity(0.8))
                 .padding(.bottom, 12)
             Text("No Games")
                 .font(.title)
@@ -285,7 +314,7 @@ struct EmptyBottleLandingView: View {
                         Task { await backend.launchGame(prefix: prefix, exe: url.path) }
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .controlSize(.large)
 
                 Button("Add Game") {

@@ -5,6 +5,7 @@ struct SidebarView: View {
     @Binding var showCreateBottle: Bool
     @Binding var showStore: Bool
     @State private var confirmDelete: Bottle?
+    @State private var confirmKill: Bottle?
 
     var body: some View {
         List(selection: Binding(
@@ -19,7 +20,7 @@ struct SidebarView: View {
                         .tag(bottle.path)
                         .contextMenu {
                             Button("Kill Wineserver") {
-                                Task { await backend.killWineserver(prefix: bottle.path) }
+                                confirmKill = bottle
                             }
                             Divider()
                             Button("Delete Bottle", role: .destructive) {
@@ -46,7 +47,6 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .tint(.cyan)
 
                 Button {
                     showCreateBottle = true
@@ -54,10 +54,26 @@ struct SidebarView: View {
                     Label("New Bottle", systemImage: "plus")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
                 .controlSize(.large)
             }
             .padding()
+        }
+        .alert("Kill Wineserver?", isPresented: Binding(
+            get: { confirmKill != nil },
+            set: { if !$0 { confirmKill = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { confirmKill = nil }
+            Button("Kill", role: .destructive) {
+                if let bottle = confirmKill {
+                    Task { await backend.killWineserver(prefix: bottle.path) }
+                }
+                confirmKill = nil
+            }
+        } message: {
+            if let bottle = confirmKill {
+                Text("This will forcefully stop all Wine processes for \"\(bottle.name)\".")
+            }
         }
         .alert("Delete Bottle?", isPresented: Binding(
             get: { confirmDelete != nil },
@@ -101,11 +117,11 @@ struct BottleRow: View {
                     .frame(width: 22, height: 22)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             } else if bottle.isSteamBottle {
-                Image(systemName: "play.square.stack.fill")
+                Image(systemName: "gamecontroller.fill")
                     .foregroundStyle(.blue)
             } else {
                 Image(systemName: "wineglass")
-                    .foregroundStyle(.cyan)
+                    .foregroundStyle(Color.accentColor)
             }
         }
         .padding(.vertical, 2)

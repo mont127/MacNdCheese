@@ -346,6 +346,24 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    func getD3DMetalSettings() async -> [String: Bool]? {
+        do {
+            let result = try await send(cmd: "get_d3dmetal_settings", params: [:])
+            return result as? [String: Bool]
+        } catch {
+            lastError = "Failed to get D3DMetal settings: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+    func setD3DMetalSettings(_ values: [String: Bool]) async {
+        do {
+            _ = try await send(cmd: "set_d3dmetal_settings", params: ["values": values])
+        } catch {
+            lastError = "Failed to save D3DMetal settings: \(error.localizedDescription)"
+        }
+    }
+
     func setGameOrder(prefix: String, order: [String]) async {
         do {
             _ = try await send(cmd: "set_game_order", params: ["prefix": prefix, "order": order])

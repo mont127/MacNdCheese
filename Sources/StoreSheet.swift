@@ -24,17 +24,6 @@ struct StoreView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "storefront")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.tint)
-                Text("MacNCheese Store")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Spacer()
-            }
-            .padding(20)
-
             Picker("", selection: $selectedTab) {
                 ForEach(StoreTab.allCases) { tab in
                     Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
@@ -42,6 +31,7 @@ struct StoreView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
+            .padding(.top, 16)
             .padding(.bottom, 12)
 
             Divider()
