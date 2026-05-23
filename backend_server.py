@@ -500,46 +500,33 @@ def _gptk_full_available() -> bool:
 
 
 def _detect_game_type(exe_path: Optional[str]) -> str:
-    """Inspect the exe name + neighboring files to classify the game.
-
-    Returns one of: 'ue5', 'ue4', 'source2', 'unity', 'dx12', 'dx11', 'unknown'.
-    Used by _resolve_auto_backend to pick the optimal backend per game.
-    """
     if not exe_path:
         return "unknown"
     try:
         p = Path(exe_path)
         name = p.name.lower()
         parent = p.parent
-        parent_str = str(parent).lower()
 
-        
         if "/game/bin/win64/" in str(p).replace("\\", "/").lower():
             return "source2"
 
-        
         if name.endswith("-win64-shipping.exe") or name.endswith("-shipping.exe"):
-
-            game_root = parent.parent.parent  
+            game_root = parent.parent.parent
             for marker_dir in ("Engine/Plugins/Runtime/Nanite",
                                "Content/Paks/Global.utoc"):
                 if (game_root / marker_dir).exists():
                     return "ue5"
             return "ue4"
 
-     
         if p.with_suffix("").name + "_Data" in (
             c.name for c in parent.iterdir() if c.is_dir()
         ) if parent.exists() else False:
             return "unity"
 
-        
         if parent.exists():
             for sibling in parent.iterdir():
                 sn = sibling.name.lower()
-                if sn in ("d3d12core.dll", "d3d12sdklayers.dll"):
-                    return "dx12"
-                if sn == "d3d12":
+                if sn in ("d3d12core.dll", "d3d12sdklayers.dll", "d3d12"):
                     return "dx12"
 
     except Exception:
@@ -548,18 +535,6 @@ def _detect_game_type(exe_path: Optional[str]) -> str:
 
 
 def _resolve_auto_backend(exe_path: Optional[str] = None) -> str:
-    """Pick the best available backend for the given exe.
-
-    Per-game logic (when exe_path provided):
-      • UE5 / UE4 / DX12 → Wine D3DMetal if installed (handles D3D12)
-      • Source 2 (cs2)   → Wine D3DMetal if installed (proven baseline)
-      • DXMT next        → great for D3D11 (Vulkan path), used by many UE5 too
-      • D3DMetal3        → GPTK-style, OK for D3D11
-      • DXVK             → older DX9/10/11 games
-      • Wine builtin     → last resort
-
-    No exe info: fall back to installed-priority order (DXMT > D3DMetal3 > DXVK > Wine).
-    """
     game_type = _detect_game_type(exe_path)
 
     if game_type in ("ue5", "ue4", "dx12", "source2"):
@@ -580,7 +555,6 @@ def _resolve_auto_backend(exe_path: Optional[str] = None) -> str:
         if _dxvk_available():
             return BACKEND_DXVK
 
-   
     if _dxmt_available():
         return BACKEND_DXMT
     if _d3dmetal3_available():
@@ -651,7 +625,6 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
         env.pop("MESA_GLTHREAD", None)
 
     elif backend == BACKEND_WINE_D3DMETAL:
-       
         for var in (
             "DXVK_HUD",
             "DXVK_FRAME_RATE",
@@ -663,57 +636,11 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
             "MESA_GLTHREAD",
         ):
             env.pop(var, None)
-        env["WINE_D3DMETAL_NO_STEAM_HACK"] = "1"
-       
-        env["WINE_D3DMETAL_USE_PTHREAD_SHIM"] = "1"
-        env["WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE"] = "0"
-        env["WINE_D3DMETAL_USE_IOKIT_OBSERVER"] = "0"
-        # KERNEL SAFETY — must be ON. Without this the shim leaks mach
-        # exception ports into the kernel's data.kalloc.512 zone; after
-        # ~5-15 min of wine-d3dmetal runtime that zone fills (~20 GB) and
-        # the Mac KERNEL PANICS (verified: panic on 2026-05-21). The
-        # circuit breaker parks the highest-fault threads instead of
-        # letting them feed the exception port leak.
-        env["WINE_D3DMETAL_055D_CIRCUIT_BREAKER"] = "1"
-        # Make D3DMetal-spawned windows visible (otherwise game windows
-        # may be created with onscreen=0).
-        env["WINE_D3DMETAL_FORCE_VISIBLE"] = "1"
-        # Skip handlers triggered by NULL FP — these fire constantly in
-        # cs2's init and the skip lets cs2 progress to D3DMetal calls.
-        env["WINE_D3DMETAL_NULL_FP_SKIP"] = "1"
-        # Disable PATCH-058 (WineEventCallback wake synthesizer). It writes
-        # `*addr = 1` to a callback slot to synthesize a wake. cs2 then reads
-        # the slot, treats `1` as a function pointer, jumps → KERN_PROTECTION
-        # crash at non-canonical RIP. Per project memory, PATCH-058's
-        # variants all fail — confirmed by today's log showing it as the
-        # FIRST crash before NSAccessibility wall.
-        env["WINE_D3DMETAL_NO_PATCH058"] = "1"
-        # Disable PATCH-044 v2 ("bogus stack" abort path). Per project memory
-        # 2026-05-17 noon, NO_PATCH044V2=1 stops cs2 abort and lets it survive
-        # past the early crash; PATCH-044 v5 still parks the broken thread.
-        env["WINE_D3DMETAL_NO_PATCH044V2"] = "1"
-        # Disable PATCH-051 (libd3dshared os_sync_wait 16ms poll hook). The
-        # poll busy-loops D3DMetalWineThread at 200% CPU. Without it,
-        # D3DMetalWineThread blocks NATIVELY (efficient sleep) — when the wake
-        # signal eventually arrives, it proceeds correctly. Confirmed
-        # 2026-05-23: NO_PATCH051=1 drops CPU from 200% to 100% and lets cs2
-        # remain interactive (Enter key dismisses dialogs, etc.).
-        env["WINE_D3DMETAL_NO_PATCH051"] = "1"
-        # Suppress Steam client assertions (notably BMainLoop watchdog at
-        # steamengine.cpp:2838 that fires when Steam IPC stalls >15s during
-        # cs2 map loading). tier0_s64.dll respects this env to skip the
-        # debug break / assert dialog path. Inherited by Steam → cs2 child.
-        env["DONT_BREAK_ON_ASSERT"] = "1"
-        # MNC HACK 29: when launching from this backend, the prefix is
-        # always assumed to be initialised (either freshly wineboot'd by a
-        # prior launch, or already in use by Steam via a different wine
-        # binary). Skipping run_wineboot avoids: (a) the 3-5 min wineboot
-        # cost on every launch, (b) the wineserver crash when wineboot
-        # tries to take over an existing wineserver started by another
-        # wine binary in the same prefix.
-        env["WINE_D3DMETAL_SKIP_WINEBOOT"] = "1"
-        # Don't set backend_ovr — the wrapper picks per-target overrides.
-        # Suppress winemenubuilder + crash spam at the env level instead.
+
+        _d3dmetal_user = _load_d3dmetal_settings()
+        for env_key, on in _d3dmetal_user.items():
+            env[env_key] = "1" if on else "0"
+
         backend_ovr = "winemenubuilder.exe=d;mscoree=;mshtml="
 
     elif backend == BACKEND_D3DMETAL3:
@@ -1539,14 +1466,13 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     if not exe_path.exists():
         raise FileNotFoundError(f"Executable not found: {exe}")
 
-    # Resolve auto backend — pass exe so we can detect UE4/UE5/Source2/Unity/etc.
     if not backend or backend == BACKEND_AUTO:
         backend = _resolve_auto_backend(exe)
         log(f"Auto backend resolved for {Path(exe).name}: {backend} (game_type={_detect_game_type(exe)})")
     else:
         log(f"Resolved graphics backend: {backend}")
 
-    # Find wine binary (may be overridden by backend or per-bottle preference)
+
     key = _resolve_key(prefix)
     bottle_cfg = _load_bottles().get(key, {})
     wine_pref = bottle_cfg.get("wine_binary", "auto")
@@ -1803,13 +1729,6 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     env = _apply_backend_env(env, backend)
     env = _apply_sync_env(env, esync, msync)
 
-    # Per-engine shim toggle for wine-d3dmetal. cs2/Source2 NEED the pthread
-    # shim's mach-exc handler to survive D3DMetal init (per project memory:
-    # feedback_cs2_use_pthread_min_shim). UE5 games (LyraGame, Galacticverse,
-    # any *-Win64-Shipping.exe) hit the OPPOSITE wall — shim's PATCH-027
-    # parks threads on the NSAccessibility crash chain, leaking locks and
-    # making the app unresponsive. Confirmed 2026-05-23: shim OFF → Lyra
-    # reaches D3D12 commands + Steam IPC + ~1.5 GB engine load.
     if backend == BACKEND_WINE_D3DMETAL:
         exe_name_lower = exe_path.name.lower()
         is_ue5 = (
@@ -3968,6 +3887,56 @@ def cmd_get_install_progress(params: Dict[str, Any]) -> Any:
         "current": job.get("current", ""),
     }
 
+_D3DMETAL_DEFAULTS: Dict[str, bool] = {
+    "WINE_D3DMETAL_055D_CIRCUIT_BREAKER":     True,
+    "WINE_D3DMETAL_USE_PTHREAD_SHIM":         True,
+    "WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE": False,
+    "WINE_D3DMETAL_USE_IOKIT_OBSERVER":       False,
+    "WINE_D3DMETAL_NO_PATCH058":              True,
+    "WINE_D3DMETAL_NO_PATCH044V2":            True,
+    "WINE_D3DMETAL_NO_PATCH051":              True,
+    "WINE_D3DMETAL_FORCE_VISIBLE":            True,
+    "WINE_D3DMETAL_NULL_FP_SKIP":             True,
+    "DONT_BREAK_ON_ASSERT":                   True,
+    "WINE_D3DMETAL_NO_STEAM_HACK":            True,
+    "WINE_D3DMETAL_SKIP_WINEBOOT":            True,
+}
+
+_D3DMETAL_SETTINGS_PATH = (
+    Path.home() / "Library" / "Application Support" / "MacNCheese" / "d3dmetal_settings.json"
+)
+
+def _load_d3dmetal_settings() -> Dict[str, bool]:
+    out = dict(_D3DMETAL_DEFAULTS)
+    try:
+        if _D3DMETAL_SETTINGS_PATH.exists():
+            data = json.loads(_D3DMETAL_SETTINGS_PATH.read_text())
+            for k, v in (data.get("values") or {}).items():
+                if k in _D3DMETAL_DEFAULTS:
+                    out[k] = bool(v)
+    except Exception as exc:
+        log(f"Failed to read d3dmetal_settings.json: {exc}")
+    return out
+
+def _save_d3dmetal_settings(values: Dict[str, bool]) -> None:
+    diff = {k: bool(v) for k, v in values.items()
+            if k in _D3DMETAL_DEFAULTS and bool(v) != _D3DMETAL_DEFAULTS[k]}
+    try:
+        _D3DMETAL_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _D3DMETAL_SETTINGS_PATH.write_text(json.dumps({"values": diff}, indent=2))
+    except Exception as exc:
+        log(f"Failed to write d3dmetal_settings.json: {exc}")
+
+def cmd_get_d3dmetal_settings(params: Dict[str, Any]) -> Any:
+    return _load_d3dmetal_settings()
+
+def cmd_set_d3dmetal_settings(params: Dict[str, Any]) -> Any:
+    values = params.get("values") or {}
+    if not isinstance(values, dict):
+        raise ValueError("values must be a dict")
+    _save_d3dmetal_settings(values)
+    return {"ok": True}
+
 # ---------------------------------------------------------------------------
 # Command dispatch table
 # ---------------------------------------------------------------------------
@@ -4005,6 +3974,8 @@ COMMANDS: Dict[str, Any] = {
     "get_exe_icon": cmd_get_exe_icon,
     "run_installer": cmd_run_installer,
     "get_install_progress": cmd_get_install_progress,
+    "get_d3dmetal_settings": cmd_get_d3dmetal_settings,
+    "set_d3dmetal_settings": cmd_set_d3dmetal_settings,
 }
 
 # ---------------------------------------------------------------------------
