@@ -16,12 +16,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct MacNCheeseApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var backend = BackendClient()
+    @StateObject private var announcements = AnnouncementChecker()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(backend)
-                .onAppear { backend.start() }
+                .environmentObject(announcements)
+                .onAppear {
+                    backend.start()
+                    announcements.check()
+                }
                 .onDisappear { backend.stop() }
         }
         .windowStyle(.automatic)
