@@ -215,10 +215,12 @@ MacNCheese wouldn't exist without these incredible open source projects:
 | [VKD3D-Proton](https://github.com/HansKristian-Work/vkd3d-proton) | Translates DirectX 12 → Vulkan |
 | [DXMT](https://github.com/3Shain/dxmt) | Translates DirectX 11 → Metal directly |
 | [Whisky](https://github.com/Whisky-App/Whisky) | The inspiration and predecessor |
+| [Wineopxr](https://github.com/monofunc/wineopenxr) | A backend for VR |
 
 And also These People:
 @gcenx https://github.com/Gcenx
 @3Shain https://github.com/3Shain
+@monofunc
 
 ---
 
