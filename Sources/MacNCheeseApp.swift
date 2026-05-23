@@ -31,5 +31,10 @@ struct MacNCheeseApp: App {
         }
         .windowStyle(.automatic)
         .defaultSize(width: 1100, height: 760)
+
+        Settings {
+            SettingsSheet()
+                .environmentObject(backend)
+        }
     }
 }

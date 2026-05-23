@@ -99,7 +99,7 @@ struct BottleRow: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 22, height: 22)
-                    .cornerRadius(4)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
             } else if bottle.isSteamBottle {
                 Image(systemName: "play.square.stack.fill")
                     .foregroundStyle(.blue)

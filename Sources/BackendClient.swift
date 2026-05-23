@@ -398,31 +398,6 @@ final class BackendClient: ObservableObject {
         return nil
     }
 
-    func runInstaller(installerPath: String, actions: [String], prefix: String,
-                      dxvkSrc: String, dxvk64: String, dxvk32: String,
-                      mesa: String, mesaUrl: String, dxmt: String, vkd3d: String) async -> String? {
-        do {
-            let result = try await send(cmd: "run_installer", params: [
-                "installer_path": installerPath,
-                "actions": actions,
-                "prefix": prefix,
-                "dxvk_src": dxvkSrc,
-                "dxvk64": dxvk64,
-                "dxvk32": dxvk32,
-                "mesa": mesa,
-                "mesa_url": mesaUrl,
-                "dxmt": dxmt,
-                "vkd3d": vkd3d,
-            ])
-            if let dict = result as? [String: Any], let jobId = dict["job_id"] as? String {
-                return jobId
-            }
-        } catch {
-            lastError = "Failed to start installer: \(error.localizedDescription)"
-        }
-        return nil
-    }
-
     func getInstallProgress(jobId: String, offset: Int) async -> InstallProgress? {
         do {
             let result = try await send(cmd: "get_install_progress", params: [
@@ -461,6 +436,81 @@ final class BackendClient: ObservableObject {
             }
         } catch {
             lastError = "Failed to list backends: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+    func openWinecfg(prefix: String) async {
+        do {
+            _ = try await send(cmd: "open_winecfg", params: ["prefix": prefix])
+        } catch {
+            lastError = "Failed to open winecfg: \(error.localizedDescription)"
+        }
+    }
+
+    func moveBottle(path: String, destinationPath: String) async -> Bool {
+        do {
+            _ = try await send(cmd: "move_bottle", params: ["path": path, "destination": destinationPath])
+            await loadBottles()
+            return true
+        } catch {
+            lastError = "Failed to move bottle: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func diagnoseCheese(prefix: String?) async -> CheeseDiagnosis? {
+        do {
+            var params: [String: Any] = [:]
+            if let prefix { params["prefix"] = prefix }
+            let result = try await send(cmd: "diagnose_cheese", params: params)
+            if let data = try? JSONSerialization.data(withJSONObject: result),
+               let decoded = try? JSONDecoder().decode(CheeseDiagnosis.self, from: data) {
+                return decoded
+            }
+        } catch {
+            lastError = "Diagnosis failed: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+    func runCheeseRepair(action: String, prefix: String?) async -> String? {
+        do {
+            var params: [String: Any] = ["action": action]
+            if let prefix { params["prefix"] = prefix }
+            let result = try await send(cmd: "run_cheese_repair", params: params)
+            if let dict = result as? [String: Any], let jobId = dict["job_id"] as? String {
+                return jobId
+            }
+        } catch {
+            lastError = "Repair failed: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+    func runInstaller(installerPath: String, actions: [String], prefix: String,
+                      dxvkSrc: String, dxvk64: String, dxvk32: String,
+                      mesa: String, mesaUrl: String, dxmt: String, vkd3d: String,
+                      gptkDir: String) async -> String? {
+        do {
+            let result = try await send(cmd: "run_installer", params: [
+                "installer_path": installerPath,
+                "actions": actions,
+                "prefix": prefix,
+                "dxvk_src": dxvkSrc,
+                "dxvk64": dxvk64,
+                "dxvk32": dxvk32,
+                "mesa": mesa,
+                "mesa_url": mesaUrl,
+                "dxmt": dxmt,
+                "vkd3d": vkd3d,
+                "gptk_dir": gptkDir,
+            ])
+            if let dict = result as? [String: Any], let jobId = dict["job_id"] as? String {
+                return jobId
+            }
+        } catch {
+            lastError = "Failed to start installer: \(error.localizedDescription)"
         }
         return nil
     }

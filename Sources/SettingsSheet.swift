@@ -57,26 +57,10 @@ private struct InstallerPaths {
 
 struct SettingsSheet: View {
     @EnvironmentObject var backend: BackendClient
-    @Environment(\.dismiss) private var dismiss
     @State private var selectedTab = "bottle"
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Settings")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                Spacer()
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(20)
-
             // Tab picker
             Picker("", selection: $selectedTab) {
                 Text("Bottle").tag("bottle")
@@ -88,6 +72,7 @@ struct SettingsSheet: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
+            .padding(.top, 20)
 
             Divider().padding(.top, 12)
 
@@ -105,8 +90,7 @@ struct SettingsSheet: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 680, height: 620)
-        .background(.ultraThinMaterial)
+        .frame(minWidth: 600, minHeight: 540)
     }
 }
 
@@ -426,7 +410,6 @@ struct BottleSettingsTab: View {
                         Spacer()
                         Button("Save Changes") { saveBottleConfig() }
                             .buttonStyle(.borderedProminent)
-                            .tint(.cyan)
                     }
                     .padding(.top, 8)
 
@@ -732,7 +715,7 @@ struct SetupSettingsTab: View {
                                  ? (installCurrentAction.isEmpty ? "Starting..." : installCurrentAction)
                                  : (installFailed ? "Finished with errors" : "Done!"))
                                 .font(.caption)
-                                .foregroundColor(isRunning ? .secondary : (installFailed ? .red : .green))
+                                .foregroundStyle(isRunning ? AnyShapeStyle(.secondary) : (installFailed ? AnyShapeStyle(.red) : AnyShapeStyle(.green)))
                             Spacer()
                             if installDone {
                                 Button("Dismiss") { clearInstallState() }
@@ -766,9 +749,11 @@ struct SetupSettingsTab: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button("Reinstall Selected") { runReinstall() }
+                        .buttonStyle(.bordered)
+                        .disabled(isRunning || isLoadingStatus)
                     Button("Update") { runUpdate() }
                         .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
                         .disabled(isRunning || isLoadingStatus)
                 }
             }
@@ -815,6 +800,39 @@ struct SetupSettingsTab: View {
     }
 
     private func runUpdate() {
+        var uninstallActions: [String] = []
+        var installActions: [String] = []
+        func plan(_ on: Bool, _ was: Bool, hasUpdate: Bool = false, install: String, uninstall: String) {
+            if on && (!was || hasUpdate) { installActions.append(install) }
+            else if !on && was { uninstallActions.append(uninstall) }
+        }
+        plan(wantTools,       hadTools,       hasUpdate: toolsHasUpdate,       install: "install_tools",        uninstall: "uninstall_tools")
+        plan(wantWineStable,  hadWineStable,  hasUpdate: wineStableHasUpdate,  install: "install_wine",         uninstall: "uninstall_wine")
+        plan(wantWineStaging, hadWineStaging, hasUpdate: wineStagingHasUpdate, install: "install_wine_staging", uninstall: "uninstall_wine_staging")
+        plan(wantDxvk,        hadDxvk,        install: "install_dxvk",         uninstall: "uninstall_dxvk")
+        plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
+        plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
+        plan(wantDxmt,        hadDxmt,        hasUpdate: dxmtHasUpdate,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
+        plan(wantMesa,        hadMesa,        install: "install_mesa",         uninstall: "uninstall_mesa")
+        startInstaller(actions: uninstallActions + installActions)
+    }
+
+    private func runReinstall() {
+        var installActions: [String] = []
+        if wantTools       { installActions.append("install_tools") }
+        if wantWineStable  { installActions.append("install_wine") }
+        if wantWineStaging { installActions.append("install_wine_staging") }
+        if wantDxvk        { installActions.append("install_dxvk") }
+        if wantVkd3d       { installActions.append("install_vkd3d") }
+        if wantGptkDlls    { installActions.append("install_gptk_dlls") }
+        if wantDxmt        { installActions.append("install_dxmt") }
+        if wantMesa        { installActions.append("install_mesa") }
+        startInstaller(actions: installActions)
+    }
+
+    private func startInstaller(actions: [String]) {
+        guard !actions.isEmpty else { return }
+
         let home = NSHomeDirectory()
         let resourcePath = Bundle.main.resourcePath ?? Bundle.main.bundlePath
         let candidates = [resourcePath + "/installer.sh", home + "/macndcheese/installer.sh"]
@@ -826,35 +844,13 @@ struct SetupSettingsTab: View {
         let pathSettings = InstallerPathStore.current()
         let mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
 
-        // Plan actions: install if toggled on, uninstall if toggled off but was installed
-        var uninstallActions: [String] = []
-        var installActions: [String] = []
-        func plan(_ on: Bool, _ was: Bool, install: String, uninstall: String) {
-            if on { installActions.append(install) }
-            else if was { uninstallActions.append(uninstall) }
-        }
-        plan(wantTools,       hadTools,       install: "install_tools",        uninstall: "uninstall_tools")
-        plan(wantWineStable,  hadWineStable,  install: "install_wine",         uninstall: "uninstall_wine")
-        plan(wantWineStaging, hadWineStaging, install: "install_wine_staging", uninstall: "uninstall_wine_staging")
-        plan(wantWineD3DMetal, hadWineD3DMetal,
-             install: "install_wine_d3dmetal", uninstall: "uninstall_wine_d3dmetal")
-        plan(wantDxvk,        hadDxvk,        install: "install_dxvk",         uninstall: "uninstall_dxvk")
-        plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
-        plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
-        plan(wantDxmt,        hadDxmt,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
-        plan(wantMesa,        hadMesa,        install: "install_mesa",         uninstall: "uninstall_mesa")
-        plan(wantWineOpenXR,  hadWineOpenXR,  install: "install_wineopenxr",   uninstall: "uninstall_wineopenxr")
-
-        let allActions = uninstallActions + installActions
-        guard !allActions.isEmpty else { return }
-
         clearInstallState()
         isRunning = true
 
         Task {
             guard let jobId = await backend.runInstaller(
                 installerPath: installerPath,
-                actions: allActions,
+                actions: actions,
                 prefix: prefix,
                 dxvkSrc: pathSettings.dxvkSrc,
                 dxvk64: pathSettings.dxvkInstall64,
@@ -965,7 +961,6 @@ struct DiagnoseSettingsTab: View {
                         Label(isDiagnosing ? "Scanning" : "Run Diagnosis", systemImage: "stethoscope")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.cyan)
                     .disabled(isDiagnosing || isRepairing)
                 }
 
@@ -1033,11 +1028,6 @@ struct DiagnoseSettingsTab: View {
             }
             .padding(20)
         }
-        .onAppear {
-            if diagnosis == nil {
-                runDiagnosis()
-            }
-        }
         .confirmationDialog(
             "Run Repair?",
             isPresented: Binding(
@@ -1082,7 +1072,7 @@ struct DiagnoseSettingsTab: View {
                      ? (repairCurrentAction.isEmpty ? "Repair running..." : repairCurrentAction)
                      : (repairFailed ? "Repair finished with errors" : "Repair complete"))
                     .font(.caption)
-                    .foregroundColor(repairStatusColor)
+                    .foregroundStyle(repairStatusColor)
 
                 Spacer()
 

@@ -85,7 +85,7 @@ struct GameLaunchSheet: View {
                                 }
                                 .labelsHidden()
 
-                                Button("Browse...") { browseExe() }
+                                Button("Browse…") { browseExe() }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                             }
@@ -135,7 +135,7 @@ struct GameLaunchSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fontWeight(.semibold)
-                            TextField("Optional launch arguments...", text: $extraArgs)
+                            TextField("Optional launch arguments…", text: $extraArgs)
                                 .textFieldStyle(.roundedBorder)
                         }
 
@@ -230,13 +230,12 @@ struct GameLaunchSheet: View {
                             } else {
                                 Image(systemName: "play.fill")
                             }
-                            Text("PLAY")
+                            Text("Play")
                                 .fontWeight(.bold)
                         }
                         .frame(minWidth: 100)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.cyan)
                     .controlSize(.large)
                     .keyboardShortcut(.defaultAction)
                     .disabled(effectiveExe.isEmpty || isLaunching)
@@ -245,7 +244,7 @@ struct GameLaunchSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(24)
-        .frame(width: 560, height: 480)
+        .frame(minWidth: 480, minHeight: 400)
         .background(.ultraThinMaterial)
         .task {
             await loadExes()
@@ -286,7 +285,6 @@ struct GameLaunchSheet: View {
     private func loadExes() async {
         loadingExes = true
         detectedExes = await backend.detectExes(installDir: game.installDir)
-        // Pre-select the game's detected exe
         if let exe = game.exe, !exe.isEmpty {
             selectedExe = ""  // "Auto-detect" will use game.exe
         }
@@ -333,6 +331,8 @@ struct GameLaunchSheet: View {
                 metalHud: metalHud,
                 esync: sync.esync,
                 msync: sync.msync,
+                gameName: game.name,
+                steamAppId: game.appid,
                 customEnv: customEnv
             )
             isLaunching = false
@@ -374,7 +374,6 @@ struct GameLaunchSheet: View {
     }
 
     private func abbreviateExe(_ path: String) -> String {
-        // Show relative to install dir if possible
         let installDir = game.installDir
         if !installDir.isEmpty, path.hasPrefix(installDir) {
             let relative = String(path.dropFirst(installDir.count))

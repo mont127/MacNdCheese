@@ -138,6 +138,36 @@ struct InstallProgress: Codable {
     }
 }
 
+struct CheeseDiagnosis: Codable {
+    let summary: String
+    let generatedAt: String
+    let checks: [CheeseDiagnosticCheck]
+    let repairs: [CheeseRepairAction]
+
+    enum CodingKeys: String, CodingKey {
+        case summary
+        case generatedAt = "generated_at"
+        case checks
+        case repairs
+    }
+}
+
+struct CheeseDiagnosticCheck: Identifiable, Codable {
+    let id: String
+    let status: String
+    let title: String
+    let message: String
+    let details: String
+}
+
+struct CheeseRepairAction: Identifiable, Codable {
+    let id: String
+    let title: String
+    let details: String
+    let recommended: Bool
+    let destructive: Bool
+}
+
 struct UpdateInfo: Codable {
     let cheeseLatestTag: String?
     let gcenxLatestTag: String?

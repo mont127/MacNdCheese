@@ -58,7 +58,7 @@ struct CreateBottleSheet: View {
                         TextField("Path", text: $customPath)
                             .textFieldStyle(.roundedBorder)
                             .font(.caption)
-                        Button("Browse") {
+                        Button("Browse…") {
                             let panel = NSOpenPanel()
                             panel.canChooseFiles = false
                             panel.canChooseDirectories = true
@@ -100,12 +100,11 @@ struct CreateBottleSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .tint(.cyan)
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCreating)
             }
         }
         .padding(24)
-        .frame(width: 440, height: 380)
+        .frame(minWidth: 380, minHeight: 320)
         .background(.ultraThinMaterial)
     }
 }

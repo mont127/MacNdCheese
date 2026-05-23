@@ -19,7 +19,6 @@ struct GameGridView: View {
         GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)
     ]
 
-    /// Games sorted by the user-defined order; new/unknown games go to the end.
     private var orderedGames: [Game] {
         if gameOrder.isEmpty { return games }
         let orderMap = Dictionary(uniqueKeysWithValues: gameOrder.enumerated().map { ($1, $0) })
@@ -79,7 +78,7 @@ struct GameGridView: View {
                             }
                         }
                         .buttonStyle(.bordered)
-                        .tint(backend.steamRunning ? .red : .cyan)
+                        .tint(backend.steamRunning ? .red : nil)
                         .disabled(backend.activePrefix == nil)
                     }
                 }
@@ -101,35 +100,39 @@ struct GameGridView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(displayedGames) { game in
-                        GameCardView(game: game)
-                            .opacity(draggingAppid == game.appid ? 0.45 : 1.0)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .stroke(
-                                        dropTargetAppid == game.appid ? Color.cyan : Color.clear,
-                                        lineWidth: 2
-                                    )
-                            )
-                            .onDrag {
-                                draggingAppid = game.appid
-                                return NSItemProvider(object: game.appid as NSString)
-                            }
-                            .onDrop(
-                                of: [UTType.plainText],
-                                isTargeted: Binding(
-                                    get: { dropTargetAppid == game.appid },
-                                    set: { targeted in
-                                        dropTargetAppid = targeted ? game.appid : nil
-                                    }
+                        GameCardView(
+                            game: game,
+                            onMoveToFront: { moveToFront(game.appid) },
+                            onMoveToBack: { moveToBack(game.appid) }
+                        )
+                        .opacity(draggingAppid == game.appid ? 0.45 : 1.0)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(
+                                    dropTargetAppid == game.appid ? Color.cyan : Color.clear,
+                                    lineWidth: 2
                                 )
-                            ) { _ in
-                                guard let from = draggingAppid, from != game.appid else {
-                                    draggingAppid = nil; return false
+                        )
+                        .onDrag {
+                            draggingAppid = game.appid
+                            return NSItemProvider(object: game.appid as NSString)
+                        }
+                        .onDrop(
+                            of: [UTType.plainText],
+                            isTargeted: Binding(
+                                get: { dropTargetAppid == game.appid },
+                                set: { targeted in
+                                    dropTargetAppid = targeted ? game.appid : nil
                                 }
-                                moveGame(from: from, before: game.appid)
-                                draggingAppid = nil
-                                return true
+                            )
+                        ) { _ in
+                            guard let from = draggingAppid, from != game.appid else {
+                                draggingAppid = nil; return false
                             }
+                            moveGame(from: from, before: game.appid)
+                            draggingAppid = nil
+                            return true
+                        }
                     }
                 }
                 .padding(.horizontal, 24)
@@ -141,7 +144,6 @@ struct GameGridView: View {
             gameOrder = games.map { $0.appid }
         }
         .onChange(of: games) {
-            // Merge new games into the existing order (append unknowns at end)
             let known = Set(gameOrder)
             let newIds = games.map { $0.appid }.filter { !known.contains($0) }
             gameOrder = gameOrder.filter { id in games.contains { $0.appid == id } } + newIds
@@ -159,11 +161,33 @@ struct GameGridView: View {
         guard let prefix = backend.activePrefix else { return }
         Task { await backend.setGameOrder(prefix: prefix, order: order) }
     }
+
+    private func moveToFront(_ appid: String) {
+        var order = orderedGames.map { $0.appid }
+        guard let idx = order.firstIndex(of: appid), idx > 0 else { return }
+        order.remove(at: idx)
+        order.insert(appid, at: 0)
+        gameOrder = order
+        guard let prefix = backend.activePrefix else { return }
+        Task { await backend.setGameOrder(prefix: prefix, order: order) }
+    }
+
+    private func moveToBack(_ appid: String) {
+        var order = orderedGames.map { $0.appid }
+        guard let idx = order.firstIndex(of: appid), idx < order.count - 1 else { return }
+        order.remove(at: idx)
+        order.append(appid)
+        gameOrder = order
+        guard let prefix = backend.activePrefix else { return }
+        Task { await backend.setGameOrder(prefix: prefix, order: order) }
+    }
 }
 
 struct GameCardView: View {
     @EnvironmentObject var backend: BackendClient
     let game: Game
+    var onMoveToFront: (() -> Void)? = nil
+    var onMoveToBack: (() -> Void)? = nil
     @State private var isHovering = false
     @State private var showLaunchOptions = false
     @State private var coverImage: NSImage?
@@ -171,44 +195,46 @@ struct GameCardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Cover image area — click to launch directly
+            // Cover image area
             ZStack(alignment: .topTrailing) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(.ultraThinMaterial)
-                        .frame(height: 220)
-
-                    if let image = coverImage {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(height: 220)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    } else {
-                        Image(systemName: "gamecontroller.fill")
-                            .font(.system(size: 32))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    // Hover dim
-                    if isHovering {
+                Button {
+                    directLaunch()
+                } label: {
+                    ZStack {
                         RoundedRectangle(cornerRadius: 12)
-                            .fill(.black.opacity(0.35))
+                            .fill(.ultraThinMaterial)
                             .frame(height: 220)
-                    }
 
-                    // Launching spinner
-                    if isLaunching {
-                        ProgressView()
-                            .controlSize(.large)
-                            .tint(.white)
+                        if let image = coverImage {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(height: 220)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        } else {
+                            Image(systemName: "gamecontroller.fill")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if isHovering {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(.black.opacity(0.35))
+                                .frame(height: 220)
+                        }
+
+                        if isLaunching {
+                            ProgressView()
+                                .controlSize(.large)
+                                .tint(.white)
+                        }
                     }
+                    .frame(height: 220)
+                    .contentShape(Rectangle())
                 }
-                .frame(height: 220)
-                .contentShape(Rectangle())
-                .onTapGesture { directLaunch() }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Launch \(game.name)")
 
-                // Settings gear — top-right, only on hover
                 if isHovering {
                     Button {
                         showLaunchOptions = true
@@ -222,6 +248,7 @@ struct GameCardView: View {
                     .buttonStyle(.plain)
                     .padding(8)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    .accessibilityLabel("Launch options for \(game.name)")
                 }
             }
             .frame(height: 220)
@@ -250,10 +277,19 @@ struct GameCardView: View {
         .onHover { hovering in isHovering = hovering }
         .onAppear { loadCover() }
         .contextMenu {
-            Button("Launch Options...") { showLaunchOptions = true }
+            Button("Launch Options…") { showLaunchOptions = true }
             if let exe = game.exe {
                 Button("Show in Finder") {
                     NSWorkspace.shared.selectFile(exe, inFileViewerRootedAtPath: "")
+                }
+            }
+            if onMoveToFront != nil || onMoveToBack != nil {
+                Divider()
+                if let move = onMoveToFront {
+                    Button("Move to Front") { move() }
+                }
+                if let move = onMoveToBack {
+                    Button("Move to Back") { move() }
                 }
             }
         }
@@ -271,7 +307,6 @@ struct GameCardView: View {
             guard !exe.isEmpty else { isLaunching = false; return }
             let esync = cfg["esync"] as? Bool ?? true
             let msync = cfg["msync"] as? Bool ?? true
-            // normalise: msync wins
             let finalEsync = msync ? false : esync
             await backend.launchGame(
                 prefix: prefix,
