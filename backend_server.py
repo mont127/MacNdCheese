@@ -69,6 +69,16 @@ BACKEND_VKD3D = "vkd3d-proton"
 BACKEND_GPTK = "gptk"
 BACKEND_GPTK_FULL = "gptk_full"
 BACKEND_D3DMETAL3 = "d3dmetal3"
+# Wine D3DMetal (MNC HACK 22 v3 + 24-26). Bundled patched wine 11 that ships
+# inside MacNdCheese Launcher.app and gets unzipped to
+# $PORTABLE_DIR/Wine D3DMetal.app by the SwiftUI Setup tab. When picked from
+# the Launch sheet, MacNCheese auto-launches Steam in -silent mode inside the
+# same prefix under this wine (with WINE_D3DMETAL_NO_STEAM_HACK=1 so HACK 24
+# /25 don't perturb Steam's argv), then launches the game in the same prefix
+# so cs2 / Source-2 / Steam-IPC games find SteamAPI_Init in the shared
+# wineserver. This auto-Steam flow ONLY fires from cmd_launch_game — running
+# the wrapper from cli leaves Steam alone.
+BACKEND_WINE_D3DMETAL = "wine_d3dmetal"
 
 
 DEFAULT_DXVK_INSTALL = Path.home() / "dxvk-release"
@@ -135,9 +145,10 @@ def _rpc_bridge_start(wine: str, env: dict) -> None:
     if not _rpc_bridge_available():
         return
     try:
+        # 5 min for the same fresh-prefix wineboot reason as _apply_retina_regedit.
         result = subprocess.run(
             [wine, "sc", "start", "rpc-bridge"],
-            env=env, timeout=15,
+            env=env, timeout=300,
             capture_output=True, text=True,
         )
         log(f"rpc-bridge: sc start rc={result.returncode} stdout={result.stdout.strip()!r}")
@@ -252,6 +263,29 @@ def _find_wine_staging() -> Optional[str]:
         if p.exists():
             return str(p)
     return None
+
+def _find_wine_d3dmetal() -> Optional[str]:
+    """Locate the patched Wine D3DMetal (MNC HACK 22 v3) bundle, if installed.
+    The wrapper at Contents/Resources/wine-d3dmetal exec's into the in-process
+    Cocoa launcher (Contents/MacOS/wine); we point callers at the wrapper so
+    NSApp is set up before wine code runs."""
+    wrapper = PORTABLE_DIR / "Wine D3DMetal.app" / "Contents" / "Resources" / "wine-d3dmetal"
+    if wrapper.exists():
+        return str(wrapper)
+    return None
+
+def _wine_d3dmetal_installed() -> bool:
+    return (PORTABLE_DIR / "Wine D3DMetal.app").exists()
+
+def _wineopenxr_available() -> bool:
+    """True if the wineopenxr bridge (D3D11 OpenXR → native OpenXR) is
+    installed into at least one portable Wine tree."""
+    for app in ("Wine D3DMetal.app", "Wine Staging.app", "Wine Stable.app"):
+        base = PORTABLE_DIR / app / "Contents" / "Resources" / "wine" / "lib" / "wine"
+        if (base / "x86_64-windows" / "wineopenxr.dll").exists() and \
+           (base / "x86_64-unix" / "wineopenxr.so").exists():
+            return True
+    return False
 
 def _find_wine_for_bottle(wine_binary_pref: str = "auto") -> Optional[str]:
     """Find wine respecting a per-bottle preference ('stable', 'staging', 'auto')."""
@@ -370,9 +404,15 @@ def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
     try:
         reg_file = Path(tempfile.gettempdir()) / "wine_retina.reg"
         reg_file.write_text(reg_content, encoding="utf-8")
+        # Timeout is generous (5 min) because the FIRST regedit call against
+        # a fresh prefix has to wait for wineboot --init to finish — that's
+        # ~2-5 min under our patched wine-d3dmetal because every helper
+        # process (services, explorer, plugplay, winedevice, mscoree) goes
+        # through the in-process Cocoa launcher init. Subsequent regedit
+        # calls in the same prefix return in <1s.
         subprocess.run(
             [wine, "regedit", str(reg_file)],
-            env=env, timeout=15,
+            env=env, timeout=300,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         log(f"Applied regedit: RetinaMode={retina_val}, Resolution=auto, LogPixels=000000{dpi_hex}")
@@ -459,8 +499,88 @@ def _gptk_full_available() -> bool:
     return Path("/usr/local/bin/gameportingtoolkit").exists() or shutil.which("gameportingtoolkit") is not None
 
 
-def _resolve_auto_backend() -> str:
-    """Pick the best available backend: DXMT > D3DMetal > DXVK > Wine builtin."""
+def _detect_game_type(exe_path: Optional[str]) -> str:
+    """Inspect the exe name + neighboring files to classify the game.
+
+    Returns one of: 'ue5', 'ue4', 'source2', 'unity', 'dx12', 'dx11', 'unknown'.
+    Used by _resolve_auto_backend to pick the optimal backend per game.
+    """
+    if not exe_path:
+        return "unknown"
+    try:
+        p = Path(exe_path)
+        name = p.name.lower()
+        parent = p.parent
+        parent_str = str(parent).lower()
+
+        
+        if "/game/bin/win64/" in str(p).replace("\\", "/").lower():
+            return "source2"
+
+        
+        if name.endswith("-win64-shipping.exe") or name.endswith("-shipping.exe"):
+
+            game_root = parent.parent.parent  
+            for marker_dir in ("Engine/Plugins/Runtime/Nanite",
+                               "Content/Paks/Global.utoc"):
+                if (game_root / marker_dir).exists():
+                    return "ue5"
+            return "ue4"
+
+     
+        if p.with_suffix("").name + "_Data" in (
+            c.name for c in parent.iterdir() if c.is_dir()
+        ) if parent.exists() else False:
+            return "unity"
+
+        
+        if parent.exists():
+            for sibling in parent.iterdir():
+                sn = sibling.name.lower()
+                if sn in ("d3d12core.dll", "d3d12sdklayers.dll"):
+                    return "dx12"
+                if sn == "d3d12":
+                    return "dx12"
+
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _resolve_auto_backend(exe_path: Optional[str] = None) -> str:
+    """Pick the best available backend for the given exe.
+
+    Per-game logic (when exe_path provided):
+      • UE5 / UE4 / DX12 → Wine D3DMetal if installed (handles D3D12)
+      • Source 2 (cs2)   → Wine D3DMetal if installed (proven baseline)
+      • DXMT next        → great for D3D11 (Vulkan path), used by many UE5 too
+      • D3DMetal3        → GPTK-style, OK for D3D11
+      • DXVK             → older DX9/10/11 games
+      • Wine builtin     → last resort
+
+    No exe info: fall back to installed-priority order (DXMT > D3DMetal3 > DXVK > Wine).
+    """
+    game_type = _detect_game_type(exe_path)
+
+    if game_type in ("ue5", "ue4", "dx12", "source2"):
+        if _wine_d3dmetal_installed():
+            return BACKEND_WINE_D3DMETAL
+        if _dxmt_available():
+            return BACKEND_DXMT
+        if _d3dmetal3_available():
+            return BACKEND_D3DMETAL3
+
+    if game_type in ("dx11", "unity"):
+        if _dxmt_available():
+            return BACKEND_DXMT
+        if _wine_d3dmetal_installed():
+            return BACKEND_WINE_D3DMETAL
+        if _d3dmetal3_available():
+            return BACKEND_D3DMETAL3
+        if _dxvk_available():
+            return BACKEND_DXVK
+
+   
     if _dxmt_available():
         return BACKEND_DXMT
     if _d3dmetal3_available():
@@ -479,7 +599,7 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
     env = dict(env)
     env["WINE_MF_MFT_SKIP_VERIFY"] = "1"
 
-    # Each backend sets WINEDLLOVERRIDES from scratch (no leftover base overrides)
+    
     backend_ovr = ""
 
     if backend == BACKEND_WINE:
@@ -523,18 +643,81 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
         env.setdefault("VKD3D_CONFIG", "")
 
     elif backend == BACKEND_DXMT:
-        # builtin-dll=true build: DLLs are in Wine's own lib dir.
-        # Explicitly force builtin so stale native DLLs in the game dir don't win.
+       
         backend_ovr = "d3d11,d3d10core,dxgi=b"
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
         env.pop("GALLIUM_DRIVER", None)
         env.pop("MESA_GLTHREAD", None)
 
+    elif backend == BACKEND_WINE_D3DMETAL:
+       
+        for var in (
+            "DXVK_HUD",
+            "DXVK_FRAME_RATE",
+            "DXVK_LOG_PATH",
+            "DXVK_LOG_LEVEL",
+            "VKD3D_PROTON_PATH",
+            "DXMT_PATH",
+            "GALLIUM_DRIVER",
+            "MESA_GLTHREAD",
+        ):
+            env.pop(var, None)
+        env["WINE_D3DMETAL_NO_STEAM_HACK"] = "1"
+       
+        env["WINE_D3DMETAL_USE_PTHREAD_SHIM"] = "1"
+        env["WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE"] = "0"
+        env["WINE_D3DMETAL_USE_IOKIT_OBSERVER"] = "0"
+        # KERNEL SAFETY — must be ON. Without this the shim leaks mach
+        # exception ports into the kernel's data.kalloc.512 zone; after
+        # ~5-15 min of wine-d3dmetal runtime that zone fills (~20 GB) and
+        # the Mac KERNEL PANICS (verified: panic on 2026-05-21). The
+        # circuit breaker parks the highest-fault threads instead of
+        # letting them feed the exception port leak.
+        env["WINE_D3DMETAL_055D_CIRCUIT_BREAKER"] = "1"
+        # Make D3DMetal-spawned windows visible (otherwise game windows
+        # may be created with onscreen=0).
+        env["WINE_D3DMETAL_FORCE_VISIBLE"] = "1"
+        # Skip handlers triggered by NULL FP — these fire constantly in
+        # cs2's init and the skip lets cs2 progress to D3DMetal calls.
+        env["WINE_D3DMETAL_NULL_FP_SKIP"] = "1"
+        # Disable PATCH-058 (WineEventCallback wake synthesizer). It writes
+        # `*addr = 1` to a callback slot to synthesize a wake. cs2 then reads
+        # the slot, treats `1` as a function pointer, jumps → KERN_PROTECTION
+        # crash at non-canonical RIP. Per project memory, PATCH-058's
+        # variants all fail — confirmed by today's log showing it as the
+        # FIRST crash before NSAccessibility wall.
+        env["WINE_D3DMETAL_NO_PATCH058"] = "1"
+        # Disable PATCH-044 v2 ("bogus stack" abort path). Per project memory
+        # 2026-05-17 noon, NO_PATCH044V2=1 stops cs2 abort and lets it survive
+        # past the early crash; PATCH-044 v5 still parks the broken thread.
+        env["WINE_D3DMETAL_NO_PATCH044V2"] = "1"
+        # Disable PATCH-051 (libd3dshared os_sync_wait 16ms poll hook). The
+        # poll busy-loops D3DMetalWineThread at 200% CPU. Without it,
+        # D3DMetalWineThread blocks NATIVELY (efficient sleep) — when the wake
+        # signal eventually arrives, it proceeds correctly. Confirmed
+        # 2026-05-23: NO_PATCH051=1 drops CPU from 200% to 100% and lets cs2
+        # remain interactive (Enter key dismisses dialogs, etc.).
+        env["WINE_D3DMETAL_NO_PATCH051"] = "1"
+        # Suppress Steam client assertions (notably BMainLoop watchdog at
+        # steamengine.cpp:2838 that fires when Steam IPC stalls >15s during
+        # cs2 map loading). tier0_s64.dll respects this env to skip the
+        # debug break / assert dialog path. Inherited by Steam → cs2 child.
+        env["DONT_BREAK_ON_ASSERT"] = "1"
+        # MNC HACK 29: when launching from this backend, the prefix is
+        # always assumed to be initialised (either freshly wineboot'd by a
+        # prior launch, or already in use by Steam via a different wine
+        # binary). Skipping run_wineboot avoids: (a) the 3-5 min wineboot
+        # cost on every launch, (b) the wineserver crash when wineboot
+        # tries to take over an existing wineserver started by another
+        # wine binary in the same prefix.
+        env["WINE_D3DMETAL_SKIP_WINEBOOT"] = "1"
+        # Don't set backend_ovr — the wrapper picks per-target overrides.
+        # Suppress winemenubuilder + crash spam at the env level instead.
+        backend_ovr = "winemenubuilder.exe=d;mscoree=;mshtml="
+
     elif backend == BACKEND_D3DMETAL3:
-        # D3DMetal3: uses MacNCheese Wine Stable + GPTK DLLs.
-        # DYLD_FALLBACK_LIBRARY_PATH must point to the native macOS D3DMetal
-        # runtime (.dylib / .framework), NOT the Windows .dll dir.
+
         mnc_root = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine"
         mnc_bin = mnc_root / "bin"
 
@@ -598,11 +781,9 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
         if wineserver:
             env["WINESERVER"] = wineserver
 
-    # Mandatory overrides prepended (matching MacNCheese.py line 5798).
-    # In Wine, first match for a DLL wins, so mandatory comes first.
-    # Note: nvapi/nvapi64 disabled unless GPTK backend needs them.
+
     if backend in (BACKEND_GPTK, BACKEND_D3DMETAL3):
-        # These backends provide a complete override string — no prepending.
+        
         env["WINEDLLOVERRIDES"] = backend_ovr
     else:
         mandatory_ovr = "nvapi,nvapi64=;mf,mfplat,mfreadwrite,mfplay=b"
@@ -611,7 +792,7 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
         else:
             env["WINEDLLOVERRIDES"] = mandatory_ovr
 
-    # DXVK log dir always created (for Steam launch etc.)
+    
     dxvk_log_dir = str(LOG_DIR / "dxvk")
     
     env.setdefault("DXVK_LOG_PATH", dxvk_log_dir)
@@ -623,6 +804,14 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
 
 def _backend_wine_binary(backend: str, exe: str) -> Optional[str]:
     """Return the wine binary for backends that need a special one, else None."""
+    if backend == BACKEND_WINE_D3DMETAL:
+       
+        wrapper = PORTABLE_DIR / "Wine D3DMetal.app" / "Contents" / "Resources" / "wine-d3dmetal"
+        if wrapper.exists():
+            log(f"Backend wine_d3dmetal using bundled wrapper: {wrapper}")
+            return str(wrapper)
+        log("Backend wine_d3dmetal selected but Wine D3DMetal.app not installed in PORTABLE_DIR")
+        return None
     if backend == BACKEND_D3DMETAL3:
         mnc_wine = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine" / "bin" / "wine"
         if mnc_wine.exists():
@@ -662,6 +851,19 @@ def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
                         prefix: str, exe_full: str, quoted_args: str, log_path: str,
                         extra_env: Optional[Dict[str, str]] = None) -> str:
     """Build the full bash launch command for a given backend."""
+    if backend == BACKEND_WINE_D3DMETAL:
+        # `wine` here is the Wine D3DMetal.app self-locating wrapper; it
+        # already sets DYLD_FALLBACK_LIBRARY_PATH and execs into the
+        # in-process Cocoa launcher. WINE_D3DMETAL_NO_STEAM_HACK=1 is
+        # exported via _apply_backend_env so HACK 24/25 stay quiet.
+        mtl_hud = "MTL_HUD_ENABLED=1 " if extra_env and extra_env.get("MTL_HUD_ENABLED") == "1" else ""
+        return (
+            f"cd {shlex.quote(exe_dir)} && "
+            f"{mtl_hud}arch -x86_64 {shlex.quote(wine)} "
+            f"{shlex.quote(exe_name)} {quoted_args} "
+            f"> {shlex.quote(log_path)} 2>&1"
+        )
+
     if backend == BACKEND_GPTK_FULL:
         gptk_bin = "/usr/local/bin/gameportingtoolkit"
         if not Path(gptk_bin).exists():
@@ -746,6 +948,46 @@ MESA_RUNTIME_DLLS_BASE = ("opengl32.dll", "libgallium_wgl.dll", "libglapi.dll")
 MESA_RUNTIME_DLLS_EXTRA = ("libEGL.dll", "libGLESv2.dll")
 
 
+def _restore_wine_lib_from_dxmt_backup() -> List[str]:
+    """Restore wine's stock x86_64-windows PE DLLs that DXMT may have replaced,
+    and remove DXMT-only artefacts. Returns the list of restored/removed names.
+
+    Why this matters: DXMT install overwrites wine's lib d3d11/dxgi/d3d10core
+    and drops winemetal.dll alongside. If a user then picks D3DMetal3, GPTK,
+    DXVK, VKD3D, etc., the game-dir copy of (say) d3d11.dll is correct — but
+    wine's loader still resolves *some* dependent DLL out of the wine lib
+    path where DXMT's leftover winemetal.dll lives. Result: the game looks
+    like it's still running on DXMT. Restore + scrub before any non-DXMT
+    launch keeps backends actually isolated."""
+    wine_lib = _find_wine_win64_lib()
+    if not wine_lib:
+        return []
+    backup_dir = PORTABLE_DIR / ".dxmt-wine-backups"
+    touched: List[str] = []
+    if backup_dir.is_dir():
+        for dll in ("d3d11.dll", "dxgi.dll", "d3d10core.dll"):
+            src = backup_dir / dll
+            if src.exists():
+                try:
+                    shutil.copy2(str(src), str(wine_lib / dll))
+                    touched.append(dll)
+                except Exception as exc:
+                    log(f"DXMT restore: failed copying {dll}: {exc}")
+    # winemetal.dll is the DXMT bridge — wine itself doesn't ship one, so
+    # the safe action is removal. Keeping it leaves a fallback path that
+    # the dxgi/d3d11 PE loader can pick up.
+    winemetal = wine_lib / "winemetal.dll"
+    if winemetal.exists():
+        try:
+            winemetal.unlink()
+            touched.append("winemetal.dll (removed)")
+        except Exception as exc:
+            log(f"DXMT restore: failed removing winemetal.dll: {exc}")
+    if touched:
+        log(f"DXMT restore: scrubbed wine lib ({', '.join(touched)}) in {wine_lib}")
+    return touched
+
+
 def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) -> None:
     """
     Copy required DLLs into the game directory before launch.
@@ -754,6 +996,13 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
     """
     game_dir = Path(install_dir) if install_dir else exe_path.parent
     target_dirs = _collect_target_dirs(game_dir, exe_path)
+
+    # Any non-DXMT backend has to undo a prior DXMT install's wine-lib
+    # contamination first, otherwise winemetal.dll + DXMT's d3d11/dxgi
+    # leak into the wine PE loader's search path even with native DLLs
+    # placed correctly in the game dir.
+    if backend != BACKEND_DXMT:
+        _restore_wine_lib_from_dxmt_backup()
 
     if backend == BACKEND_DXVK:
         dxvk_bin = DEFAULT_DXVK_INSTALL / "bin"
@@ -807,6 +1056,42 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
             for dll in optional:
                 shutil.copy2(str(DEFAULT_MESA_DIR / dll), str(tdir / dll))
             log(f"Copied Mesa ({driver}) DLLs -> {tdir}")
+
+    elif backend == BACKEND_WINE_D3DMETAL:
+        # Wine D3DMetal ships D3DMetal inside the wine binary (patched
+        # ntdll + libd3dshared bridge). No game-dir DLL copies are needed,
+        # and any leftover D3D PE DLLs from prior backends (DXVK, GPTK,
+        # D3DMetal3, Mesa) MUST be removed so wine's builtin d3d{11,12}
+        # are loaded and our D3DMetal path is taken. We don't pollute the
+        # game dir, so switching FROM wine_d3dmetal to another backend is
+        # a clean handoff — the other backend's prepare puts its own DLLs.
+        _unpatch_dxvk(game_dir)
+        leftover_dlls = (
+            "d3d8.dll", "d3d9.dll",
+            "d3d10.dll", "d3d10_1.dll", "d3d10core.dll",
+            "d3d11.dll", "d3d11_1.dll",
+            "d3d12.dll", "d3d12core.dll",
+            "dxgi.dll",
+            "atidxx64.dll", "atidxx32.dll",
+            "nvapi.dll", "nvapi64.dll",
+            "nvngx.dll", "nvngx-on-metalfx.dll",
+            "winemetal.dll",  # DXMT bridge — must NOT load alongside D3DMetal
+            "vulkan-1.dll",   # avoid Vulkan layer; Steam's vulkandriverquery is overridden via WINEDLLOVERRIDES
+            "opengl32.dll", "libgallium_wgl.dll", "libglapi.dll",
+            "libEGL.dll", "libGLESv2.dll", "zink_dri.dll",  # Mesa leftovers
+        )
+        removed_any = False
+        for tdir in target_dirs:
+            for dll in leftover_dlls:
+                p = tdir / dll
+                if p.exists():
+                    try:
+                        p.unlink()
+                        removed_any = True
+                    except Exception as exc:
+                        log(f"wine_d3dmetal cleanup: could not remove {p}: {exc}")
+        if removed_any:
+            log(f"wine_d3dmetal: scrubbed leftover backend DLLs from {len(target_dirs)} target dir(s) so our builtin D3DMetal-patched DLLs load")
 
     elif backend == BACKEND_VKD3D:
         vkd3d_bin = DEFAULT_VKD3D_DIR / "x86"
@@ -1254,10 +1539,12 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     if not exe_path.exists():
         raise FileNotFoundError(f"Executable not found: {exe}")
 
-    # Resolve auto backend
+    # Resolve auto backend — pass exe so we can detect UE4/UE5/Source2/Unity/etc.
     if not backend or backend == BACKEND_AUTO:
-        backend = _resolve_auto_backend()
-    log(f"Resolved graphics backend: {backend}")
+        backend = _resolve_auto_backend(exe)
+        log(f"Auto backend resolved for {Path(exe).name}: {backend} (game_type={_detect_game_type(exe)})")
+    else:
+        log(f"Resolved graphics backend: {backend}")
 
     # Find wine binary (may be overridden by backend or per-bottle preference)
     key = _resolve_key(prefix)
@@ -1283,6 +1570,222 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
         except Exception as exc:
             log(f"D3DMetal3: Steam auto-launch failed: {exc} (continuing anyway)")
 
+    # Wine D3DMetal: auto-launch Steam in -silent mode in the SAME prefix
+    # under the SAME wine binary so SteamAPI_Init in the game succeeds via
+    # shared wineserver. -silent keeps the CEF UI from being rendered
+    # (which would hit the libcef+0x59efd15 GPU-init CHECK on current
+    # publicbeta CEF). WINE_D3DMETAL_NO_STEAM_HACK=1 keeps wine HACK 24/25
+    # quiet so Steam launches with its own default argv. This auto-Steam
+    # path ONLY fires here in cmd_launch_game (i.e. only when the user hit
+    # Launch in the MacNCheese sheet) — running the wine wrapper from cli
+    # never touches Steam.
+    if backend == BACKEND_WINE_D3DMETAL:
+        # Decide whether this game NEEDS Steam before auto-launching it.
+        #
+        # Strongest signal: the .exe imports steam_api*.dll / steamworks*.dll
+        # in its PE import table — that proves the game links Steamworks SDK.
+        # Standalone UE5/Unity builds (e.g. the Lyra demo distributed via
+        # Galacticverse) do NOT link Steamworks even though they live under
+        # steamapps/common/, so a path-based heuristic would false-positive.
+        # We scan the raw .exe bytes for the import-name strings — cheap and
+        # robust without needing a PE parser.
+        #
+        # Secondary signal: steam_api*.dll / steam_appid.txt sitting next to
+        # the .exe (or up to 3 dirs up — UE5 .exes are at Binaries/Win64/ but
+        # ship the Steam DLL at the game root). Mostly redundant with the PE
+        # import scan but covers games that load steam_api*.dll dynamically.
+        def _game_needs_steam(exe_p: Path) -> bool:
+            # 1. PE imports scan (raw byte search of the .exe).
+            try:
+                with open(exe_p, "rb") as f:
+                    data = f.read(min(exe_p.stat().st_size, 64 * 1024 * 1024))
+                for needle in (b"steam_api64.dll", b"steam_api.dll",
+                               b"steamworks64.dll", b"steamworks.dll",
+                               b"csteamworks.dll"):
+                    if needle in data.lower():
+                        log(f"wine_d3dmetal: {exe_p.name} imports {needle.decode()} "
+                            f"— Steamworks game, will auto-launch Steam")
+                        return True
+            except Exception as exc:
+                log(f"wine_d3dmetal: couldn't scan {exe_p} PE imports: {exc}")
+
+            # 2. File-existence near the .exe (redundant for most games but
+            #    covers dynamic-load Steam wrappers).
+            check_dirs = [exe_p.parent]
+            cur = exe_p.parent
+            for _ in range(3):
+                if cur.parent == cur: break
+                cur = cur.parent
+                check_dirs.append(cur)
+            steam_dll_names = ("steam_api.dll", "steam_api64.dll",
+                               "steamworks64.dll", "csteamworks.dll")
+            for d in check_dirs:
+                for dll in steam_dll_names:
+                    if (d / dll).exists():
+                        log(f"wine_d3dmetal: found {dll} in {d} "
+                            f"— Steamworks game, will auto-launch Steam")
+                        return True
+                if (d / "steam_appid.txt").exists():
+                    log(f"wine_d3dmetal: found steam_appid.txt in {d} "
+                        f"— Steamworks game, will auto-launch Steam")
+                    return True
+            return False
+
+        steam_exe_winpath = "C:\\Program Files (x86)\\Steam\\steam.exe"
+        steam_exe_unix = (
+            Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam" / "steam.exe"
+        )
+
+        if not _game_needs_steam(exe_path):
+            log(f"wine_d3dmetal: {exe_path.name} doesn't link Steamworks SDK "
+                f"(no steam_api*.dll / steam_appid.txt found near it) — skipping "
+                f"Steam auto-launch. Launching game directly under wine-d3dmetal.")
+        elif not steam_exe_unix.exists():
+            log(f"wine_d3dmetal: Steam not found in this prefix at {steam_exe_unix} — "
+                f"Steam-IPC games (cs2, Source 2, etc.) won't launch. Continuing in case "
+                f"the game doesn't actually need Steam.")
+        else:
+            def _steam_already_alive() -> bool:
+                try:
+                    ps = subprocess.check_output(["ps", "-axo", "command"], text=True)
+                except Exception:
+                    return False
+                # Match the actual cs2-relevant steam.exe (the wine-process line,
+                # not the wrapper or wineboot helper). The wine-process line is
+                # literally "C:\\Program Files (x86)\\Steam\\steam.exe".
+                return any(
+                    "Program Files (x86)\\Steam\\steam.exe" in line
+                    for line in ps.splitlines()
+                )
+
+            if _steam_already_alive():
+                log("wine_d3dmetal: Steam already running in this prefix, proceeding directly to game launch")
+            else:
+                d3dmetal_wrapper = _backend_wine_binary(BACKEND_WINE_D3DMETAL, "")
+                if not d3dmetal_wrapper:
+                    log("wine_d3dmetal: Wine D3DMetal.app not installed (Setup → Wine D3DMetal). "
+                        "Falling through and letting the game launch under the wrapper anyway.")
+                else:
+                    steam_env = _wine_env(prefix)
+                    steam_env["WINE_D3DMETAL_NO_STEAM_HACK"] = "1"
+                    # SHIM=1 keeps steamwebhelper.exe alive (CEF survives the
+                    # gs.base / Apple TSD interactions that previously crashed
+                    # Chrome_InProcGpuThread). Verified 2026-05-21.
+                    steam_env["WINE_D3DMETAL_USE_PTHREAD_SHIM"] = "1"
+                    steam_env["WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE"] = "0"
+                    steam_env["WINE_D3DMETAL_USE_IOKIT_OBSERVER"] = "0"
+                    # KERNEL SAFETY (see _apply_backend_env for full reasoning):
+                    # MUST be on or the Mac will kernel-panic after 5-15 min.
+                    steam_env["WINE_D3DMETAL_055D_CIRCUIT_BREAKER"] = "1"
+                    steam_env["WINE_D3DMETAL_NULL_FP_SKIP"] = "1"
+                    # MNC HACK 29: skip wineboot when Steam launches.
+                    steam_env["WINE_D3DMETAL_SKIP_WINEBOOT"] = "1"
+                    steam_env.setdefault("WINEDEBUG", "-all")
+                    steam_env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree=;mshtml="
+
+                    steam_log = str(LOG_DIR / "wine_d3dmetal-steam-silent.log")
+                    steam_cmd = (
+                        f"cd ~ && arch -x86_64 {shlex.quote(d3dmetal_wrapper)} "
+                        f"{shlex.quote(steam_exe_winpath)} -silent "
+                        f"> {shlex.quote(steam_log)} 2>&1"
+                    )
+                    log(f"wine_d3dmetal: auto-launching Steam silent")
+                    try:
+                        steam_proc = subprocess.Popen(
+                            ["bash", "-lc", steam_cmd],
+                            env=steam_env,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+                        log(f"wine_d3dmetal: Steam silent launched (pid {steam_proc.pid}), polling for FULL readiness (cap 240s)")
+                        # Multi-signal Steam-readiness poll. We can't just check
+                        # `steam.exe alive` — that fires too early (Steam still
+                        # bootstrapping). cs2's SteamAPI_Init talks to Steam via
+                        # the IPC named pipe which only exists AFTER:
+                        #   1. steam.exe alive
+                        #   2. steamwebhelper.exe alive (CEF init done)
+                        #   3. Steam authenticated (connection_log has [Logged On])
+                        # We check all three. Without #3, cs2 shows
+                        # "FATAL ERROR: Failed to connect with local Steam Client".
+                        connection_log_path = (
+                            Path(prefix) / "drive_c" / "Program Files (x86)" /
+                            "Steam" / "logs" / "connection_log.txt"
+                        )
+                        steam_launch_ts = time.time()
+
+                        def _steam_fully_ready() -> tuple[bool, str]:
+                            """Returns (ready, status_msg). Ready iff Steam is
+                            authenticated and IPC pipe is up."""
+                            if not _steam_already_alive():
+                                return False, "steam.exe not alive yet"
+                            try:
+                                ps = subprocess.check_output(["ps", "-axo", "command"], text=True)
+                            except Exception:
+                                return False, "ps failed"
+                            swh_alive = any("steamwebhelper.exe" in line for line in ps.splitlines())
+                            if not swh_alive:
+                                return False, "steamwebhelper.exe not spawned yet"
+                            # Check connection_log for [Logged On] AFTER our launch
+                            if not connection_log_path.exists():
+                                return False, "connection_log.txt absent (Steam still bootstrapping)"
+                            try:
+                                # Read just the tail (last 50 lines is plenty)
+                                with connection_log_path.open("rb") as f:
+                                    try:
+                                        f.seek(0, 2)
+                                        size = f.tell()
+                                        f.seek(max(0, size - 16384))
+                                    except Exception:
+                                        pass
+                                    tail = f.read().decode("utf-8", errors="ignore")
+                                # Look for [Logged On with a timestamp newer than
+                                # our launch (Steam logs use "YYYY-MM-DD HH:MM:SS")
+                                # Any "[Logged On," line in the tail means Steam
+                                # has authenticated at some point in this session.
+                                if "[Logged On," in tail or "[Logged On, " in tail:
+                                    return True, "Steam authenticated ([Logged On] in connection_log)"
+                                # If still updating/connecting, we see other states
+                                if "[Logging On," in tail:
+                                    return False, "Steam in [Logging On] (auth in progress)"
+                                if "[Connecting," in tail:
+                                    return False, "Steam in [Connecting] (still bootstrapping)"
+                                if "[Logged Off, 0, 0]" in tail:
+                                    return False, "Steam [Logged Off] (cached creds expired? user must sign in)"
+                                return False, "connection_log present but no known state"
+                            except Exception as exc:
+                                return False, f"connection_log read failed: {exc}"
+
+                        ready = False
+                        last_status = ""
+                        for waited in range(5, 245, 5):
+                            time.sleep(5)
+                            ok, status = _steam_fully_ready()
+                            if status != last_status:
+                                log(f"wine_d3dmetal: Steam ready-check t={waited}s: {status}")
+                                last_status = status
+                            if ok:
+                                log(f"wine_d3dmetal: Steam FULLY ready after {waited}s")
+                                ready = True
+                                # tiny extra wait for steamclient IPC pipe to bind
+                                time.sleep(3)
+                                break
+                            # Special-case: if we see [Logged Off] explicitly,
+                            # waiting longer won't help — Steam needs user to
+                            # sign in via UI. Bail out early and let cs2 show
+                            # its error (or the user manually signs in).
+                            if "Logged Off" in status and waited > 60:
+                                log(f"wine_d3dmetal: Steam stuck in [Logged Off] at t={waited}s — "
+                                    f"cached creds invalid. User must sign into Steam UI manually. "
+                                    f"Launching cs2 anyway; it will show 'FATAL ERROR: ...' until "
+                                    f"the user signs in.")
+                                break
+                        if not ready:
+                            log("wine_d3dmetal: Steam not fully ready after 240s — launching game anyway "
+                                "(SteamAPI_Init will likely fail with FATAL ERROR; sign into Steam UI manually)")
+                    except Exception as exc:
+                        log(f"wine_d3dmetal: Steam auto-launch failed: {exc} (continuing anyway)")
+
     # Find wine binary (may be overridden by backend)
     wine = _backend_wine_binary(backend, exe) or _find_wine()
     if not wine:
@@ -1299,6 +1802,24 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     env = _wine_env(prefix)
     env = _apply_backend_env(env, backend)
     env = _apply_sync_env(env, esync, msync)
+
+    # Per-engine shim toggle for wine-d3dmetal. cs2/Source2 NEED the pthread
+    # shim's mach-exc handler to survive D3DMetal init (per project memory:
+    # feedback_cs2_use_pthread_min_shim). UE5 games (LyraGame, Galacticverse,
+    # any *-Win64-Shipping.exe) hit the OPPOSITE wall — shim's PATCH-027
+    # parks threads on the NSAccessibility crash chain, leaking locks and
+    # making the app unresponsive. Confirmed 2026-05-23: shim OFF → Lyra
+    # reaches D3D12 commands + Steam IPC + ~1.5 GB engine load.
+    if backend == BACKEND_WINE_D3DMETAL:
+        exe_name_lower = exe_path.name.lower()
+        is_ue5 = (
+            exe_name_lower.endswith("-win64-shipping.exe")
+            or exe_name_lower.endswith("-win64-shippinguncooked.exe")
+            or exe_name_lower.endswith("-shipping.exe")
+        )
+        if is_ue5:
+            env["WINE_D3DMETAL_USE_PTHREAD_SHIM"] = "0"
+            log(f"wine-d3dmetal: UE5 game detected ({exe_path.name}) — disabling pthread shim")
 
     if metal_hud:
         env["MTL_HUD_ENABLED"] = "1"
@@ -1988,6 +2509,7 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
         {"id": BACKEND_VKD3D, "label": "VKD3D-Proton (D3D12)", "available": _vkd3d_available()},
         {"id": BACKEND_DXMT, "label": "DXMT (experimental)", "available": _dxmt_available()},
         {"id": BACKEND_D3DMETAL3, "label": "D3DMetal (injection, recommended)", "available": _d3dmetal3_available()},
+        {"id": BACKEND_WINE_D3DMETAL, "label": "Wine D3DMetal (CS2/Source 2, auto-launches Steam)", "available": _wine_d3dmetal_installed()},
         {"id": BACKEND_GPTK, "label": "GPTK (D3DMetal, copy DLLs)", "available": _gptk_available()},
         {"id": BACKEND_GPTK_FULL, "label": "GPTK Full (Apple Toolkit)", "available": _gptk_full_available()},
     ]
@@ -2170,12 +2692,14 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
     has_dxvk32 = (dxvk32_install / "bin" / "d3d11.dll").exists()
     has_wine_stable = _find_wine_stable() is not None
     has_wine_staging = _find_wine_staging() is not None
+    has_wine_d3dmetal = _wine_d3dmetal_installed()
     wine_version = _get_wine_version()
     return {
         "has_tools": has_tools,
-        "has_wine": has_wine_stable or has_wine_staging,
+        "has_wine": has_wine_stable or has_wine_staging or has_wine_d3dmetal,
         "has_wine_stable": has_wine_stable,
         "has_wine_staging": has_wine_staging,
+        "has_wine_d3dmetal": has_wine_d3dmetal,
         "has_mesa": _mesa_available(),
         "has_dxvk64": _dxvk_available(),
         "has_dxvk32": has_dxvk32,
@@ -2185,6 +2709,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
         "has_rpc_bridge": _rpc_bridge_available(),
+        "has_wineopenxr": _wineopenxr_available(),
     }
 
 
@@ -2292,6 +2817,7 @@ def _installed_wine_apps() -> List[Dict[str, Any]]:
     for label, dirname, finder in (
         ("Stable", "Wine Stable.app", _find_wine_stable),
         ("Staging", "Wine Staging.app", _find_wine_staging),
+        ("D3DMetal", "Wine D3DMetal.app", _find_wine_d3dmetal),
     ):
         app_dir = PORTABLE_DIR / dirname
         if not app_dir.exists():
