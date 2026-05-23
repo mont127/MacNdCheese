@@ -1,6 +1,10 @@
 import SwiftUI
 import AppKit
 
+extension Notification.Name {
+    static let createNewBottle = Notification.Name("MacNCheese.createNewBottle")
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -31,5 +35,18 @@ struct MacNCheeseApp: App {
         }
         .windowStyle(.automatic)
         .defaultSize(width: 1100, height: 760)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Bottle…") {
+                    NotificationCenter.default.post(name: .createNewBottle, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+        }
+
+        Settings {
+            SettingsSheet()
+                .environmentObject(backend)
+        }
     }
 }

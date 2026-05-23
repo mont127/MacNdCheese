@@ -8,6 +8,7 @@ final class AnnouncementChecker: ObservableObject {
     private static nonisolated let lastShownKey = "MacNCheese.LastShownAnnouncementID"
 
     @Published var hasNewAnnouncement = false
+    @Published var currentId: String = ""
     @Published var title: String = ""
     @Published var htmlContent: String = ""
     @Published var plainTextContent: String = ""
@@ -40,12 +41,12 @@ final class AnnouncementChecker: ObservableObject {
                 let plain = Self.htmlToPlain(entry.htmlContent)
 
                 await MainActor.run {
+                    self.currentId = entry.id
                     self.title = entry.title
                     self.htmlContent = entry.htmlContent
                     self.plainTextContent = plain
                     self.url = entry.url
                     self.publishedDate = entry.published
-                    
                     self.hasNewAnnouncement = true
                 }
             } catch {

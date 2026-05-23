@@ -104,6 +104,8 @@ struct ComponentsStatus: Codable {
     let hasGptkDlls: Bool
     let hasD3dMetal3: Bool
     let hasVkd3d: Bool
+    let hasWineD3DMetal: Bool
+    let hasWineOpenXR: Bool
     let wineVersion: String?
 
     enum CodingKeys: String, CodingKey {
@@ -118,6 +120,8 @@ struct ComponentsStatus: Codable {
         case hasGptkDlls = "has_gptk_dlls"
         case hasD3dMetal3 = "has_d3dmetal3"
         case hasVkd3d = "has_vkd3d"
+        case hasWineD3DMetal = "has_wine_d3dmetal"
+        case hasWineOpenXR = "has_wineopenxr"
         case wineVersion = "wine_version"
     }
 }
@@ -136,6 +140,36 @@ struct InstallProgress: Codable {
         case failed
         case current
     }
+}
+
+struct CheeseDiagnosis: Codable {
+    let summary: String
+    let generatedAt: String
+    let checks: [CheeseDiagnosticCheck]
+    let repairs: [CheeseRepairAction]
+
+    enum CodingKeys: String, CodingKey {
+        case summary
+        case generatedAt = "generated_at"
+        case checks
+        case repairs
+    }
+}
+
+struct CheeseDiagnosticCheck: Identifiable, Codable {
+    let id: String
+    let status: String
+    let title: String
+    let message: String
+    let details: String
+}
+
+struct CheeseRepairAction: Identifiable, Codable {
+    let id: String
+    let title: String
+    let details: String
+    let recommended: Bool
+    let destructive: Bool
 }
 
 struct UpdateInfo: Codable {

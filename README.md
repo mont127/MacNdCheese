@@ -118,14 +118,9 @@ Because setting this up manually is painful, repetitive, and full of obscure com
 - macOS with [Homebrew](https://brew.sh/) installed
 - Xcode Command Line Tools (`xcode-select --install`)
 
-**Run from source:** (Outdated)
+**Run from source:**
 ```bash
-git clone https://github.com/mont127/MacNdCheese/
-cd MacNdCheese
-uv venv
-source .venv/bin/activate
-uv pip install -r ./requirements.txt
-uv run MacNCheese.py
+bash install.sh
 ```
 
 **Manual full setup (the hard way):**

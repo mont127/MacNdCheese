@@ -3,9 +3,9 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var backend: BackendClient
     @EnvironmentObject var announcements: AnnouncementChecker
+    @Environment(\.openSettings) private var openSettings
     @State private var searchText = ""
     @State private var showCreateBottle = false
-    @State private var showSettings = false
     @State private var showAnnouncement = false
     @State private var showStore = false
     @State private var newBottleName = ""
@@ -20,37 +20,58 @@ struct ContentView: View {
         return backend.bottles.first { $0.path == prefix }
     }
 
+    private var detailTitle: String {
+        if showStore { return "Store" }
+        if let bottle = activeBottle { return bottle.name }
+        return "MacNCheese"
+    }
+
+    private var detailSubtitle: String {
+        if showStore || backend.activePrefix == nil { return "" }
+        return "Library"
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
         } detail: {
             ZStack {
-
                 Color.clear
 
                 if showStore {
                     StoreView()
+                        .transition(.opacity)
                 } else if backend.activePrefix == nil {
-                    NoPrefixView()
+                    NoPrefixView(showCreateBottle: $showCreateBottle)
+                        .transition(.opacity)
                 } else if backend.games.isEmpty {
                     if activeBottle?.isSteamBottle ?? true {
                         SteamLandingView()
+                            .transition(.opacity)
                     } else {
                         EmptyBottleLandingView()
+                            .transition(.opacity)
                     }
                 } else {
                     GameGridView(games: filteredGames, searchText: $searchText)
+                        .transition(.opacity)
                 }
             }
-            .background(.ultraThinMaterial)
+            .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
+            .animation(.easeInOut(duration: 0.22), value: showStore)
+            .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
+            .background(Color(.windowBackgroundColor))
+            .navigationTitle(detailTitle)
+            .navigationSubtitle(detailSubtitle)
         }
         .onChange(of: backend.activePrefix) { _, _ in showStore = false }
         .navigationSplitViewStyle(.balanced)
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search games")
+        .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
+            showCreateBottle = true
+        }
         .sheet(isPresented: $showCreateBottle) {
             CreateBottleSheet()
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsSheet()
         }
         .sheet(isPresented: $showAnnouncement) {
             AnnouncementSheet(checker: announcements)
@@ -60,15 +81,27 @@ struct ContentView: View {
             // doesn't draw a highlighted bottle row.
             if isStore { /* no-op */ }
         }
-        .onChange(of: announcements.hasNewAnnouncement) { _, hasNew in
-            if hasNew { showAnnouncement = true }
-        }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
+            ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showSettings = true
+                    openSettings()
                 } label: {
                     Image(systemName: "gear")
+                }
+                .help("Settings")
+                .accessibilityLabel("Settings")
+            }
+
+            if announcements.hasNewAnnouncement {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showAnnouncement = true
+                    } label: {
+                        Image(systemName: "bell.badge.fill")
+                            .symbolRenderingMode(.multicolor)
+                    }
+                    .help("New Announcement")
+                    .accessibilityLabel("New Announcement")
                 }
             }
         }
@@ -95,20 +128,23 @@ struct SteamLandingView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            
             Image(systemName: "gamecontroller.fill")
                 .font(.system(size: 80))
-                .foregroundStyle(.cyan.opacity(0.8))
+                .foregroundStyle(Color.accentColor.opacity(0.8))
                 .padding(.bottom, 8)
 
             Text(customExeName?.uppercased() ?? "STEAM")
-                .font(.system(size: 48, weight: .bold, design: .default))
+                .font(.system(.largeTitle, design: .default).weight(.bold))
                 .tracking(4)
                 .foregroundStyle(.primary)
 
+            Text(customExeName != nil ? "Launch to browse your games." : "Launch Steam to browse and install games.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
             Spacer().frame(height: 32)
 
-            
             Button {
                 guard let prefix = backend.activePrefix else { return }
                 if backend.steamRunning {
@@ -137,13 +173,12 @@ struct SteamLandingView: View {
                 .frame(width: 160, height: 44)
             }
             .buttonStyle(.borderedProminent)
-            .tint(backend.steamRunning ? .red : .cyan)
+            .tint(backend.steamRunning ? .red : Color.accentColor)
             .controlSize(.large)
             .disabled(backend.activePrefix == nil || isLaunching)
 
             Spacer().frame(height: 32)
 
-            
             HStack(spacing: 12) {
                 Button("Run Installer") {
                     let panel = NSOpenPanel()
@@ -185,16 +220,23 @@ struct SteamLandingView: View {
 }
 
 struct NoPrefixView: View {
+    @Binding var showCreateBottle: Bool
+
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "plus.circle")
                 .font(.system(size: 56))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accentColor.opacity(0.8))
             Text("No bottle selected")
                 .font(.title)
                 .fontWeight(.bold)
             Text("Create a bottle to get started.")
                 .foregroundStyle(.secondary)
+            Button("Create Bottle") {
+                showCreateBottle = true
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -224,7 +266,7 @@ struct EmptyBottleLandingView: View {
             Spacer()
             Image(systemName: "wineglass")
                 .font(.system(size: 72))
-                .foregroundStyle(.cyan.opacity(0.8))
+                .foregroundStyle(Color.accentColor.opacity(0.8))
                 .padding(.bottom, 12)
             Text("No Games")
                 .font(.title)
@@ -257,7 +299,7 @@ struct EmptyBottleLandingView: View {
                     .frame(minWidth: 160)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(backend.steamRunning ? .red : .cyan)
+                .tint(backend.steamRunning ? .red : Color.accentColor)
                 .controlSize(.large)
                 .disabled(isLaunching)
                 Spacer().frame(height: 20)
@@ -272,8 +314,7 @@ struct EmptyBottleLandingView: View {
                         Task { await backend.launchGame(prefix: prefix, exe: url.path) }
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.cyan)
+                .buttonStyle(.bordered)
                 .controlSize(.large)
 
                 Button("Add Game") {
@@ -292,7 +333,7 @@ struct EmptyBottleLandingView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The compatibility list is updated on the Discord server. Launch the launcher anyway?")
+            Text("The compatibility list may have changed. Launch the launcher anyway?")
         }
     }
 
