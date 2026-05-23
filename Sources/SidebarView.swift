@@ -3,6 +3,7 @@ import SwiftUI
 struct SidebarView: View {
     @EnvironmentObject var backend: BackendClient
     @Binding var showCreateBottle: Bool
+    @Binding var showStore: Bool
     @State private var confirmDelete: Bottle?
 
     var body: some View {
@@ -36,14 +37,26 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .navigationTitle("MacNCheese")
         .safeAreaInset(edge: .bottom) {
-            Button {
-                showCreateBottle = true
-            } label: {
-                Label("New Bottle", systemImage: "plus")
-                    .frame(maxWidth: .infinity)
+            VStack(spacing: 8) {
+                Button {
+                    showStore = true
+                } label: {
+                    Label("Store", systemImage: "storefront")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(.cyan)
+
+                Button {
+                    showCreateBottle = true
+                } label: {
+                    Label("New Bottle", systemImage: "plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
             .padding()
         }
         .alert("Delete Bottle?", isPresented: Binding(
@@ -100,7 +113,7 @@ struct BottleRow: View {
     }
 
     private func loadIcon() async {
-        // 1. Custom icon PNG
+        
         if let iconPath = bottle.iconPath, !iconPath.isEmpty,
            FileManager.default.fileExists(atPath: iconPath),
            let img = NSImage(contentsOfFile: iconPath) {
@@ -108,7 +121,7 @@ struct BottleRow: View {
             return
         }
 
-        // 2. Determine exe to extract icon from
+        
         let exePath: String
         if let exe = bottle.launcherExe, !exe.isEmpty {
             exePath = exe
@@ -119,14 +132,14 @@ struct BottleRow: View {
         }
         guard FileManager.default.fileExists(atPath: exePath) else { return }
 
-        // 3. Ask backend to extract Windows icon from the PE
+       
         if let icoData = await backend.getExeIcon(exe: exePath),
            let img = NSImage(data: icoData) {
             exeIcon = img
             return
         }
 
-        // 4. Fallback: macOS file icon
+        
         exeIcon = NSWorkspace.shared.icon(forFile: exePath)
     }
 
