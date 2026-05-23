@@ -82,6 +82,7 @@ struct SettingsSheet: View {
                 Text("Bottle").tag("bottle")
                 Text("Paths").tag("paths")
                 Text("Setup").tag("setup")
+                Text("D3DMetal").tag("d3dmetal")
                 Text("Diagnose").tag("diagnose")
                 Text("Logs").tag("logs")
             }
@@ -96,6 +97,7 @@ struct SettingsSheet: View {
                 case "bottle": BottleSettingsTab()
                 case "paths": PathsSettingsTab()
                 case "setup": SetupSettingsTab()
+                case "d3dmetal": D3DMetalSettingsTab()
                 case "diagnose": DiagnoseSettingsTab()
                 case "logs": LogsSettingsTab()
                 default: EmptyView()
@@ -105,6 +107,151 @@ struct SettingsSheet: View {
         }
         .frame(width: 680, height: 620)
         .background(.ultraThinMaterial)
+    }
+}
+
+private struct D3DMetalKnob: Identifiable {
+    let id: String
+    let label: String
+    let help: String
+    let defaultValue: Bool
+    let danger: String?
+}
+
+private let d3dmetalKnobs: [D3DMetalKnob] = [
+    .init(id: "WINE_D3DMETAL_055D_CIRCUIT_BREAKER",
+          label: "Kernel-safety circuit breaker",
+          help: "MUST be ON. Without this, the shim leaks mach exception ports into the kernel data.kalloc.512 zone; after 5–15 min the Mac KERNEL PANICS.",
+          defaultValue: true,
+          danger: "Disabling can KERNEL PANIC your Mac"),
+    .init(id: "WINE_D3DMETAL_USE_PTHREAD_SHIM",
+          label: "pthread / mach-exc shim",
+          help: "Required for cs2 / Source 2. Auto-disabled for UE5 -Win64-Shipping.exe games (where it breaks Lyra-class titles).",
+          defaultValue: true, danger: nil),
+    .init(id: "WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE",
+          label: "pthread self-interpose",
+          help: "OFF for cs2 (shim's SIGSEGV handler kills wineboot/Steam). Rarely needs to be ON.",
+          defaultValue: false, danger: nil),
+    .init(id: "WINE_D3DMETAL_USE_IOKIT_OBSERVER",
+          label: "IOKit setQueue observer",
+          help: "Off — observer caused a vectored-handlers deadlock in cs2. Shim handles AGX nulls itself.",
+          defaultValue: false, danger: nil),
+    .init(id: "WINE_D3DMETAL_NO_PATCH058",
+          label: "Disable PATCH-058 (WEC wake synth)",
+          help: "PATCH-058 writes 1 to callback slots; cs2 then calls 1 as a function pointer and crashes. Keep disabled.",
+          defaultValue: true, danger: nil),
+    .init(id: "WINE_D3DMETAL_NO_PATCH044V2",
+          label: "Disable PATCH-044 v2 (bogus-stack abort)",
+          help: "Stops the early abort that nukes cs2 during init.",
+          defaultValue: true, danger: nil),
+    .init(id: "WINE_D3DMETAL_NO_PATCH051",
+          label: "Disable PATCH-051 (libd3dshared 16ms poll)",
+          help: "Without this, D3DMetalWineThread busy-loops at ~100 % CPU. Native blocking is more efficient.",
+          defaultValue: true, danger: nil),
+    .init(id: "WINE_D3DMETAL_FORCE_VISIBLE",
+          label: "Force visible windows",
+          help: "Make D3DMetal-spawned game windows visible (otherwise some are created with onscreen=0).",
+          defaultValue: true, danger: nil),
+    .init(id: "WINE_D3DMETAL_NULL_FP_SKIP",
+          label: "Skip handlers triggered by NULL FP",
+          help: "Skips fault handlers that fire constantly during cs2 init.",
+          defaultValue: true, danger: nil),
+    .init(id: "DONT_BREAK_ON_ASSERT",
+          label: "Suppress Steam client asserts",
+          help: "Stops tier0_s64.dll from breaking into the assert dialog (notably BMainLoop watchdog at >15 s IPC stall).",
+          defaultValue: true, danger: nil),
+    .init(id: "WINE_D3DMETAL_NO_STEAM_HACK",
+          label: "Disable Steam-specific HACK 24/25",
+          help: "Stops HACK 24/25 from perturbing Steam's argv when Steam launches in this prefix.",
+          defaultValue: true, danger: nil),
+    .init(id: "WINE_D3DMETAL_SKIP_WINEBOOT",
+          label: "Skip wineboot on launch",
+          help: "Assumes the prefix is initialized. Avoids the wineserver crash that happens when wineboot tries to take over an already-running wineserver in the same prefix.",
+          defaultValue: true, danger: nil),
+]
+
+struct D3DMetalSettingsTab: View {
+    @EnvironmentObject var backend: BackendClient
+    @State private var values: [String: Bool] = [:]
+    @State private var loaded = false
+    @State private var saving = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "cube.transparent")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Wine D3DMetal Knobs")
+                            .font(.title3).fontWeight(.semibold)
+                        Text("Per-launch env vars passed to the wine-d3dmetal backend. These defaults reflect the proven-good combo for cs2 + UE5. Touch only if you know what you're doing.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button("Reset all to defaults") {
+                    for k in d3dmetalKnobs { values[k.id] = k.defaultValue }
+                    save()
+                }
+                .controlSize(.small)
+
+                Divider()
+
+                ForEach(d3dmetalKnobs) { knob in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle(isOn: Binding(
+                            get: { values[knob.id] ?? knob.defaultValue },
+                            set: { newVal in
+                                values[knob.id] = newVal
+                                save()
+                            }
+                        )) {
+                            HStack {
+                                Text(knob.label).font(.callout).fontWeight(.medium)
+                                if let danger = knob.danger {
+                                    Text(danger)
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(.red.opacity(0.12), in: .capsule)
+                                }
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        Text(knob.help)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(knob.id)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                }
+            }
+            .padding(20)
+        }
+        .task {
+            if !loaded {
+                if let cfg = await backend.getD3DMetalSettings() {
+                    values = cfg
+                }
+                loaded = true
+            }
+        }
+    }
+
+    private func save() {
+        guard loaded else { return }
+        saving = true
+        Task {
+            await backend.setD3DMetalSettings(values)
+            saving = false
+        }
     }
 }
 
@@ -448,21 +595,25 @@ struct SetupSettingsTab: View {
     @State private var wantTools = false
     @State private var wantWineStable = false
     @State private var wantWineStaging = false
+    @State private var wantWineD3DMetal = false
     @State private var wantDxvk = false
     @State private var wantVkd3d = false
     @State private var wantGptkDlls = false
     @State private var wantDxmt = false
     @State private var wantMesa = false
+    @State private var wantWineOpenXR = false
 
     // Baseline installed state (used to detect installs vs uninstalls)
     @State private var hadTools = false
     @State private var hadWineStable = false
     @State private var hadWineStaging = false
+    @State private var hadWineD3DMetal = false
     @State private var hadDxvk = false
     @State private var hadVkd3d = false
     @State private var hadGptkDlls = false
     @State private var hadDxmt = false
     @State private var hadMesa = false
+    @State private var hadWineOpenXR = false
 
     // Update availability per component
     @State private var toolsHasUpdate = false
@@ -529,6 +680,11 @@ struct SetupSettingsTab: View {
                                           isOn: $wantWineStaging,
                                           installed: hadWineStaging, updateAvailable: wineStagingHasUpdate)
                             .disabled(isRunning)
+                        ComponentToggleRow("Wine D3DMetal (MNC HACK 22 v3, ~473 MB)",
+                                          isOn: $wantWineD3DMetal,
+                                          installed: hadWineD3DMetal)
+                            .disabled(isRunning)
+                            .help("Patched Wine 11.0 that removes the gs.base swap so D3D11/12 games can talk to Apple's D3DMetal framework. Bundled with the app — unzips on install.")
                     }
                     .padding(8)
                 }
@@ -546,6 +702,17 @@ struct SetupSettingsTab: View {
                             .disabled(isRunning)
                         ComponentToggleRow("Mesa", isOn: $wantMesa, installed: hadMesa)
                             .disabled(isRunning)
+                    }
+                    .padding(8)
+                }
+
+                GroupBox("VR") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ComponentToggleRow("wineopenxr (D3D11 OpenXR bridge, builds from source)",
+                                          isOn: $wantWineOpenXR,
+                                          installed: hadWineOpenXR)
+                            .disabled(isRunning)
+                            .help("Clones monofunc/wineopenxr, builds it (needs cmake + mingw-w64), and registers it as the active OpenXR runtime so D3D11 OpenXR apps can talk to a native macOS OpenXR runtime via DXMT.")
                     }
                     .padding(8)
                 }
@@ -626,10 +793,12 @@ struct SetupSettingsTab: View {
                 hadTools = status.hasTools;             wantTools = status.hasTools
                 hadWineStable = status.hasWineStable;   wantWineStable = status.hasWineStable
                 hadWineStaging = status.hasWineStaging; wantWineStaging = status.hasWineStaging
+                hadWineD3DMetal = status.hasWineD3DMetal; wantWineD3DMetal = status.hasWineD3DMetal
                 hadDxvk = status.hasDxvk64;             wantDxvk = status.hasDxvk64
                 hadVkd3d = status.hasVkd3d;             wantVkd3d = status.hasVkd3d
                 hadGptkDlls = status.hasGptkDlls;       wantGptkDlls = status.hasGptkDlls
                 hadDxmt = status.hasDxmt;               wantDxmt = status.hasDxmt
+                hadWineOpenXR = status.hasWineOpenXR;   wantWineOpenXR = status.hasWineOpenXR
                 hadMesa = status.hasMesa;               wantMesa = status.hasMesa
             }
             isLoadingStatus = false
@@ -667,11 +836,14 @@ struct SetupSettingsTab: View {
         plan(wantTools,       hadTools,       install: "install_tools",        uninstall: "uninstall_tools")
         plan(wantWineStable,  hadWineStable,  install: "install_wine",         uninstall: "uninstall_wine")
         plan(wantWineStaging, hadWineStaging, install: "install_wine_staging", uninstall: "uninstall_wine_staging")
+        plan(wantWineD3DMetal, hadWineD3DMetal,
+             install: "install_wine_d3dmetal", uninstall: "uninstall_wine_d3dmetal")
         plan(wantDxvk,        hadDxvk,        install: "install_dxvk",         uninstall: "uninstall_dxvk")
         plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
         plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
         plan(wantDxmt,        hadDxmt,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
         plan(wantMesa,        hadMesa,        install: "install_mesa",         uninstall: "uninstall_mesa")
+        plan(wantWineOpenXR,  hadWineOpenXR,  install: "install_wineopenxr",   uninstall: "uninstall_wineopenxr")
 
         let allActions = uninstallActions + installActions
         guard !allActions.isEmpty else { return }
@@ -1121,7 +1293,7 @@ struct RepairActionRow: View {
     }
 }
 
-// MARK: - Logs Tab
+
 
 struct LogsSettingsTab: View {
     @EnvironmentObject var backend: BackendClient
@@ -1150,7 +1322,7 @@ struct LogsSettingsTab: View {
                 .controlSize(.small)
             }
 
-            // Log file picker
+           
             if !logFiles.isEmpty {
                 Picker("Log file:", selection: Binding(
                     get: { selectedLog ?? "" },
@@ -1163,7 +1335,7 @@ struct LogsSettingsTab: View {
                 .labelsHidden()
             }
 
-            // Log content
+          
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(logText.isEmpty ? "No log content. Launch a game first." : logText)
@@ -1221,16 +1393,16 @@ struct LogsSettingsTab: View {
             result.append(contentsOf: sorted.map { (name: prefix + $0, path: dir + "/" + $0) })
         }
 
-        // App log first
+        
         let appLog = logDir + "/macncheese.log"
         if fm.fileExists(atPath: appLog) {
             result.append((name: "macncheese.log (app)", path: appLog))
         }
 
-        // Wine logs
+    
         addFiles(in: logDir, prefix: "") { $0.hasSuffix("-wine.log") }
 
-        // DXVK sublogs
+        
         addFiles(in: logDir + "/dxvk", prefix: "dxvk/") { $0.hasSuffix(".log") }
 
         logFiles = result
@@ -1261,7 +1433,7 @@ struct LogsSettingsTab: View {
     }
 }
 
-// MARK: - Shared Components
+
 
 struct SettingsRow<Content: View>: View {
     let label: String
