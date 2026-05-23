@@ -2,10 +2,17 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var backend: BackendClient
+    @EnvironmentObject var announcements: AnnouncementChecker
     @State private var searchText = ""
     @State private var showCreateBottle = false
     @State private var showSettings = false
+    @State private var showAnnouncement = false
     @State private var newBottleName = ""
+
+    var filteredGames: [Game] {
+        if searchText.isEmpty { return backend.games }
+        return backend.games.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -17,7 +24,7 @@ struct ContentView: View {
             SidebarView(showCreateBottle: $showCreateBottle)
         } detail: {
             ZStack {
-                // Transparent base so the window vibrancy shows
+                
                 Color.clear
 
                 if backend.activePrefix == nil {
@@ -29,7 +36,7 @@ struct ContentView: View {
                         EmptyBottleLandingView()
                     }
                 } else {
-                    GameGridView(games: backend.games, searchText: $searchText)
+                    GameGridView(games: filteredGames, searchText: $searchText)
                 }
             }
             .background(.ultraThinMaterial)
@@ -40,6 +47,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsSheet()
+        }
+        .sheet(isPresented: $showAnnouncement) {
+            AnnouncementSheet(checker: announcements)
+        }
+        .onChange(of: announcements.hasNewAnnouncement) { _, hasNew in
+            if hasNew { showAnnouncement = true }
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -53,7 +66,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Steam Landing
+
 
 struct SteamLandingView: View {
     @EnvironmentObject var backend: BackendClient
@@ -73,7 +86,7 @@ struct SteamLandingView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            // Steam icon
+            
             Image(systemName: "gamecontroller.fill")
                 .font(.system(size: 80))
                 .foregroundStyle(.cyan.opacity(0.8))
@@ -86,7 +99,7 @@ struct SteamLandingView: View {
 
             Spacer().frame(height: 32)
 
-            // Big launch button
+            
             Button {
                 guard let prefix = backend.activePrefix else { return }
                 if backend.steamRunning {
@@ -121,7 +134,7 @@ struct SteamLandingView: View {
 
             Spacer().frame(height: 32)
 
-            // Secondary actions
+            
             HStack(spacing: 12) {
                 Button("Run Installer") {
                     let panel = NSOpenPanel()
@@ -181,6 +194,7 @@ struct NoPrefixView: View {
 struct EmptyBottleLandingView: View {
     @EnvironmentObject var backend: BackendClient
     @State private var isLaunching = false
+    @State private var showCompatibilityListNotice = false
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -219,11 +233,7 @@ struct EmptyBottleLandingView: View {
                             backend.steamRunning = false
                         }
                     } else {
-                        isLaunching = true
-                        Task {
-                            await backend.launchLauncher(prefix: prefix)
-                            isLaunching = false
-                        }
+                        showCompatibilityListNotice = true
                     }
                 } label: {
                     HStack(spacing: 8) {
@@ -266,6 +276,23 @@ struct EmptyBottleLandingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .alert("Compatibility List Update", isPresented: $showCompatibilityListNotice) {
+            Button("Launch") {
+                guard let prefix = backend.activePrefix else { return }
+                launchLauncher(prefix: prefix)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The compatibility list is updated on the Discord server. Launch the launcher anyway?")
+        }
+    }
+
+    private func launchLauncher(prefix: String) {
+        isLaunching = true
+        Task {
+            await backend.launchLauncher(prefix: prefix)
+            isLaunching = false
+        }
     }
 
     private func addManualGame() {
@@ -277,6 +304,55 @@ struct EmptyBottleLandingView: View {
            let prefix = backend.activePrefix {
             let name = url.deletingPathExtension().lastPathComponent
             Task { await backend.addManualGame(prefix: prefix, name: name, exe: url.path) }
+        }
+    }
+}
+
+
+struct ErrorBannerView: View {
+    @EnvironmentObject var backend: BackendClient
+
+    var body: some View {
+        if let error = backend.lastError {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button {
+                    backend.lastError = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.red.opacity(0.5), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .task(id: error) {
+                // Auto-dismiss after 6s. Re-fires if a new error replaces the current one.
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                if !Task.isCancelled && backend.lastError == error {
+                    backend.lastError = nil
+                }
+            }
         }
     }
 }
