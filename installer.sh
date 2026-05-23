@@ -694,76 +694,69 @@ install_dxmt() {
     fi
   done
 
-  # Find the portable Wine's x86_64-unix lib dir to install the .so files
-  wine_unix_lib=""
-  for wine_app in "Wine Staging.app" "Wine Stable.app"; do
-    candidate="$PORTABLE_DIR/$wine_app/Contents/Resources/wine/lib/wine/x86_64-unix"
-    if [ -d "$candidate" ]; then
-      wine_unix_lib="$candidate"
-      break
-    fi
-  done
+  # Collect all installed portable Wine bundles to install DXMT into all of them.
+  # This is necessary because Wine Stable and Wine Staging each have their own
+  # lib directory, and whichever one runs the game must have the DXMT DLLs.
+  found_any_wine=0
+  WINE_ORIG_BACKUP_DIR="$PORTABLE_DIR/.dxmt-wine-backups"
+  mkdir -p "$WINE_ORIG_BACKUP_DIR"
 
-  # Find the portable Wine lib dirs
-  wine_unix_lib=""
-  wine_win64_lib=""
-  for wine_app in "Wine Staging.app" "Wine Stable.app"; do
+  for wine_app in "Wine Stable.app" "Wine Staging.app"; do
     wine_base="$PORTABLE_DIR/$wine_app/Contents/Resources/wine/lib/wine"
-    if [ -d "$wine_base/x86_64-unix" ]; then
-      wine_unix_lib="$wine_base/x86_64-unix"
-      wine_win64_lib="$wine_base/x86_64-windows"
-      break
+    wine_win64_lib="$wine_base/x86_64-windows"
+    wine_unix_lib="$wine_base/x86_64-unix"
+    if [ ! -d "$wine_win64_lib" ] || [ ! -d "$wine_unix_lib" ]; then
+      continue
+    fi
+    found_any_wine=1
+    echo "Installing DXMT into $wine_app..."
+
+    # Backup original Wine PE DLLs (only the first time; skip if already DXMT).
+    for dll in d3d11.dll dxgi.dll d3d10core.dll; do
+      orig="$wine_win64_lib/$dll"
+      backup="$WINE_ORIG_BACKUP_DIR/$dll"
+      if [ -f "$orig" ] && [ ! -f "$backup" ]; then
+        if strings "$orig" 2>/dev/null | grep -qi "winemetal"; then
+          echo "Skipping backup of $dll — already a DXMT DLL"
+        else
+          cp -f "$orig" "$backup"
+          echo "Backed up: $dll"
+        fi
+      fi
+    done
+
+    # Install PE DLLs
+    for dll in d3d11.dll dxgi.dll winemetal.dll d3d10core.dll; do
+      if [ -f "$win64_dir/$dll" ]; then
+        cp -f "$win64_dir/$dll" "$wine_win64_lib/$dll"
+      fi
+    done
+
+    # Install Unix bridge and codesign it
+    if [ -n "$unix64_dir" ]; then
+      cp -f "$unix64_dir"/*.so "$wine_unix_lib/" 2>/dev/null || true
+      find "$wine_unix_lib" -name "winemetal.so" \
+        -exec /usr/bin/codesign --force --sign - --timestamp=none {} \; 2>/dev/null || true
     fi
   done
 
-  if [ -z "$wine_unix_lib" ] || [ -z "$wine_win64_lib" ]; then
+  if [ "$found_any_wine" = "0" ]; then
     echo "ERROR: Could not find portable Wine lib dirs — install Wine Stable or Staging first"
     exit 1
   fi
 
-  # Backup original Wine PE DLLs into a stable directory before overwriting.
-  # We skip a DLL if it already looks like a DXMT file (contains "winemetal" strings),
-  # which handles the case where DXMT was installed before backup logic existed.
-  WINE_ORIG_BACKUP_DIR="$PORTABLE_DIR/.dxmt-wine-backups"
-  mkdir -p "$WINE_ORIG_BACKUP_DIR"
-  echo "Backing up original Wine DLLs to $WINE_ORIG_BACKUP_DIR..."
-  for dll in d3d11.dll dxgi.dll d3d10core.dll; do
-    orig="$wine_win64_lib/$dll"
-    backup="$WINE_ORIG_BACKUP_DIR/$dll"
-    if [ -f "$orig" ] && [ ! -f "$backup" ]; then
-      # Skip if the file is already a DXMT DLL (no backup would be valid)
-      if strings "$orig" 2>/dev/null | grep -qi "winemetal"; then
-        echo "Skipping backup of $dll — already a DXMT DLL (no original available)"
-      else
-        cp -f "$orig" "$backup"
-        echo "Backed up: $dll"
-      fi
-    fi
-  done
-
-  # This is a builtin-dll build: PE DLLs replace Wine's own in its lib directory
-  echo "Installing DXMT PE DLLs into Wine x86_64-windows lib..."
-  for dll in d3d11.dll dxgi.dll winemetal.dll d3d10core.dll; do
-    if [ -f "$win64_dir/$dll" ]; then
-      cp -f "$win64_dir/$dll" "$wine_win64_lib/$dll"
-    fi
-  done
-
-  # Install the Unix bridge (.so) into Wine's x86_64-unix lib
-  echo "Installing DXMT Unix bridge (winemetal.so) into Wine x86_64-unix lib..."
-  cp -f "$unix64_dir"/*.so "$wine_unix_lib/" 2>/dev/null || true
-
-  # Codesign the .so files so macOS will load them
-  echo "Codesigning DXMT bridge files..."
-  find "$wine_unix_lib" -name "winemetal.so" -exec /usr/bin/codesign --force --sign - --timestamp=none {} \; 2>/dev/null || true
-
-  # Also keep a copy in DXMT_DIR so _dxmt_available() detection works
+  # Also keep a copy in DXMT_DIR so _dxmt_available() detection works,
+  # and so the per-launch sync in backend_server.py can update Wine's lib.
   mkdir -p "$DXMT_DIR"
   for dll in d3d11.dll dxgi.dll winemetal.dll d3d10core.dll; do
     if [ -f "$win64_dir/$dll" ]; then
       cp -f "$win64_dir/$dll" "$DXMT_DIR/$dll"
     fi
   done
+  # Also store the Unix bridge .so so it can be re-synced on game launch.
+  if [ -n "$unix64_dir" ]; then
+    cp -f "$unix64_dir"/*.so "$DXMT_DIR/" 2>/dev/null || true
+  fi
 
   write_component_version "dxmt" "$dxmt_tag"
   echo "DXMT $dxmt_tag installed successfully"

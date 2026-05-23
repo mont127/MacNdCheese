@@ -238,7 +238,7 @@ struct GameLaunchSheet: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(effectiveExe.isEmpty || isLaunching)
+                    .disabled((game.epicAppName == nil && effectiveExe.isEmpty) || isLaunching)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -315,26 +315,39 @@ struct GameLaunchSheet: View {
 
     private func launchGame() {
         guard let prefix = backend.activePrefix else { return }
-        let exe = effectiveExe
-        guard !exe.isEmpty else { return }
         isLaunching = true
         Task {
             await saveGameConfig()
             let sync = normalizedSyncSelection()
-            await backend.launchGame(
-                prefix: prefix,
-                exe: exe,
-                args: extraArgs,
-                backend: selectedBackend,
-                installDir: game.installDir,
-                retinaMode: retinaMode,
-                metalHud: metalHud,
-                esync: sync.esync,
-                msync: sync.msync,
-                gameName: game.name,
-                steamAppId: game.appid,
-                customEnv: customEnv
-            )
+            if let appName = game.epicAppName {
+                await backend.epicLaunchGame(
+                    prefix: prefix,
+                    appName: appName,
+                    backend: selectedBackend,
+                    retinaMode: retinaMode,
+                    metalHud: metalHud,
+                    esync: sync.esync,
+                    msync: sync.msync,
+                    customEnv: customEnv
+                )
+            } else {
+                let exe = effectiveExe
+                guard !exe.isEmpty else { isLaunching = false; return }
+                await backend.launchGame(
+                    prefix: prefix,
+                    exe: exe,
+                    args: extraArgs,
+                    backend: selectedBackend,
+                    installDir: game.installDir,
+                    retinaMode: retinaMode,
+                    metalHud: metalHud,
+                    esync: sync.esync,
+                    msync: sync.msync,
+                    gameName: game.name,
+                    steamAppId: game.appid,
+                    customEnv: customEnv
+                )
+            }
             isLaunching = false
             dismiss()
         }

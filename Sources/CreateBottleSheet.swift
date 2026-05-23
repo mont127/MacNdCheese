@@ -38,11 +38,14 @@ struct CreateBottleSheet: View {
                     .foregroundStyle(.secondary)
                 Picker("", selection: $launcherType) {
                     Label("Steam", systemImage: "play.square.stack.fill").tag("steam")
+                    Label("Epic Games", systemImage: "e.circle.fill").tag("epic")
                     Label("None (plain Wine)", systemImage: "wineglass").tag("custom")
                 }
                 .pickerStyle(.segmented)
                 Text(launcherType == "steam"
                      ? "Steam will be used to manage and launch games."
+                     : launcherType == "epic"
+                     ? "Epic Games library via Legendary. Connect your account after creation."
                      : "No launcher – add games manually.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

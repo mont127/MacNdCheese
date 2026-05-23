@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showCreateBottle = false
     @State private var showAnnouncement = false
     @State private var showStore = false
+    @State private var showEpicStore = false
     @State private var newBottleName = ""
 
     var filteredGames: [Game] {
@@ -44,6 +45,9 @@ struct ContentView: View {
                 } else if backend.activePrefix == nil {
                     NoPrefixView(showCreateBottle: $showCreateBottle)
                         .transition(.opacity)
+                } else if activeBottle?.isEpicBottle == true {
+                    EpicLandingView(searchText: $searchText)
+                        .transition(.opacity)
                 } else if backend.games.isEmpty {
                     if activeBottle?.isSteamBottle ?? true {
                         SteamLandingView()
@@ -73,6 +77,9 @@ struct ContentView: View {
         .sheet(isPresented: $showCreateBottle) {
             CreateBottleSheet()
         }
+        .sheet(isPresented: $showEpicStore) {
+            EpicStoreSheet(isPresented: $showEpicStore)
+        }
         .sheet(isPresented: $showAnnouncement) {
             AnnouncementSheet(checker: announcements)
         }
@@ -90,6 +97,17 @@ struct ContentView: View {
                 }
                 .help("Settings")
                 .accessibilityLabel("Settings")
+            }
+
+            if activeBottle?.isEpicBottle == true && backend.epicAuthenticated {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showEpicStore = true
+                    } label: {
+                        Label("Open Store", systemImage: "cart")
+                    }
+                    .help("Open Epic Games Store")
+                }
             }
 
             if announcements.hasNewAnnouncement {
