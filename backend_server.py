@@ -1738,7 +1738,16 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
         )
         if is_ue5:
             env["WINE_D3DMETAL_USE_PTHREAD_SHIM"] = "0"
-            log(f"wine-d3dmetal: UE5 game detected ({exe_path.name}) — disabling pthread shim")
+            env["WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE"] = "0"
+            env["WINE_D3DMETAL_USE_IOKIT_OBSERVER"] = "0"
+            for k in (
+                "WINE_D3DMETAL_055D_CIRCUIT_BREAKER",
+                "WINE_D3DMETAL_NO_PATCH058",
+                "WINE_D3DMETAL_NO_PATCH044V2",
+                "WINE_D3DMETAL_NO_PATCH051",
+            ):
+                env.pop(k, None)
+            log(f"wine-d3dmetal: UE5 game detected ({exe_path.name}) — minimal shim-off env (verified Lyra plays)")
 
     if metal_hud:
         env["MTL_HUD_ENABLED"] = "1"
