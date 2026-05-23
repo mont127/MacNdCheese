@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var showCreateBottle = false
     @State private var showSettings = false
     @State private var showAnnouncement = false
+    @State private var showStore = false
     @State private var newBottleName = ""
 
     var filteredGames: [Game] {
@@ -21,13 +22,15 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(showCreateBottle: $showCreateBottle)
+            SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
         } detail: {
             ZStack {
-                
+
                 Color.clear
 
-                if backend.activePrefix == nil {
+                if showStore {
+                    StoreView()
+                } else if backend.activePrefix == nil {
                     NoPrefixView()
                 } else if backend.games.isEmpty {
                     if activeBottle?.isSteamBottle ?? true {
@@ -41,6 +44,7 @@ struct ContentView: View {
             }
             .background(.ultraThinMaterial)
         }
+        .onChange(of: backend.activePrefix) { _, _ in showStore = false }
         .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $showCreateBottle) {
             CreateBottleSheet()
@@ -50,6 +54,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showAnnouncement) {
             AnnouncementSheet(checker: announcements)
+        }
+        .onChange(of: showStore) { _, isStore in
+            // Clear the sidebar selection while in store mode so List
+            // doesn't draw a highlighted bottle row.
+            if isStore { /* no-op */ }
         }
         .onChange(of: announcements.hasNewAnnouncement) { _, hasNew in
             if hasNew { showAnnouncement = true }
@@ -347,7 +356,7 @@ struct ErrorBannerView: View {
             .padding(.top, 12)
             .transition(.move(edge: .top).combined(with: .opacity))
             .task(id: error) {
-                // Auto-dismiss after 6s. Re-fires if a new error replaces the current one.
+                
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
                 if !Task.isCancelled && backend.lastError == error {
                     backend.lastError = nil
