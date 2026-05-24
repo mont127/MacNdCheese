@@ -116,6 +116,9 @@ struct BottleRow: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 22, height: 22)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else if bottle.isEpicBottle {
+                Image(systemName: "e.circle.fill")
+                    .foregroundStyle(.indigo)
             } else if bottle.isSteamBottle {
                 Image(systemName: "gamecontroller.fill")
                     .foregroundStyle(.blue)

@@ -16,6 +16,9 @@ struct Bottle: Identifiable, Codable, Hashable {
         return lt == "steam"
     }
 
+    /// True when this bottle uses Epic Games (Legendary) as its launcher.
+    var isEpicBottle: Bool { launcherType == "epic" }
+
     enum CodingKeys: String, CodingKey {
         case path, name
         case iconPath = "icon_path"
@@ -34,12 +37,28 @@ struct Game: Identifiable, Codable, Hashable {
     let installDir: String
     let coverUrl: String?
     let isManual: Bool
+    var isInstalled: Bool
+    var epicAppName: String?
 
     enum CodingKeys: String, CodingKey {
         case appid, name, exe
         case installDir = "install_dir"
         case coverUrl = "cover_url"
         case isManual = "is_manual"
+        case isInstalled = "is_installed"
+        case epicAppName = "epic_app_name"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        appid = try c.decode(String.self, forKey: .appid)
+        name = try c.decode(String.self, forKey: .name)
+        exe = try c.decodeIfPresent(String.self, forKey: .exe)
+        installDir = try c.decodeIfPresent(String.self, forKey: .installDir) ?? ""
+        coverUrl = try c.decodeIfPresent(String.self, forKey: .coverUrl)
+        isManual = try c.decodeIfPresent(Bool.self, forKey: .isManual) ?? false
+        isInstalled = try c.decodeIfPresent(Bool.self, forKey: .isInstalled) ?? true
+        epicAppName = try c.decodeIfPresent(String.self, forKey: .epicAppName)
     }
 }
 

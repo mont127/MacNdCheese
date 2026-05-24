@@ -132,7 +132,12 @@ final class BackendClient: ObservableObject {
     func selectBottle(_ path: String) {
         activePrefix = path
         games = []  // clear immediately so stale games don't show for the new bottle
+        let isEpic = bottles.first { $0.path == path }?.isEpicBottle ?? false
         Task {
+            if isEpic {
+                await legendaryStatus()
+                await epicCheckAuth()
+            }
             await scanGames(prefix: path)
         }
     }
@@ -156,6 +161,12 @@ final class BackendClient: ObservableObject {
             lastError = "Failed to launch game: \(error.localizedDescription)"
         }
     }
+
+    @Published var epicAuthenticated = false
+    @Published var epicDisplayName: String? = nil
+    @Published var legendaryInstalled = false
+    @Published var legendaryInstalling = false
+    @Published var epicAuthURL: URL? = nil
 
     @Published var steamRunning = false
     private var steamPollTask: Task<Void, Never>?
@@ -553,6 +564,116 @@ final class BackendClient: ObservableObject {
             lastError = "Failed to detect exes: \(error.localizedDescription)"
         }
         return []
+    }
+
+    // MARK: - Epic Games / Legendary
+
+    func legendaryStatus() async {
+        do {
+            let result = try await send(cmd: "legendary_status")
+            if let dict = result as? [String: Any] {
+                legendaryInstalled = dict["installed"] as? Bool ?? false
+                legendaryInstalling = dict["installing"] as? Bool ?? false
+            }
+        } catch {}
+        if epicAuthURL == nil {
+            do {
+                let result = try await send(cmd: "legendary_get_auth_url")
+                if let dict = result as? [String: Any],
+                   let urlStr = dict["url"] as? String,
+                   let url = URL(string: urlStr) {
+                    epicAuthURL = url
+                }
+            } catch {}
+        }
+    }
+
+    func epicCheckAuth() async {
+        do {
+            let result = try await send(cmd: "legendary_check_auth")
+            if let dict = result as? [String: Any] {
+                epicAuthenticated = dict["authenticated"] as? Bool ?? false
+                epicDisplayName = dict["display_name"] as? String
+            }
+        } catch {}
+    }
+
+    func epicAuth(code: String) async -> (ok: Bool, displayName: String, error: String) {
+        do {
+            let result = try await send(cmd: "legendary_auth", params: ["code": code])
+            if let dict = result as? [String: Any] {
+                return (
+                    dict["ok"] as? Bool ?? false,
+                    dict["display_name"] as? String ?? "",
+                    dict["error"] as? String ?? ""
+                )
+            }
+        } catch {
+            return (false, "", error.localizedDescription)
+        }
+        return (false, "", "Unknown error")
+    }
+
+    func epicInstallGame(prefix: String, appName: String) async -> (pid: Int, logPath: String)? {
+        do {
+            let result = try await send(cmd: "legendary_install_game", params: [
+                "prefix": prefix, "app_name": appName
+            ])
+            if let dict = result as? [String: Any],
+               let pid = dict["pid"] as? Int,
+               let log = dict["log_path"] as? String {
+                return (pid, log)
+            }
+        } catch {
+            lastError = "Failed to install game: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+    func epicInstallProgress(appName: String) async -> (progress: Double, done: Bool, error: String?)? {
+        do {
+            let result = try await send(cmd: "legendary_install_progress", params: ["app_name": appName])
+            if let dict = result as? [String: Any] {
+                return (
+                    dict["progress"] as? Double ?? 0,
+                    dict["done"] as? Bool ?? false,
+                    dict["error"] as? String
+                )
+            }
+        } catch {}
+        return nil
+    }
+
+    func epicCancelInstall(appName: String) async {
+        do {
+            _ = try await send(cmd: "legendary_cancel_install", params: ["app_name": appName])
+        } catch {}
+    }
+
+    func epicLaunchGame(
+        prefix: String,
+        appName: String,
+        backend: String = "auto",
+        retinaMode: Bool = false,
+        metalHud: Bool = false,
+        esync: Bool = true,
+        msync: Bool = true,
+        customEnv: String = ""
+    ) async {
+        do {
+            _ = try await send(cmd: "legendary_launch_game", params: [
+                "app_name": appName,
+                "prefix": prefix,
+                "backend": backend,
+                "retina_mode": retinaMode,
+                "metal_hud": metalHud,
+                "esync": esync,
+                "msync": msync,
+                "custom_env": customEnv,
+            ])
+        } catch {
+            lastError = "Failed to launch \(appName): \(error.localizedDescription)"
+        }
     }
 
     func loadStatus() async {

@@ -22,6 +22,7 @@ _resources_dir = _os.path.dirname(_os.path.abspath(__file__))
 if _resources_dir not in _sys.path:
     _sys.path.insert(0, _resources_dir)
 
+import atexit
 import base64
 import datetime
 import filecmp
@@ -38,9 +39,10 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 
@@ -55,7 +57,38 @@ BOTTLES_JSON = Path.home() / ".macncheese_bottles.json"
 
 STEAM_SETUP_URL = "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
 
+LEGENDARY_DIR = PORTABLE_DIR / "legendary"
+LEGENDARY_BIN = LEGENDARY_DIR / "legendary"
+_EPIC_CLIENT_ID = "34a02cf8f4414e29b15921876da36f9a"
+_EPIC_REDIRECT = (
+    f"https://www.epicgames.com/id/api/redirect"
+    f"?clientId={_EPIC_CLIENT_ID}&responseType=code"
+)
+EPIC_AUTH_URL = (
+    "https://www.epicgames.com/id/login"
+    f"?redirectUrl={urllib.parse.quote(_EPIC_REDIRECT, safe='')}"
+)
+
 APPMANIFEST_RE = re.compile(r'"(\w+)"\s+"([^"]*)"')
+
+_legendary_installing: bool = False
+_legendary_installs: Dict[str, Any] = {}  # app_name -> (Popen, file, log_path, prefix)
+_legendary_games_cache: Dict[str, Any] = {}  # prefix -> {"games": [], "ts": float, "scanning": bool}
+_LEGENDARY_CACHE_TTL = 300  # seconds before a background re-fetch is triggered
+
+
+def _terminate_legendary_installs() -> None:
+    """Kill all active legendary install processes. Called on backend exit."""
+    for app_name, entry in list(_legendary_installs.items()):
+        proc = entry[0]
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    _legendary_installs.clear()
+
+
+atexit.register(_terminate_legendary_installs)
 
 
 BACKEND_AUTO = "auto"
@@ -452,9 +485,28 @@ def _dxmt_available() -> bool:
     return DEFAULT_DXMT_DIR.exists() and (DEFAULT_DXMT_DIR / "d3d11.dll").exists()
 
 def _find_wine_win64_lib() -> Optional[Path]:
-    """Find the portable Wine's x86_64-windows PE DLL directory."""
-    for wine_app in ["Wine Staging.app", "Wine Stable.app"]:
+    """Find the portable Wine's x86_64-windows PE DLL directory (first found)."""
+    for wine_app in ["Wine Stable.app", "Wine Staging.app"]:
         candidate = PORTABLE_DIR / wine_app / "Contents" / "Resources" / "wine" / "lib" / "wine" / "x86_64-windows"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+def _find_all_wine_libs() -> List[Tuple[Path, Path]]:
+    """Return (win64_lib, unix_lib) pairs for every installed portable Wine bundle."""
+    result = []
+    for wine_app in ["Wine Stable.app", "Wine Staging.app"]:
+        base = PORTABLE_DIR / wine_app / "Contents" / "Resources" / "wine" / "lib" / "wine"
+        win64 = base / "x86_64-windows"
+        unix = base / "x86_64-unix"
+        if win64.is_dir() and unix.is_dir():
+            result.append((win64, unix))
+    return result
+
+def _find_wine_unix_lib() -> Optional[Path]:
+    """Find the portable Wine's x86_64-unix native bridge directory (first found)."""
+    for wine_app in ["Wine Stable.app", "Wine Staging.app"]:
+        candidate = PORTABLE_DIR / wine_app / "Contents" / "Resources" / "wine" / "lib" / "wine" / "x86_64-unix"
         if candidate.is_dir():
             return candidate
     return None
@@ -886,32 +938,33 @@ def _restore_wine_lib_from_dxmt_backup() -> List[str]:
     path where DXMT's leftover winemetal.dll lives. Result: the game looks
     like it's still running on DXMT. Restore + scrub before any non-DXMT
     launch keeps backends actually isolated."""
-    wine_lib = _find_wine_win64_lib()
-    if not wine_lib:
+    wine_libs = _find_all_wine_libs()
+    if not wine_libs:
         return []
     backup_dir = PORTABLE_DIR / ".dxmt-wine-backups"
     touched: List[str] = []
-    if backup_dir.is_dir():
-        for dll in ("d3d11.dll", "dxgi.dll", "d3d10core.dll"):
-            src = backup_dir / dll
-            if src.exists():
-                try:
-                    shutil.copy2(str(src), str(wine_lib / dll))
-                    touched.append(dll)
-                except Exception as exc:
-                    log(f"DXMT restore: failed copying {dll}: {exc}")
-    # winemetal.dll is the DXMT bridge — wine itself doesn't ship one, so
-    # the safe action is removal. Keeping it leaves a fallback path that
-    # the dxgi/d3d11 PE loader can pick up.
-    winemetal = wine_lib / "winemetal.dll"
-    if winemetal.exists():
-        try:
-            winemetal.unlink()
-            touched.append("winemetal.dll (removed)")
-        except Exception as exc:
-            log(f"DXMT restore: failed removing winemetal.dll: {exc}")
-    if touched:
-        log(f"DXMT restore: scrubbed wine lib ({', '.join(touched)}) in {wine_lib}")
+    for win64_lib, _unix_lib in wine_libs:
+        if backup_dir.is_dir():
+            for dll in ("d3d11.dll", "dxgi.dll", "d3d10core.dll"):
+                src = backup_dir / dll
+                if src.exists():
+                    try:
+                        shutil.copy2(str(src), str(win64_lib / dll))
+                        touched.append(dll)
+                    except Exception as exc:
+                        log(f"DXMT restore: failed copying {dll}: {exc}")
+        # winemetal.dll is the DXMT bridge — wine itself doesn't ship one, so
+        # the safe action is removal. Keeping it leaves a fallback path that
+        # the dxgi/d3d11 PE loader can pick up.
+        winemetal = win64_lib / "winemetal.dll"
+        if winemetal.exists():
+            try:
+                winemetal.unlink()
+                touched.append("winemetal.dll (removed)")
+            except Exception as exc:
+                log(f"DXMT restore: failed removing winemetal.dll: {exc}")
+        if touched:
+            log(f"DXMT restore: scrubbed wine lib ({', '.join(touched)}) in {win64_lib}")
     return touched
 
 
@@ -1038,16 +1091,25 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
 
     elif backend == BACKEND_DXMT:
         _unpatch_dxvk(game_dir)
-        # Verify DXMT DLLs are current in Wine's lib — copy from ~/dxmt/ if needed.
-        wine_lib = _find_wine_win64_lib()
-        if wine_lib:
-            for dll in ("d3d11.dll", "dxgi.dll", "d3d10core.dll", "winemetal.dll"):
-                src = DEFAULT_DXMT_DIR / dll
-                if src.exists():
-                    shutil.copy2(str(src), str(wine_lib / dll))
-            log(f"DXMT: verified/copied DLLs into {wine_lib}")
+        # Sync DXMT DLLs and Unix bridge into every installed Wine bundle so the
+        # correct version is loaded regardless of which Wine (Stable/Staging) runs.
+        wine_libs = _find_all_wine_libs()
+        if wine_libs:
+            for win64_lib, unix_lib in wine_libs:
+                for dll in ("d3d11.dll", "dxgi.dll", "d3d10core.dll", "winemetal.dll"):
+                    src = DEFAULT_DXMT_DIR / dll
+                    if src.exists():
+                        shutil.copy2(str(src), str(win64_lib / dll))
+                for so_src in DEFAULT_DXMT_DIR.glob("*.so"):
+                    dst = unix_lib / so_src.name
+                    shutil.copy2(str(so_src), str(dst))
+                    subprocess.run(
+                        ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(dst)],
+                        capture_output=True
+                    )
+                log(f"DXMT: synced DLLs and .so into {win64_lib.parent.parent}")
         else:
-            log("DXMT: could not find Wine lib dir — DLLs may be stale")
+            log("DXMT: could not find any Wine lib dirs — DLLs may be stale")
 
     elif backend == BACKEND_WINE:
         _unpatch_dxvk(game_dir)
@@ -1338,6 +1400,12 @@ def cmd_scan_games(params: Dict[str, Any]) -> Any:
     prefix_str = params.get("prefix")
     if not prefix_str:
         raise ValueError("Missing 'prefix' parameter")
+
+    # Epic Games bottles delegate entirely to legendary
+    key = _resolve_key(prefix_str)
+    bottle_cfg = _load_bottles().get(key, {})
+    if bottle_cfg.get("launcher_type") == "epic":
+        return _scan_legendary_games(prefix_str)
 
     prefix = Path(prefix_str).expanduser().resolve()
     steam_dir = prefix / "drive_c" / "Program Files (x86)" / "Steam"
@@ -2092,6 +2160,10 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
             args=(path_str, wine),
             daemon=True,
         ).start()
+
+    # For Epic bottles, download legendary CLI in the background if not present
+    if launcher_type == "epic":
+        threading.Thread(target=_download_legendary_if_needed, daemon=True).start()
 
     return {"path": path_str}
 
@@ -3947,6 +4019,375 @@ def cmd_set_d3dmetal_settings(params: Dict[str, Any]) -> Any:
     return {"ok": True}
 
 # ---------------------------------------------------------------------------
+# Legendary / Epic Games support
+# ---------------------------------------------------------------------------
+
+def _legendary_installed() -> bool:
+    return LEGENDARY_BIN.exists()
+
+
+def _download_legendary_if_needed() -> None:
+    global _legendary_installing
+    if _legendary_installed() or _legendary_installing:
+        return
+    _legendary_installing = True
+    try:
+        log("Downloading Legendary (Epic Games CLI)...")
+        # Use GitHub's latest-release redirect — no API call needed, avoids rate limits.
+        url = "https://github.com/legendary-gl/legendary/releases/latest/download/legendary_macOS.zip"
+        LEGENDARY_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_zip = str(LEGENDARY_DIR / "legendary.zip")
+        req = urllib.request.Request(url, headers={"User-Agent": "MacNCheese/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            with open(tmp_zip, "wb") as f:
+                f.write(resp.read())
+        import zipfile
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            # The zip contains a single 'legendary' binary
+            names = [n for n in zf.namelist() if not n.startswith("__MACOSX")]
+            binary_name = next((n for n in names if "legendary" in n.lower() and not n.endswith("/")), names[0])
+            zf.extract(binary_name, str(LEGENDARY_DIR))
+            extracted = LEGENDARY_DIR / binary_name
+            if extracted != LEGENDARY_BIN:
+                extracted.rename(LEGENDARY_BIN)
+        Path(tmp_zip).unlink(missing_ok=True)
+        os.chmod(str(LEGENDARY_BIN), 0o755)
+        subprocess.run(
+            ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(LEGENDARY_BIN)],
+            capture_output=True,
+        )
+        log("Legendary installed successfully")
+    except Exception as exc:
+        log(f"Error downloading legendary: {exc}")
+        try:
+            Path(LEGENDARY_DIR / "legendary.tmp").unlink(missing_ok=True)
+        except Exception:
+            pass
+    finally:
+        _legendary_installing = False
+
+
+def _legendary_cover_url(meta: Dict[str, Any]) -> str:
+    preferred = ["DieselGameBoxTall", "OfferImageTall", "DieselGameBox", "OfferImageWide"]
+    images = meta.get("keyImages", [])
+    by_type = {img.get("type", ""): img.get("url", "") for img in images}
+    for t in preferred:
+        if by_type.get(t):
+            return by_type[t]
+    for img in images:
+        if img.get("url"):
+            return img["url"]
+    return ""
+
+
+def _fetch_legendary_games_blocking(prefix: str) -> List[Dict[str, Any]]:
+    """Runs legendary list/list-installed in parallel. Call only from a background thread."""
+    import concurrent.futures
+    prefix_path = str(Path(prefix).expanduser().resolve())
+
+    def _run_list() -> Any:
+        try:
+            r = subprocess.run(
+                [str(LEGENDARY_BIN), "list", "--platform", "Windows", "--json"],
+                capture_output=True, text=True, timeout=90,
+            )
+            return json.loads(r.stdout) if r.stdout.strip() else []
+        except Exception as exc:
+            log(f"legendary list failed: {exc}")
+            return []
+
+    def _run_installed() -> Any:
+        try:
+            r = subprocess.run(
+                [str(LEGENDARY_BIN), "list-installed", "--json"],
+                capture_output=True, text=True, timeout=30,
+            )
+            return json.loads(r.stdout) if r.stdout.strip() else []
+        except Exception as exc:
+            log(f"legendary list-installed failed: {exc}")
+            return []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        owned_future = pool.submit(_run_list)
+        installed_future = pool.submit(_run_installed)
+        owned_raw = owned_future.result()
+        inst_raw = installed_future.result()
+
+    if isinstance(owned_raw, dict):
+        owned_list = owned_raw.get("games", owned_raw.get("library", []))
+    else:
+        owned_list = owned_raw
+
+    if isinstance(inst_raw, dict):
+        inst_list = inst_raw.get("games", inst_raw.get("installed", []))
+    else:
+        inst_list = inst_raw
+
+    installed_here: Dict[str, Dict[str, Any]] = {}
+    for g in inst_list:
+        ip = g.get("install_path", "")
+        if ip:
+            try:
+                ip_resolved = str(Path(ip).expanduser().resolve())
+            except Exception:
+                ip_resolved = ip
+            if ip_resolved.startswith(prefix_path + "/drive_c") or ip_resolved.startswith(prefix_path + "\\drive_c"):
+                installed_here[g.get("app_name", "")] = g
+
+    games: List[Dict[str, Any]] = []
+    for g in owned_list:
+        app_name = g.get("app_name", "")
+        app_title = g.get("app_title", g.get("title", app_name))
+        if g.get("is_dlc", False):
+            continue
+        is_installed = app_name in installed_here
+        install_dir = ""
+        exe = None
+        if is_installed:
+            install_dir = installed_here[app_name].get("install_path", "")
+            if install_dir:
+                exe = _detect_exe(Path(install_dir), app_name, app_title)
+        cover_url = _legendary_cover_url(g.get("metadata", g))
+        games.append({
+            "appid": f"epic_{app_name}",
+            "name": app_title,
+            "exe": exe,
+            "install_dir": install_dir,
+            "cover_url": cover_url,
+            "exe_icon": None,
+            "exe_icon_format": "",
+            "is_manual": False,
+            "is_installed": is_installed,
+            "epic_app_name": app_name,
+        })
+
+    games.sort(key=lambda g: (0 if g["is_installed"] else 1, g["name"].lower()))
+    return games
+
+
+def _refresh_legendary_cache(prefix: str) -> None:
+    """Background thread: fetch games and update cache."""
+    try:
+        games = _fetch_legendary_games_blocking(prefix)
+        _legendary_games_cache[prefix] = {"games": games, "ts": time.time(), "scanning": False}
+        log(f"legendary: cached {len(games)} games for {prefix}")
+    except Exception as exc:
+        log(f"legendary: cache refresh failed: {exc}")
+        entry = _legendary_games_cache.get(prefix, {})
+        entry["scanning"] = False
+        _legendary_games_cache[prefix] = entry
+
+
+def _scan_legendary_games(prefix: str) -> List[Dict[str, Any]]:
+    """Returns cached games immediately; triggers a background refresh if stale."""
+    if not _legendary_installed():
+        return []
+
+    entry = _legendary_games_cache.get(prefix)
+    now = time.time()
+
+    if entry:
+        age = now - entry.get("ts", 0)
+        if age < _LEGENDARY_CACHE_TTL:
+            return entry["games"]  # fresh — return instantly
+        # Stale: trigger refresh but still return cached data
+        if not entry.get("scanning", False):
+            entry["scanning"] = True
+            threading.Thread(target=_refresh_legendary_cache, args=(prefix,), daemon=True).start()
+        return entry["games"]
+
+    # No cache at all: start fetch in background, return empty list for now
+    _legendary_games_cache[prefix] = {"games": [], "ts": 0, "scanning": True}
+    threading.Thread(target=_refresh_legendary_cache, args=(prefix,), daemon=True).start()
+    return []
+
+
+def cmd_legendary_status(_params: Dict[str, Any]) -> Any:
+    return {"installed": _legendary_installed(), "installing": _legendary_installing}
+
+
+def cmd_legendary_scan_status(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "")
+    entry = _legendary_games_cache.get(prefix, {})
+    return {"scanning": entry.get("scanning", False), "count": len(entry.get("games", []))}
+
+
+def cmd_legendary_get_auth_url(_params: Dict[str, Any]) -> Any:
+    return {"url": EPIC_AUTH_URL}
+
+
+def cmd_legendary_check_auth(_params: Dict[str, Any]) -> Any:
+    user_json = Path.home() / ".config" / "legendary" / "user.json"
+    if not user_json.exists():
+        return {"authenticated": False, "display_name": ""}
+    try:
+        with open(user_json) as f:
+            data = json.load(f)
+        name = data.get("displayName") or data.get("display_name") or ""
+        if name:
+            return {"authenticated": True, "display_name": name}
+    except Exception:
+        pass
+    return {"authenticated": False, "display_name": ""}
+
+
+def cmd_legendary_auth(params: Dict[str, Any]) -> Any:
+    code = params.get("code", "").strip()
+    if not code:
+        raise ValueError("Missing 'code' parameter")
+    if not _legendary_installed():
+        raise RuntimeError("Legendary is not installed")
+    try:
+        result = subprocess.run(
+            [str(LEGENDARY_BIN), "auth", "--code", code],
+            capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout + result.stderr
+        success_markers = ("Successfully logged in", "Logged in as", "login successful")
+        if result.returncode == 0 or any(m.lower() in output.lower() for m in success_markers):
+            auth = cmd_legendary_check_auth({})
+            return {"ok": True, "display_name": auth.get("display_name", ""), "error": ""}
+        return {"ok": False, "display_name": "", "error": output.strip()[:400]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "display_name": "", "error": "Authentication timed out"}
+    except Exception as exc:
+        return {"ok": False, "display_name": "", "error": str(exc)}
+
+
+def cmd_legendary_install_game(params: Dict[str, Any]) -> Any:
+    app_name = params.get("app_name", "").strip()
+    prefix = params.get("prefix", "").strip()
+    if not app_name or not prefix:
+        raise ValueError("Missing 'app_name' or 'prefix'")
+    if not _legendary_installed():
+        raise RuntimeError("Legendary is not installed")
+    install_base = str(
+        Path(prefix).expanduser().resolve() / "drive_c" / "Program Files" / "Epic Games"
+    )
+    Path(install_base).mkdir(parents=True, exist_ok=True)
+    log_path = str(LEGENDARY_DIR / f"install_{app_name}.log")
+    log_fh = open(log_path, "w")
+    proc = subprocess.Popen(
+        [str(LEGENDARY_BIN), "install", app_name,
+         "--base-path", install_base,
+         "-y", "--no-install-prereqs", "--skip-sdl"],
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+    )
+    _legendary_installs[app_name] = (proc, log_fh, log_path, prefix)
+    return {"pid": proc.pid, "log_path": log_path}
+
+
+def cmd_legendary_install_progress(params: Dict[str, Any]) -> Any:
+    app_name = params.get("app_name", "").strip()
+    if not app_name:
+        raise ValueError("Missing 'app_name'")
+    entry = _legendary_installs.get(app_name)
+    if not entry:
+        return {"progress": 0.0, "done": True, "error": None}
+    proc, log_fh, log_path, prefix = entry
+    done = proc.poll() is not None
+    progress = 0.0
+    error = None
+    try:
+        with open(log_path, "r") as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            m = re.search(r"Progress:\s*([\d.]+)%", line)
+            if m:
+                progress = float(m.group(1))
+                break
+        if done and proc.returncode not in (0, None):
+            for line in reversed(lines[-30:]):
+                if "error" in line.lower() or "failed" in line.lower():
+                    error = line.strip()
+                    break
+    except Exception:
+        pass
+    if done:
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+        _legendary_installs.pop(app_name, None)
+        # Invalidate cache so next scan reflects the newly installed game
+        _legendary_games_cache.pop(prefix, None)
+    return {"progress": progress, "done": done, "error": error}
+
+
+def cmd_legendary_cancel_install(params: Dict[str, Any]) -> Any:
+    app_name = params.get("app_name", "").strip()
+    entry = _legendary_installs.pop(app_name, None)
+    if entry:
+        proc, log_fh = entry[0], entry[1]
+        try:
+            proc.terminate()
+            log_fh.close()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
+    """Launch an Epic game via legendary, which handles Epic auth token generation."""
+    app_name = params.get("app_name", "").strip()
+    prefix = params.get("prefix", "").strip()
+    backend = params.get("backend", "auto")
+    retina_mode = params.get("retina_mode", False)
+    metal_hud = params.get("metal_hud", False)
+    esync = params.get("esync")
+    msync = params.get("msync")
+    custom_env_str = params.get("custom_env", "")
+
+    if not app_name or not prefix:
+        raise ValueError("Missing 'app_name' or 'prefix'")
+    if not _legendary_installed():
+        raise RuntimeError("Legendary is not installed")
+
+    prefix_expanded = str(Path(prefix).expanduser().resolve())
+
+    # Find the best Wine binary (backend-aware)
+    wine_bin = _backend_wine_binary(backend, "") or _find_wine_for_bottle("auto")
+    if not wine_bin:
+        raise RuntimeError("No Wine binary found")
+
+    # Build the same environment as a normal Wine launch
+    env = _wine_env(prefix_expanded)
+    env = _apply_backend_env(env, backend)
+    env = _apply_sync_env(env, esync, msync)
+    if metal_hud:
+        env["MTL_HUD_ENABLED"] = "1"
+    for line in (custom_env_str or "").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+
+    # Apply retina regedit in background to avoid blocking
+    if retina_mode:
+        threading.Thread(
+            target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
+        ).start()
+
+    # legendary launch handles Epic auth token generation and passes all required
+    # -AUTH_TYPE / -AUTH_PASSWORD / -epicapp / etc. args to Wine automatically.
+    cmd = [
+        str(LEGENDARY_BIN), "launch", app_name,
+        "--wine", wine_bin,
+        "--wine-prefix", prefix_expanded,
+        "--skip-version-check",
+    ]
+    log(f"legendary launch: {shlex.join(cmd)}")
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"pid": proc.pid}
+
+
+# ---------------------------------------------------------------------------
 # Command dispatch table
 # ---------------------------------------------------------------------------
 
@@ -3985,6 +4426,15 @@ COMMANDS: Dict[str, Any] = {
     "get_install_progress": cmd_get_install_progress,
     "get_d3dmetal_settings": cmd_get_d3dmetal_settings,
     "set_d3dmetal_settings": cmd_set_d3dmetal_settings,
+    "legendary_status": cmd_legendary_status,
+    "legendary_check_auth": cmd_legendary_check_auth,
+    "legendary_auth": cmd_legendary_auth,
+    "legendary_install_game": cmd_legendary_install_game,
+    "legendary_install_progress": cmd_legendary_install_progress,
+    "legendary_cancel_install": cmd_legendary_cancel_install,
+    "legendary_get_auth_url": cmd_legendary_get_auth_url,
+    "legendary_scan_status": cmd_legendary_scan_status,
+    "legendary_launch_game": cmd_legendary_launch_game,
 }
 
 # ---------------------------------------------------------------------------
@@ -4011,37 +4461,40 @@ def main() -> None:
     log(f"BOTTLES_BASE = {BOTTLES_BASE}")
     log(f"DEFAULT_PREFIX = {DEFAULT_PREFIX}")
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
 
-        req_id = None
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError as exc:
-            _respond(None, False, error=f"Invalid JSON: {exc}")
-            continue
+            req_id = None
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError as exc:
+                _respond(None, False, error=f"Invalid JSON: {exc}")
+                continue
 
-        req_id = request.get("id")
-        cmd_name = request.get("cmd")
+            req_id = request.get("id")
+            cmd_name = request.get("cmd")
 
-        if not cmd_name:
-            _respond(req_id, False, error="Missing 'cmd' field")
-            continue
+            if not cmd_name:
+                _respond(req_id, False, error="Missing 'cmd' field")
+                continue
 
-        handler = COMMANDS.get(cmd_name)
-        if not handler:
-            _respond(req_id, False, error=f"Unknown command: {cmd_name}")
-            continue
+            handler = COMMANDS.get(cmd_name)
+            if not handler:
+                _respond(req_id, False, error=f"Unknown command: {cmd_name}")
+                continue
 
-        try:
-            log(f"Handling cmd={cmd_name} id={req_id}")
-            result = handler(request)
-            _respond(req_id, True, data=result)
-        except Exception as exc:
-            log(f"Error in {cmd_name}: {exc}")
-            _respond(req_id, False, error=str(exc))
+            try:
+                log(f"Handling cmd={cmd_name} id={req_id}")
+                result = handler(request)
+                _respond(req_id, True, data=result)
+            except Exception as exc:
+                log(f"Error in {cmd_name}: {exc}")
+                _respond(req_id, False, error=str(exc))
+    finally:
+        _terminate_legendary_installs()
 
 
 if __name__ == "__main__":
