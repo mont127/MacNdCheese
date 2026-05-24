@@ -6,7 +6,7 @@ struct Bottle: Identifiable, Codable, Hashable {
     var name: String
     var iconPath: String?
     var launcherExe: String?
-    var launcherType: String?   // "steam", "custom"; nil treated as "steam" for compat
+    var launcherType: String?   // "steam", "custom", "epic"; nil treated as "steam" for compat
     var defaultBackend: String? // "auto", "dxvk", etc.
     var wineBinary: String?     // "auto", "stable", "staging"
 
@@ -51,6 +51,8 @@ struct Game: Identifiable, Codable, Hashable {
         case epicAppName = "epic_app_name"
     }
 
+    // Tolerant decoder: older backends omit is_installed / update_available /
+    // epic_app_name. Treat absent install state as installed, the rest as off.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         appid = try c.decode(String.self, forKey: .appid)
@@ -119,6 +121,8 @@ struct ComponentsStatus: Codable {
     let hasWine: Bool
     let hasWineStable: Bool
     let hasWineStaging: Bool
+    let hasWineD3DMetal: Bool
+    let hasWineDevel: Bool
     let hasMesa: Bool
     let hasDxvk64: Bool
     let hasDxvk32: Bool
@@ -126,7 +130,6 @@ struct ComponentsStatus: Codable {
     let hasGptkDlls: Bool
     let hasD3dMetal3: Bool
     let hasVkd3d: Bool
-    let hasWineD3DMetal: Bool
     let hasWineOpenXR: Bool
     let wineVersion: String?
 
@@ -135,6 +138,8 @@ struct ComponentsStatus: Codable {
         case hasWine = "has_wine"
         case hasWineStable = "has_wine_stable"
         case hasWineStaging = "has_wine_staging"
+        case hasWineD3DMetal = "has_wine_d3dmetal"
+        case hasWineDevel = "has_wine_devel"
         case hasMesa = "has_mesa"
         case hasDxvk64 = "has_dxvk64"
         case hasDxvk32 = "has_dxvk32"
@@ -142,9 +147,29 @@ struct ComponentsStatus: Codable {
         case hasGptkDlls = "has_gptk_dlls"
         case hasD3dMetal3 = "has_d3dmetal3"
         case hasVkd3d = "has_vkd3d"
-        case hasWineD3DMetal = "has_wine_d3dmetal"
         case hasWineOpenXR = "has_wineopenxr"
         case wineVersion = "wine_version"
+    }
+
+    // Backwards-compat init for older backends that don't yet send
+    // has_wine_d3dmetal / has_wine_devel / has_wineopenxr. Treat as absent → false.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        hasTools          = try c.decode(Bool.self, forKey: .hasTools)
+        hasWine           = try c.decode(Bool.self, forKey: .hasWine)
+        hasWineStable     = try c.decode(Bool.self, forKey: .hasWineStable)
+        hasWineStaging    = try c.decode(Bool.self, forKey: .hasWineStaging)
+        hasWineD3DMetal   = try c.decodeIfPresent(Bool.self, forKey: .hasWineD3DMetal) ?? false
+        hasWineDevel      = try c.decodeIfPresent(Bool.self, forKey: .hasWineDevel) ?? false
+        hasMesa           = try c.decode(Bool.self, forKey: .hasMesa)
+        hasDxvk64         = try c.decode(Bool.self, forKey: .hasDxvk64)
+        hasDxvk32         = try c.decode(Bool.self, forKey: .hasDxvk32)
+        hasDxmt           = try c.decode(Bool.self, forKey: .hasDxmt)
+        hasGptkDlls       = try c.decode(Bool.self, forKey: .hasGptkDlls)
+        hasD3dMetal3      = try c.decode(Bool.self, forKey: .hasD3dMetal3)
+        hasVkd3d          = try c.decode(Bool.self, forKey: .hasVkd3d)
+        hasWineOpenXR     = try c.decodeIfPresent(Bool.self, forKey: .hasWineOpenXR) ?? false
+        wineVersion       = try c.decodeIfPresent(String.self, forKey: .wineVersion)
     }
 }
 
@@ -162,44 +187,6 @@ struct InstallProgress: Codable {
         case failed
         case current
     }
-}
-
-struct CheeseDiagnosis: Codable {
-    let summary: String
-    let generatedAt: String
-    let checks: [CheeseDiagnosticCheck]
-    let repairs: [CheeseRepairAction]
-
-    enum CodingKeys: String, CodingKey {
-        case summary
-        case generatedAt = "generated_at"
-        case checks
-        case repairs
-    }
-}
-
-struct CheeseDiagnosticCheck: Identifiable, Codable {
-    let id: String
-    let status: String
-    let title: String
-    let message: String
-    let details: String
-}
-
-struct CheeseRepairAction: Identifiable, Codable {
-    let id: String
-    let title: String
-    let details: String
-    let recommended: Bool
-    let destructive: Bool
-}
-
-struct EpicDownloadState {
-    var progress: Double
-    var queued: Bool
-    var queuePosition: Int
-    var paused: Bool
-    var prefix: String
 }
 
 struct UpdateInfo: Codable {
@@ -226,4 +213,48 @@ struct UpdateInfo: Codable {
         case wineStagingUpdateAvailable = "wine_staging_update_available"
         case dxmtUpdateAvailable = "dxmt_update_available"
     }
+}
+
+struct CheeseDiagnosis: Codable {
+    let generatedAt: String
+    let prefix: String
+    let summary: String
+    let checks: [CheeseDiagnosticCheck]
+    let repairs: [CheeseRepairAction]
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at"
+        case prefix, summary, checks, repairs
+    }
+}
+
+struct CheeseDiagnosticCheck: Codable, Identifiable, Hashable {
+    let id: String
+    let title: String
+    let status: String
+    let message: String
+    let details: String
+    let repairActions: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, status, message, details
+        case repairActions = "repair_actions"
+    }
+}
+
+struct CheeseRepairAction: Codable, Identifiable, Hashable {
+    let id: String
+    let title: String
+    let details: String
+    let destructive: Bool
+    let recommended: Bool
+}
+
+/// Transient per-game Epic (Legendary) download/queue state. UI-only, not Codable.
+struct EpicDownloadState {
+    var progress: Double
+    var queued: Bool
+    var queuePosition: Int
+    var paused: Bool = false   // from the PR; default keeps existing call sites valid
+    var prefix: String
 }
