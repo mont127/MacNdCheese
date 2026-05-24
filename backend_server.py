@@ -92,6 +92,7 @@ APPMANIFEST_RE = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
 _legendary_installing: bool = False
 _legendary_installs: Dict[str, Any] = {}  # app_name -> (Popen, file, log_path, prefix)
+_legendary_paused: Dict[str, str] = {}    # app_name -> prefix (paused downloads)
 _legendary_games_cache: Dict[str, Any] = {}  # prefix -> {"games": [], "ts": float, "scanning": bool}
 _LEGENDARY_CACHE_TTL = 300  # seconds before a background re-fetch is triggered
 
@@ -112,6 +113,7 @@ def _terminate_legendary_installs() -> None:
         except Exception:
             pass
     _legendary_installs.clear()
+    _legendary_paused.clear()
 
 
 atexit.register(_terminate_legendary_installs)
@@ -4569,6 +4571,7 @@ def cmd_legendary_all_downloads(_params: Dict[str, Any]) -> Any:
                 "progress": read_progress(log_path),
                 "queued": False,
                 "queue_position": 0,
+                "paused": False,
                 "prefix": prefix,
             }
         for i, (app_name, prefix) in enumerate(_legendary_download_queue):
@@ -4576,8 +4579,18 @@ def cmd_legendary_all_downloads(_params: Dict[str, Any]) -> Any:
                 "progress": 0.0,
                 "queued": True,
                 "queue_position": i + 1,
+                "paused": False,
                 "prefix": prefix,
             }
+    for app_name, prefix in _legendary_paused.items():
+        log_path = str(LEGENDARY_DIR / f"install_{app_name}.log")
+        result[app_name] = {
+            "progress": read_progress(log_path),
+            "queued": False,
+            "queue_position": 0,
+            "paused": True,
+            "prefix": prefix,
+        }
     return result
 
 
@@ -4646,6 +4659,107 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
 # Command dispatch table
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Per-game config (esync, msync, backend choice, etc.)
+# Stored in <prefix>/.macncheese_games.json keyed by appid.
+# ---------------------------------------------------------------------------
+
+def _game_cfg_path(prefix: str) -> Path:
+    return Path(prefix).expanduser().resolve() / ".macncheese_games.json"
+
+
+def cmd_get_game_config(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    appid = params.get("appid", "").strip()
+    if not prefix or not appid:
+        return {}
+    return _read_json(_game_cfg_path(prefix), {}).get(appid, {})
+
+
+def cmd_set_game_config(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    appid = params.get("appid", "").strip()
+    if not prefix or not appid:
+        raise ValueError("Missing prefix or appid")
+    skip = {"prefix", "appid", "cmd", "id"}
+    cfgs = _read_json(_game_cfg_path(prefix), {})
+    entry = cfgs.get(appid, {})
+    for k, v in params.items():
+        if k not in skip:
+            entry[k] = v
+    cfgs[appid] = entry
+    _write_json(_game_cfg_path(prefix), cfgs)
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# Game ordering (custom sort order per bottle)
+# Stored as "game_order" list in the bottle's entry in bottles.json.
+# ---------------------------------------------------------------------------
+
+def cmd_get_game_order(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    if not prefix:
+        return []
+    key = _resolve_key(prefix)
+    return _load_bottles().get(key, {}).get("game_order", [])
+
+
+def cmd_set_game_order(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    order = params.get("order", [])
+    if not prefix:
+        raise ValueError("Missing prefix")
+    key = _resolve_key(prefix)
+    bottles = _load_bottles()
+    existing = bottles.get(key, {})
+    existing["game_order"] = order
+    bottles[key] = existing
+    _save_bottles(bottles)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Legendary pause / resume
+# ---------------------------------------------------------------------------
+
+def cmd_legendary_pause_install(params: Dict[str, Any]) -> Any:
+    app_name = params.get("app_name", "").strip()
+    # Kill active process if running
+    entry = _legendary_installs.pop(app_name, None)
+    if entry:
+        proc, log_fh, _log_path, prefix = entry
+        try:
+            proc.terminate()
+            log_fh.close()
+        except Exception:
+            pass
+        _legendary_paused[app_name] = prefix
+        return {"ok": True}
+    # Remove from queue if waiting
+    with _legendary_queue_lock:
+        for i, (qapp, qprefix) in enumerate(_legendary_download_queue):
+            if qapp == app_name:
+                _legendary_download_queue.pop(i)
+                _legendary_paused[app_name] = qprefix
+                return {"ok": True}
+    return {"ok": False, "error": "Not found"}
+
+
+def cmd_legendary_resume_install(params: Dict[str, Any]) -> Any:
+    global _legendary_queue_worker_running
+    app_name = params.get("app_name", "").strip()
+    prefix = _legendary_paused.pop(app_name, None) or params.get("prefix", "").strip()
+    if not prefix:
+        raise ValueError("Unknown app_name or missing prefix")
+    with _legendary_queue_lock:
+        _legendary_download_queue.append((app_name, prefix))
+        if not _legendary_queue_worker_running:
+            _legendary_queue_worker_running = True
+            threading.Thread(target=_legendary_queue_worker, daemon=True).start()
+    return {"ok": True}
+
+
 COMMANDS: Dict[str, Any] = {
     "list_bottles": cmd_list_bottles,
     "scan_games": cmd_scan_games,
@@ -4691,6 +4805,12 @@ COMMANDS: Dict[str, Any] = {
     "legendary_get_auth_url": cmd_legendary_get_auth_url,
     "legendary_scan_status": cmd_legendary_scan_status,
     "legendary_launch_game": cmd_legendary_launch_game,
+    "legendary_pause_install": cmd_legendary_pause_install,
+    "legendary_resume_install": cmd_legendary_resume_install,
+    "get_game_config": cmd_get_game_config,
+    "set_game_config": cmd_set_game_config,
+    "get_game_order": cmd_get_game_order,
+    "set_game_order": cmd_set_game_order,
 }
 
 # ---------------------------------------------------------------------------

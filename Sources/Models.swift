@@ -198,6 +198,7 @@ struct EpicDownloadState {
     var progress: Double
     var queued: Bool
     var queuePosition: Int
+    var paused: Bool
     var prefix: String
 }
 

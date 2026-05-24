@@ -1,10 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-extension UTType {
-    static let macNCheeseGameId = UTType(exportedAs: "com.macncheese.game-appid")
-}
-
 struct GameGridView: View {
     @EnvironmentObject var backend: BackendClient
     let games: [Game]
@@ -66,19 +62,12 @@ struct GameGridView: View {
                             )
                     )
                     .onDrag {
-                        draggingAppid = game.appid
-                        let provider = NSItemProvider()
-                        provider.registerDataRepresentation(
-                            forTypeIdentifier: UTType.macNCheeseGameId.identifier,
-                            visibility: .ownProcess
-                        ) { completion in
-                            completion(Data(game.appid.utf8), nil)
-                            return nil
-                        }
-                        return provider
+                        let appid = game.appid
+                        draggingAppid = appid
+                        return NSItemProvider(object: appid as NSString)
                     }
                     .onDrop(
-                        of: [.macNCheeseGameId],
+                        of: [UTType.plainText],
                         isTargeted: Binding(
                             get: { dropTargetAppid == game.appid },
                             set: { targeted in dropTargetAppid = targeted ? game.appid : nil }
@@ -87,7 +76,7 @@ struct GameGridView: View {
                         guard let from = draggingAppid, from != game.appid else {
                             draggingAppid = nil; return false
                         }
-                        moveGame(from: from, before: game.appid)
+                        moveGame(from: from, after: game.appid)
                         draggingAppid = nil
                         return true
                     }
@@ -143,10 +132,8 @@ struct GameGridView: View {
                 }
             }
         }
-        .onAppear { gameOrder = games.map { $0.appid } }
-        .onChange(of: backend.activePrefix) {
-            gameOrder = games.map { $0.appid }
-        }
+        .onAppear { loadGameOrder() }
+        .onChange(of: backend.activePrefix) { loadGameOrder() }
         .onChange(of: games) {
             let known = Set(gameOrder)
             let newIds = games.map { $0.appid }.filter { !known.contains($0) }
@@ -154,13 +141,11 @@ struct GameGridView: View {
         }
     }
 
-    private func moveGame(from sourceAppid: String, before targetAppid: String) {
+    private func moveGame(from sourceAppid: String, after targetAppid: String) {
         var order = orderedGames.map { $0.appid }
         guard let fromIdx = order.firstIndex(of: sourceAppid),
               let toIdx = order.firstIndex(of: targetAppid) else { return }
-        order.remove(at: fromIdx)
-        let insertIdx = order.firstIndex(of: targetAppid) ?? toIdx
-        order.insert(sourceAppid, at: insertIdx)
+        order.swapAt(fromIdx, toIdx)
         gameOrder = order
         guard let prefix = backend.activePrefix else { return }
         Task { await backend.setGameOrder(prefix: prefix, order: order) }
@@ -184,6 +169,23 @@ struct GameGridView: View {
         gameOrder = order
         guard let prefix = backend.activePrefix else { return }
         Task { await backend.setGameOrder(prefix: prefix, order: order) }
+    }
+
+    private func loadGameOrder() {
+        guard let prefix = backend.activePrefix else {
+            gameOrder = games.map { $0.appid }
+            return
+        }
+        Task {
+            let saved = await backend.getGameOrder(prefix: prefix)
+            if saved.isEmpty {
+                gameOrder = games.map { $0.appid }
+            } else {
+                let known = Set(saved)
+                let newIds = games.map { $0.appid }.filter { !known.contains($0) }
+                gameOrder = saved.filter { id in games.contains { $0.appid == id } } + newIds
+            }
+        }
     }
 }
 

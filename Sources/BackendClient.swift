@@ -120,6 +120,8 @@ final class BackendClient: ObservableObject {
     func scanGames(prefix: String) async {
         do {
             let result = try await send(cmd: "scan_games", params: ["prefix": prefix])
+            // Discard results if the user switched bottles while the request was in flight.
+            guard activePrefix == prefix else { return }
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode([Game].self, from: data) {
                 self.games = decoded
@@ -660,11 +662,27 @@ final class BackendClient: ObservableObject {
                     progress: info["progress"] as? Double ?? 0,
                     queued: info["queued"] as? Bool ?? false,
                     queuePosition: info["queue_position"] as? Int ?? 0,
+                    paused: info["paused"] as? Bool ?? false,
                     prefix: info["prefix"] as? String ?? ""
                 )
             }
             epicDownloads = downloads
         } catch {}
+    }
+
+    func epicPauseInstall(appName: String) async {
+        do { _ = try await send(cmd: "legendary_pause_install", params: ["app_name": appName]) } catch {}
+    }
+
+    func epicResumeInstall(appName: String) async {
+        do { _ = try await send(cmd: "legendary_resume_install", params: ["app_name": appName]) } catch {}
+    }
+
+    func getGameOrder(prefix: String) async -> [String] {
+        do {
+            let result = try await send(cmd: "get_game_order", params: ["prefix": prefix])
+            return (result as? [String]) ?? []
+        } catch { return [] }
     }
 
     func epicLaunchGame(

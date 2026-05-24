@@ -100,25 +100,25 @@ struct EpicLandingView: View {
         gamesPollTask = Task {
             await backend.scanGames(prefix: prefix)
             await backend.refreshEpicDownloads()
+            isFetchingGames = false
+            // Poll until games appear (cold start / fresh install)
             var attempts = 0
             while !Task.isCancelled && backend.games.isEmpty && attempts < 100 {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, backend.activePrefix == prefix else { break }
                 await backend.scanGames(prefix: prefix)
                 await backend.refreshEpicDownloads()
                 attempts += 1
             }
-            // Keep polling downloads even after library is loaded
+            // Keep polling downloads; refresh library only when a download is active.
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, backend.activePrefix == prefix else { break }
                 await backend.refreshEpicDownloads()
-                // Also refresh library if downloads are active
                 if !backend.epicDownloads.isEmpty {
                     await backend.scanGames(prefix: prefix)
                 }
             }
-            isFetchingGames = false
         }
     }
 
