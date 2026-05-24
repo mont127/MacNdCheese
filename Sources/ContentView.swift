@@ -1,5 +1,10 @@
 import SwiftUI
 
+extension Notification.Name {
+    /// Posted by the "New Bottle" menu command; ContentView listens for it.
+    static let createNewBottle = Notification.Name("createNewBottle")
+}
+
 struct ContentView: View {
     @EnvironmentObject var backend: BackendClient
     @EnvironmentObject var announcements: AnnouncementChecker
