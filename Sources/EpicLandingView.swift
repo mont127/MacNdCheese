@@ -39,18 +39,16 @@ struct EpicLandingView: View {
     }
 
     private func onAppearHandler() {
-        // Use already-known state first to avoid flashing the wrong phase.
         if backend.legendaryInstalled {
-            if backend.epicAuthenticated {
-                phase = .library
-                startGamesPolling()
-                return
-            } else {
-                phase = .auth
-                return
+            // Always do a fresh auth check — the cached value belongs to the previous bottle.
+            phase = .auth
+            Task {
+                await backend.epicCheckAuth()
+                if backend.epicAuthenticated { transitionToLibrary() }
             }
+            return
         }
-        // Not yet known — verify asynchronously.
+        // Legendary not yet downloaded — poll until it is.
         phase = .downloading
         startDownloadPolling()
         Task {
@@ -58,11 +56,7 @@ struct EpicLandingView: View {
             if backend.legendaryInstalled {
                 stopDownloadPolling()
                 await backend.epicCheckAuth()
-                if backend.epicAuthenticated {
-                    transitionToLibrary()
-                } else {
-                    phase = .auth
-                }
+                if backend.epicAuthenticated { transitionToLibrary() } else { phase = .auth }
             }
         }
     }
@@ -98,19 +92,31 @@ struct EpicLandingView: View {
         pollTimer = nil
     }
 
-    /// Polls scan_games every 3 s while the backend's background legendary fetch is running.
+    /// Polls scan_games and download state every 3 s.
     private func startGamesPolling() {
         gamesPollTask?.cancel()
         isFetchingGames = true
         guard let prefix = backend.activePrefix else { return }
         gamesPollTask = Task {
             await backend.scanGames(prefix: prefix)
+            await backend.refreshEpicDownloads()
             var attempts = 0
             while !Task.isCancelled && backend.games.isEmpty && attempts < 100 {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled else { break }
                 await backend.scanGames(prefix: prefix)
+                await backend.refreshEpicDownloads()
                 attempts += 1
+            }
+            // Keep polling downloads even after library is loaded
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { break }
+                await backend.refreshEpicDownloads()
+                // Also refresh library if downloads are active
+                if !backend.epicDownloads.isEmpty {
+                    await backend.scanGames(prefix: prefix)
+                }
             }
             isFetchingGames = false
         }
@@ -129,9 +135,7 @@ private struct EpicDownloadingView: View {
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            Image(systemName: "e.circle.fill")
-                .font(.system(size: 80))
-                .foregroundStyle(.indigo.opacity(0.85))
+            EpicLogo(size: 80)
                 .padding(.bottom, 12)
             Text("EPIC GAMES")
                 .font(.system(.largeTitle, design: .default).weight(.bold))
@@ -163,9 +167,7 @@ struct EpicAuthView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            Image(systemName: "e.circle.fill")
-                .font(.system(size: 80))
-                .foregroundStyle(.indigo.opacity(0.85))
+            EpicLogo(size: 80)
                 .padding(.bottom, 8)
 
             Text("EPIC GAMES")

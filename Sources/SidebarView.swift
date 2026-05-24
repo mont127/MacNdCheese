@@ -117,8 +117,7 @@ struct BottleRow: View {
                     .frame(width: 22, height: 22)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             } else if bottle.isEpicBottle {
-                Image(systemName: "e.circle.fill")
-                    .foregroundStyle(.indigo)
+                EpicIcon(size: 22)
             } else if bottle.isSteamBottle {
                 Image(systemName: "gamecontroller.fill")
                     .foregroundStyle(.blue)

@@ -59,6 +59,25 @@ STEAM_SETUP_URL = "https://cdn.fastly.steamstatic.com/client/installer/SteamSetu
 
 LEGENDARY_DIR = PORTABLE_DIR / "legendary"
 LEGENDARY_BIN = LEGENDARY_DIR / "legendary"
+
+
+def _legendary_config_dir(prefix: str) -> Path:
+    """Returns the per-bottle Legendary config directory."""
+    return Path(prefix).expanduser().resolve() / ".legendary_config"
+
+
+def _legendary_cmd(prefix: str) -> List[str]:
+    """Base legendary command (config isolation is done via LEGENDARY_CONFIG_PATH env var)."""
+    return [str(LEGENDARY_BIN)]
+
+
+def _legendary_env(prefix: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Returns an environment dict with LEGENDARY_CONFIG_PATH set to the per-bottle dir."""
+    env = (base if base is not None else os.environ).copy()
+    config_dir = _legendary_config_dir(prefix)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    env["LEGENDARY_CONFIG_PATH"] = str(config_dir)
+    return env
 _EPIC_CLIENT_ID = "34a02cf8f4414e29b15921876da36f9a"
 _EPIC_REDIRECT = (
     f"https://www.epicgames.com/id/api/redirect"
@@ -76,9 +95,16 @@ _legendary_installs: Dict[str, Any] = {}  # app_name -> (Popen, file, log_path, 
 _legendary_games_cache: Dict[str, Any] = {}  # prefix -> {"games": [], "ts": float, "scanning": bool}
 _LEGENDARY_CACHE_TTL = 300  # seconds before a background re-fetch is triggered
 
+# Download queue — one install runs at a time, others wait.
+_legendary_download_queue: List[Tuple[str, str]] = []  # [(app_name, prefix)]
+_legendary_queue_lock = threading.Lock()
+_legendary_queue_worker_running: bool = False
+
 
 def _terminate_legendary_installs() -> None:
-    """Kill all active legendary install processes. Called on backend exit."""
+    """Kill all active legendary install processes and clear the queue. Called on backend exit."""
+    with _legendary_queue_lock:
+        _legendary_download_queue.clear()
     for app_name, entry in list(_legendary_installs.items()):
         proc = entry[0]
         try:
@@ -89,6 +115,49 @@ def _terminate_legendary_installs() -> None:
 
 
 atexit.register(_terminate_legendary_installs)
+
+
+def _legendary_do_install(app_name: str, prefix: str) -> None:
+    """Run one legendary install to completion. Called from the queue worker thread."""
+    install_base = str(
+        Path(prefix).expanduser().resolve() / "drive_c" / "Program Files" / "Epic Games"
+    )
+    Path(install_base).mkdir(parents=True, exist_ok=True)
+    log_path = str(LEGENDARY_DIR / f"install_{app_name}.log")
+    try:
+        log_fh = open(log_path, "w")
+        proc = subprocess.Popen(
+            _legendary_cmd(prefix) + ["install", app_name,
+             "--base-path", install_base,
+             "-y", "--no-install-prereqs", "--skip-sdl"],
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=_legendary_env(prefix),
+        )
+        _legendary_installs[app_name] = (proc, log_fh, log_path, prefix)
+        proc.wait()
+    except Exception:
+        pass
+    finally:
+        entry = _legendary_installs.pop(app_name, None)
+        if entry:
+            try:
+                entry[1].close()
+            except Exception:
+                pass
+        _legendary_games_cache.pop(prefix, None)
+
+
+def _legendary_queue_worker() -> None:
+    """Process queued legendary installs one at a time."""
+    global _legendary_queue_worker_running
+    while True:
+        with _legendary_queue_lock:
+            if not _legendary_download_queue:
+                _legendary_queue_worker_running = False
+                return
+            app_name, prefix = _legendary_download_queue.pop(0)
+        _legendary_do_install(app_name, prefix)
 
 
 BACKEND_AUTO = "auto"
@@ -4080,60 +4149,114 @@ def _legendary_cover_url(meta: Dict[str, Any]) -> str:
     return ""
 
 
-def _fetch_legendary_games_blocking(prefix: str) -> List[Dict[str, Any]]:
-    """Runs legendary list/list-installed in parallel. Call only from a background thread."""
-    import concurrent.futures
+def _migrate_legendary_installed(prefix: str) -> None:
+    """Copy installed entries from the old global config into the per-bottle config.
+
+    Needed so `legendary launch` (which uses LEGENDARY_CONFIG_PATH) can find games
+    that were installed before the per-bottle isolation was introduced.
+    """
+    global_json = Path.home() / ".config" / "legendary" / "installed.json"
+    if not global_json.exists():
+        return
     prefix_path = str(Path(prefix).expanduser().resolve())
-
-    def _run_list() -> Any:
-        try:
-            r = subprocess.run(
-                [str(LEGENDARY_BIN), "list", "--platform", "Windows", "--json"],
-                capture_output=True, text=True, timeout=90,
-            )
-            return json.loads(r.stdout) if r.stdout.strip() else []
-        except Exception as exc:
-            log(f"legendary list failed: {exc}")
-            return []
-
-    def _run_installed() -> Any:
-        try:
-            r = subprocess.run(
-                [str(LEGENDARY_BIN), "list-installed", "--json"],
-                capture_output=True, text=True, timeout=30,
-            )
-            return json.loads(r.stdout) if r.stdout.strip() else []
-        except Exception as exc:
-            log(f"legendary list-installed failed: {exc}")
-            return []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        owned_future = pool.submit(_run_list)
-        installed_future = pool.submit(_run_installed)
-        owned_raw = owned_future.result()
-        inst_raw = installed_future.result()
-
-    if isinstance(owned_raw, dict):
-        owned_list = owned_raw.get("games", owned_raw.get("library", []))
-    else:
-        owned_list = owned_raw
-
-    if isinstance(inst_raw, dict):
-        inst_list = inst_raw.get("games", inst_raw.get("installed", []))
-    else:
-        inst_list = inst_raw
-
-    installed_here: Dict[str, Dict[str, Any]] = {}
-    for g in inst_list:
-        ip = g.get("install_path", "")
-        if ip:
+    per_bottle_dir = _legendary_config_dir(prefix)
+    per_bottle_json = per_bottle_dir / "installed.json"
+    try:
+        with open(global_json) as f:
+            global_data: Dict[str, Any] = json.load(f)
+        if not isinstance(global_data, dict):
+            return
+        per_bottle_data: Dict[str, Any] = {}
+        if per_bottle_json.exists():
+            try:
+                with open(per_bottle_json) as f:
+                    per_bottle_data = json.load(f)
+                if not isinstance(per_bottle_data, dict):
+                    per_bottle_data = {}
+            except Exception:
+                per_bottle_data = {}
+        added = 0
+        for app_name, entry in global_data.items():
+            if app_name in per_bottle_data:
+                continue
+            ip = entry.get("install_path", "")
+            if not ip:
+                continue
             try:
                 ip_resolved = str(Path(ip).expanduser().resolve())
             except Exception:
                 ip_resolved = ip
             if ip_resolved.startswith(prefix_path + "/drive_c") or ip_resolved.startswith(prefix_path + "\\drive_c"):
-                installed_here[g.get("app_name", "")] = g
+                per_bottle_data[app_name] = entry
+                added += 1
+        if added:
+            per_bottle_dir.mkdir(parents=True, exist_ok=True)
+            with open(per_bottle_json, "w") as f:
+                json.dump(per_bottle_data, f, indent=2)
+            log(f"legendary: migrated {added} pre-existing install(s) into per-bottle config for {prefix}")
+    except Exception as exc:
+        log(f"legendary: migration failed: {exc}")
 
+
+_LEGENDARY_LIB_CACHE_FILE = "macncheese_library.json"
+
+
+def _read_disk_library(prefix: str) -> List[Dict[str, Any]]:
+    """Read the owned-games list from the per-bottle disk cache (instant, no network)."""
+    path = _legendary_config_dir(prefix) / _LEGENDARY_LIB_CACHE_FILE
+    if not path.exists():
+        return []
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _write_disk_library(prefix: str, owned: List[Dict[str, Any]]) -> None:
+    """Persist the owned-games list to disk so future scans are instant."""
+    path = _legendary_config_dir(prefix) / _LEGENDARY_LIB_CACHE_FILE
+    try:
+        _legendary_config_dir(prefix).mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(owned, f)
+    except Exception as exc:
+        log(f"legendary: disk library write failed: {exc}")
+
+
+def _read_installed_here(prefix: str) -> Dict[str, Dict[str, Any]]:
+    """Read installed games filtered to this prefix from disk — always instant."""
+    prefix_path = str(Path(prefix).expanduser().resolve())
+    results: Dict[str, Dict[str, Any]] = {}
+    sources = [
+        Path.home() / ".config" / "legendary" / "installed.json",
+        _legendary_config_dir(prefix) / "installed.json",
+    ]
+    for path in sources:
+        if not path.exists():
+            continue
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            entries = list(data.values()) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            for entry in entries:
+                ip = entry.get("install_path", "")
+                if not ip:
+                    continue
+                try:
+                    ip_resolved = str(Path(ip).expanduser().resolve())
+                except Exception:
+                    ip_resolved = ip
+                if ip_resolved.startswith(prefix_path + "/drive_c") or ip_resolved.startswith(prefix_path + "\\drive_c"):
+                    results[entry.get("app_name", "")] = entry
+        except Exception as exc:
+            log(f"legendary: failed to read {path}: {exc}")
+    return results
+
+
+def _build_games_list(prefix: str, owned_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build the game list from owned library + current installed state (all disk reads, no network)."""
+    installed_here = _read_installed_here(prefix)
     games: List[Dict[str, Any]] = []
     for g in owned_list:
         app_name = g.get("app_name", "")
@@ -4141,12 +4264,8 @@ def _fetch_legendary_games_blocking(prefix: str) -> List[Dict[str, Any]]:
         if g.get("is_dlc", False):
             continue
         is_installed = app_name in installed_here
-        install_dir = ""
-        exe = None
-        if is_installed:
-            install_dir = installed_here[app_name].get("install_path", "")
-            if install_dir:
-                exe = _detect_exe(Path(install_dir), app_name, app_title)
+        install_dir = installed_here[app_name].get("install_path", "") if is_installed else ""
+        exe = _detect_exe(Path(install_dir), app_name, app_title) if install_dir else None
         cover_url = _legendary_cover_url(g.get("metadata", g))
         games.append({
             "appid": f"epic_{app_name}",
@@ -4158,19 +4277,98 @@ def _fetch_legendary_games_blocking(prefix: str) -> List[Dict[str, Any]]:
             "exe_icon_format": "",
             "is_manual": False,
             "is_installed": is_installed,
+            "update_available": False,
             "epic_app_name": app_name,
         })
-
     games.sort(key=lambda g: (0 if g["is_installed"] else 1, g["name"].lower()))
     return games
 
 
+def _legendary_updates_from_metadata(prefix: str) -> set:
+    """Compare installed versions against legendary's cached metadata (no network).
+    Returns app_names that have a newer version available."""
+    installed = _read_installed_here(prefix)
+    config_dir = _legendary_config_dir(prefix)
+    updates: set = set()
+    for app_name, info in installed.items():
+        installed_version = info.get("version", "")
+        if not installed_version:
+            continue
+        # legendary stores per-game metadata in <config_dir>/metadata/<app_name>.json
+        # after `legendary list` runs; fall back to the global config dir.
+        for meta_dir in [config_dir / "metadata", Path.home() / ".config" / "legendary" / "metadata"]:
+            meta_path = meta_dir / f"{app_name}.json"
+            if not meta_path.exists():
+                continue
+            try:
+                with open(meta_path) as f:
+                    meta = json.load(f)
+                available_version = (
+                    meta.get("asset_infos", {})
+                        .get("Windows", {})
+                        .get("build_version", "")
+                )
+                if available_version and available_version != installed_version:
+                    updates.add(app_name)
+            except Exception:
+                pass
+            break  # stop at first found metadata
+    return updates
+
+
 def _refresh_legendary_cache(prefix: str) -> None:
-    """Background thread: fetch games and update cache."""
+    """Background thread: serve disk cache instantly, then fetch fresh library from network."""
     try:
-        games = _fetch_legendary_games_blocking(prefix)
+        _migrate_legendary_installed(prefix)
+
+        # Phase 1 — instant: build from disk cache and push to memory immediately.
+        owned_disk = _read_disk_library(prefix)
+        if owned_disk:
+            games_fast = _build_games_list(prefix, owned_disk)
+            _legendary_games_cache[prefix] = {
+                "games": games_fast, "ts": time.time(), "scanning": True,
+            }
+            log(f"legendary: served {len(games_fast)} games from disk cache for {prefix}")
+
+        # Phase 2 — network: fetch fresh library from Epic (may be slow during downloads).
+        lenv = _legendary_env(prefix)
+        try:
+            r = subprocess.run(
+                _legendary_cmd(prefix) + ["list", "--platform", "Windows", "--json"],
+                capture_output=True, text=True, timeout=120, env=lenv,
+            )
+            owned_raw = json.loads(r.stdout) if r.stdout.strip() else []
+        except Exception as exc:
+            log(f"legendary list failed (network unavailable?): {exc}")
+            # Keep the disk-cached result; mark as not scanning.
+            entry = _legendary_games_cache.get(prefix, {})
+            entry["scanning"] = False
+            _legendary_games_cache[prefix] = entry
+            return
+
+        if isinstance(owned_raw, dict):
+            owned_list = owned_raw.get("games", owned_raw.get("library", []))
+        else:
+            owned_list = owned_raw
+
+        # Persist fresh library to disk for next cold start.
+        _write_disk_library(prefix, owned_list)
+
+        # Build final list with up-to-date installed status.
+        games = _build_games_list(prefix, owned_list)
+
+        # Phase 3 — detect updates by comparing installed version against metadata on disk.
+        # `legendary list` (Phase 2) already refreshed the metadata cache, so this is instant.
+        updates_set = _legendary_updates_from_metadata(prefix)
+        if updates_set:
+            for g in games:
+                if g.get("epic_app_name") in updates_set:
+                    g["update_available"] = True
+            log(f"legendary: {len(updates_set)} update(s) available for {prefix}")
+
         _legendary_games_cache[prefix] = {"games": games, "ts": time.time(), "scanning": False}
-        log(f"legendary: cached {len(games)} games for {prefix}")
+        log(f"legendary: refreshed {len(games)} games from network for {prefix}")
+
     except Exception as exc:
         log(f"legendary: cache refresh failed: {exc}")
         entry = _legendary_games_cache.get(prefix, {})
@@ -4179,7 +4377,7 @@ def _refresh_legendary_cache(prefix: str) -> None:
 
 
 def _scan_legendary_games(prefix: str) -> List[Dict[str, Any]]:
-    """Returns cached games immediately; triggers a background refresh if stale."""
+    """Returns games immediately from cache; background-refreshes when stale."""
     if not _legendary_installed():
         return []
 
@@ -4187,16 +4385,25 @@ def _scan_legendary_games(prefix: str) -> List[Dict[str, Any]]:
     now = time.time()
 
     if entry:
-        age = now - entry.get("ts", 0)
-        if age < _LEGENDARY_CACHE_TTL:
-            return entry["games"]  # fresh — return instantly
-        # Stale: trigger refresh but still return cached data
         if not entry.get("scanning", False):
+            age = now - entry.get("ts", 0)
+            if age < _LEGENDARY_CACHE_TTL:
+                return entry["games"]  # fresh in-memory cache — instant
+            # Stale: trigger background refresh but return current data now
             entry["scanning"] = True
             threading.Thread(target=_refresh_legendary_cache, args=(prefix,), daemon=True).start()
-        return entry["games"]
+        return entry["games"]  # return whatever we have while scanning
 
-    # No cache at all: start fetch in background, return empty list for now
+    # No in-memory cache — try disk cache for an instant first response.
+    owned_disk = _read_disk_library(prefix)
+    if owned_disk:
+        _migrate_legendary_installed(prefix)
+        games_fast = _build_games_list(prefix, owned_disk)
+        _legendary_games_cache[prefix] = {"games": games_fast, "ts": 0, "scanning": True}
+        threading.Thread(target=_refresh_legendary_cache, args=(prefix,), daemon=True).start()
+        return games_fast
+
+    # Truly cold start — nothing cached yet.
     _legendary_games_cache[prefix] = {"games": [], "ts": 0, "scanning": True}
     threading.Thread(target=_refresh_legendary_cache, args=(prefix,), daemon=True).start()
     return []
@@ -4216,8 +4423,12 @@ def cmd_legendary_get_auth_url(_params: Dict[str, Any]) -> Any:
     return {"url": EPIC_AUTH_URL}
 
 
-def cmd_legendary_check_auth(_params: Dict[str, Any]) -> Any:
-    user_json = Path.home() / ".config" / "legendary" / "user.json"
+def cmd_legendary_check_auth(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    if prefix:
+        user_json = _legendary_config_dir(prefix) / "user.json"
+    else:
+        user_json = Path.home() / ".config" / "legendary" / "user.json"
     if not user_json.exists():
         return {"authenticated": False, "display_name": ""}
     try:
@@ -4232,20 +4443,24 @@ def cmd_legendary_check_auth(_params: Dict[str, Any]) -> Any:
 
 
 def cmd_legendary_auth(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
     code = params.get("code", "").strip()
     if not code:
         raise ValueError("Missing 'code' parameter")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
     if not _legendary_installed():
         raise RuntimeError("Legendary is not installed")
     try:
         result = subprocess.run(
-            [str(LEGENDARY_BIN), "auth", "--code", code],
-            capture_output=True, text=True, timeout=30,
+            _legendary_cmd(prefix) + ["auth", "--code", code],
+            capture_output=True, text=True, timeout=120,
+            env=_legendary_env(prefix),
         )
         output = result.stdout + result.stderr
         success_markers = ("Successfully logged in", "Logged in as", "login successful")
         if result.returncode == 0 or any(m.lower() in output.lower() for m in success_markers):
-            auth = cmd_legendary_check_auth({})
+            auth = cmd_legendary_check_auth({"prefix": prefix})
             return {"ok": True, "display_name": auth.get("display_name", ""), "error": ""}
         return {"ok": False, "display_name": "", "error": output.strip()[:400]}
     except subprocess.TimeoutExpired:
@@ -4255,27 +4470,26 @@ def cmd_legendary_auth(params: Dict[str, Any]) -> Any:
 
 
 def cmd_legendary_install_game(params: Dict[str, Any]) -> Any:
+    global _legendary_queue_worker_running
     app_name = params.get("app_name", "").strip()
     prefix = params.get("prefix", "").strip()
     if not app_name or not prefix:
         raise ValueError("Missing 'app_name' or 'prefix'")
     if not _legendary_installed():
         raise RuntimeError("Legendary is not installed")
-    install_base = str(
-        Path(prefix).expanduser().resolve() / "drive_c" / "Program Files" / "Epic Games"
-    )
-    Path(install_base).mkdir(parents=True, exist_ok=True)
-    log_path = str(LEGENDARY_DIR / f"install_{app_name}.log")
-    log_fh = open(log_path, "w")
-    proc = subprocess.Popen(
-        [str(LEGENDARY_BIN), "install", app_name,
-         "--base-path", install_base,
-         "-y", "--no-install-prereqs", "--skip-sdl"],
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-    )
-    _legendary_installs[app_name] = (proc, log_fh, log_path, prefix)
-    return {"pid": proc.pid, "log_path": log_path}
+    with _legendary_queue_lock:
+        if app_name in _legendary_installs:
+            return {"queued": False, "position": 0}
+        for i, (qapp, _) in enumerate(_legendary_download_queue):
+            if qapp == app_name:
+                return {"queued": True, "position": i + 1}
+        _legendary_download_queue.append((app_name, prefix))
+        position = len(_legendary_download_queue)
+        if not _legendary_queue_worker_running:
+            _legendary_queue_worker_running = True
+            t = threading.Thread(target=_legendary_queue_worker, daemon=True)
+            t.start()
+    return {"queued": True, "position": position}
 
 
 def cmd_legendary_install_progress(params: Dict[str, Any]) -> Any:
@@ -4317,7 +4531,12 @@ def cmd_legendary_install_progress(params: Dict[str, Any]) -> Any:
 
 def cmd_legendary_cancel_install(params: Dict[str, Any]) -> Any:
     app_name = params.get("app_name", "").strip()
-    entry = _legendary_installs.pop(app_name, None)
+    with _legendary_queue_lock:
+        for i, (qapp, _) in enumerate(_legendary_download_queue):
+            if qapp == app_name:
+                _legendary_download_queue.pop(i)
+                break
+        entry = _legendary_installs.pop(app_name, None)
     if entry:
         proc, log_fh = entry[0], entry[1]
         try:
@@ -4326,6 +4545,40 @@ def cmd_legendary_cancel_install(params: Dict[str, Any]) -> Any:
         except Exception:
             pass
     return {"ok": True}
+
+
+def cmd_legendary_all_downloads(_params: Dict[str, Any]) -> Any:
+    """Return progress of all active and queued legendary downloads."""
+    def read_progress(log_path: str) -> float:
+        try:
+            with open(log_path, "r") as f:
+                lines = f.readlines()
+            for line in reversed(lines):
+                m = re.search(r"Progress:\s*([\d.]+)%", line)
+                if m:
+                    return float(m.group(1))
+        except Exception:
+            pass
+        return 0.0
+
+    result: Dict[str, Any] = {}
+    with _legendary_queue_lock:
+        for app_name, entry in _legendary_installs.items():
+            _proc, _fh, log_path, prefix = entry
+            result[app_name] = {
+                "progress": read_progress(log_path),
+                "queued": False,
+                "queue_position": 0,
+                "prefix": prefix,
+            }
+        for i, (app_name, prefix) in enumerate(_legendary_download_queue):
+            result[app_name] = {
+                "progress": 0.0,
+                "queued": True,
+                "queue_position": i + 1,
+                "prefix": prefix,
+            }
+    return result
 
 
 def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
@@ -4362,16 +4615,18 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
             k, v = line.split("=", 1)
             env[k.strip()] = v.strip()
 
-    # Apply retina regedit in background to avoid blocking
-    if retina_mode:
-        threading.Thread(
-            target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
-        ).start()
+    # Always apply retina regedit (handles both on and off states)
+    threading.Thread(
+        target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
+    ).start()
+
+    # Inject per-bottle legendary config path into the Wine environment
+    env["LEGENDARY_CONFIG_PATH"] = str(_legendary_config_dir(prefix))
 
     # legendary launch handles Epic auth token generation and passes all required
     # -AUTH_TYPE / -AUTH_PASSWORD / -epicapp / etc. args to Wine automatically.
-    cmd = [
-        str(LEGENDARY_BIN), "launch", app_name,
+    cmd = _legendary_cmd(prefix) + [
+        "launch", app_name,
         "--wine", wine_bin,
         "--wine-prefix", prefix_expanded,
         "--skip-version-check",
@@ -4432,6 +4687,7 @@ COMMANDS: Dict[str, Any] = {
     "legendary_install_game": cmd_legendary_install_game,
     "legendary_install_progress": cmd_legendary_install_progress,
     "legendary_cancel_install": cmd_legendary_cancel_install,
+    "legendary_all_downloads": cmd_legendary_all_downloads,
     "legendary_get_auth_url": cmd_legendary_get_auth_url,
     "legendary_scan_status": cmd_legendary_scan_status,
     "legendary_launch_game": cmd_legendary_launch_game,

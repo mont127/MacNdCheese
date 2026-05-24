@@ -10,6 +10,36 @@ struct ContentView: View {
     @State private var showStore = false
     @State private var showEpicStore = false
     @State private var newBottleName = ""
+    @State private var showKillConfirmation = false
+
+    @ViewBuilder private var killWineserverButton: some View {
+        Button {
+            showKillConfirmation = true
+        } label: {
+            Image(systemName: "stop.circle").foregroundStyle(.red)
+        }
+        .help("Kill Wineserver")
+        .disabled(backend.activePrefix == nil)
+    }
+
+    @ViewBuilder private var settingsButtons: some View {
+                Button { openSettings() } label: { Image(systemName: "gear") }
+            .help("Settings")
+            .accessibilityLabel("Settings")
+        if announcements.hasNewAnnouncement {
+            Button { showAnnouncement = true } label: {
+                Image(systemName: "bell.badge.fill").symbolRenderingMode(.multicolor)
+            }
+            .help("New Announcement")
+            .accessibilityLabel("New Announcement")
+        }
+        if activeBottle?.isEpicBottle == true && backend.epicAuthenticated {
+            Button { showEpicStore = true } label: {
+                Label("Open Store", systemImage: "cart")
+            }
+            .help("Open Epic Games Store")
+        }
+    }
 
     var filteredGames: [Game] {
         if searchText.isEmpty { return backend.games }
@@ -47,6 +77,7 @@ struct ContentView: View {
                         .transition(.opacity)
                 } else if activeBottle?.isEpicBottle == true {
                     EpicLandingView(searchText: $searchText)
+                        .id(backend.activePrefix)
                         .transition(.opacity)
                 } else if backend.games.isEmpty {
                     if activeBottle?.isSteamBottle ?? true {
@@ -89,39 +120,21 @@ struct ContentView: View {
             if isStore { /* no-op */ }
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    openSettings()
-                } label: {
-                    Image(systemName: "gear")
-                }
-                .help("Settings")
-                .accessibilityLabel("Settings")
+            ToolbarItem(placement: .destructiveAction) {
+                killWineserverButton
             }
-
-            if activeBottle?.isEpicBottle == true && backend.epicAuthenticated {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showEpicStore = true
-                    } label: {
-                        Label("Open Store", systemImage: "cart")
-                    }
-                    .help("Open Epic Games Store")
-                }
+            ToolbarItemGroup(placement: .primaryAction) {
+                settingsButtons
             }
-
-            if announcements.hasNewAnnouncement {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showAnnouncement = true
-                    } label: {
-                        Image(systemName: "bell.badge.fill")
-                            .symbolRenderingMode(.multicolor)
-                    }
-                    .help("New Announcement")
-                    .accessibilityLabel("New Announcement")
-                }
+        }
+        .alert("Kill Wineserver?", isPresented: $showKillConfirmation) {
+            Button("Kill", role: .destructive) {
+                guard let prefix = backend.activePrefix else { return }
+                Task { await backend.killWineserver(prefix: prefix) }
             }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will forcefully terminate all Wine processes in the current bottle. Any unsaved game progress will be lost.")
         }
     }
 }
