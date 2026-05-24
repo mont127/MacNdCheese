@@ -144,7 +144,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", customEnv: String = "") async {
+    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "") async {
         do {
             let screenInfo = NSScreen.screens.map { s in
                 "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"
@@ -153,7 +153,7 @@ final class BackendClient: ObservableObject {
                 "prefix": prefix, "exe": exe, "args": args, "backend": backend, "install_dir": installDir,
                 "retina_mode": retinaMode, "metal_hud": metalHud, "esync": esync, "msync": msync,
                 "screen_info": screenInfo, "game_name": gameName, "steam_appid": steamAppId,
-                "custom_env": customEnv,
+                "steam_mode": steamMode, "custom_env": customEnv,
             ])
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode(LaunchResult.self, from: data) {
@@ -383,6 +383,15 @@ final class BackendClient: ObservableObject {
             _ = try await send(cmd: "set_game_order", params: ["prefix": prefix, "order": order])
         } catch {
             lastError = "Failed to save game order: \(error.localizedDescription)"
+        }
+    }
+
+    func getSteamDescription(appid: String) async -> String? {
+        do {
+            let result = try await send(cmd: "get_steam_description", params: ["appid": appid])
+            return (result as? [String: Any])?["description"] as? String
+        } catch {
+            return nil
         }
     }
 
