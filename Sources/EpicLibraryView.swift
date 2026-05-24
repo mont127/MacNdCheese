@@ -1,4 +1,6 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
 
 struct EpicLibraryView: View {
     @EnvironmentObject var backend: BackendClient
@@ -6,14 +8,28 @@ struct EpicLibraryView: View {
     @Binding var searchText: String
     var isFetching: Bool = false
 
+    @State private var gameOrder: [String] = []
+    @State private var draggingAppid: String? = nil
+    @State private var dropTargetAppid: String? = nil
+
     private let columns = [
         GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)
     ]
 
+    private var orderedGames: [Game] {
+        if gameOrder.isEmpty { return games }
+        let orderMap = Dictionary(uniqueKeysWithValues: gameOrder.enumerated().map { ($1, $0) })
+        return games.sorted {
+            let ia = orderMap[$0.appid] ?? Int.max
+            let ib = orderMap[$1.appid] ?? Int.max
+            return ia == ib ? $0.name.lowercased() < $1.name.lowercased() : ia < ib
+        }
+    }
+
     private var displayedGames: [Game] {
         searchText.isEmpty
-            ? games
-            : games.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            ? orderedGames
+            : orderedGames.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
@@ -21,8 +37,7 @@ struct EpicLibraryView: View {
             if isFetching && displayedGames.isEmpty {
                 VStack(spacing: 16) {
                     Spacer().frame(height: 60)
-                    ProgressView()
-                        .controlSize(.large)
+                    ProgressView().controlSize(.large)
                     Text("Fetching your library…")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
@@ -45,6 +60,32 @@ struct EpicLibraryView: View {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(displayedGames) { game in
                         EpicGameCard(game: game)
+                            .opacity(draggingAppid == game.appid ? 0.45 : 1.0)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(
+                                        dropTargetAppid == game.appid ? Color.accentColor : Color.clear,
+                                        lineWidth: 2
+                                    )
+                            )
+                            .onDrag {
+                                draggingAppid = game.appid
+                                return NSItemProvider(object: game.appid as NSString)
+                            }
+                            .onDrop(
+                                of: [UTType.plainText],
+                                isTargeted: Binding(
+                                    get: { dropTargetAppid == game.appid },
+                                    set: { targeted in dropTargetAppid = targeted ? game.appid : nil }
+                                )
+                            ) { (_: [NSItemProvider]) -> Bool in
+                                guard let from = draggingAppid, from != game.appid else {
+                                    draggingAppid = nil; return false
+                                }
+                                moveGame(from: from, after: game.appid)
+                                draggingAppid = nil
+                                return true
+                            }
                     }
                 }
                 .padding(.horizontal, 24)
@@ -53,6 +94,40 @@ struct EpicLibraryView: View {
         }
         .contentMargins(.top, 20, for: .scrollContent)
         .scrollClipDisabled()
+        .onAppear { loadGameOrder() }
+        .onChange(of: backend.activePrefix) { loadGameOrder() }
+        .onChange(of: games) {
+            let known = Set(gameOrder)
+            let newIds = games.map { $0.appid }.filter { !known.contains($0) }
+            gameOrder = gameOrder.filter { id in games.contains { $0.appid == id } } + newIds
+        }
+    }
+
+    private func moveGame(from sourceAppid: String, after targetAppid: String) {
+        var order = orderedGames.map { $0.appid }
+        guard let fromIdx = order.firstIndex(of: sourceAppid),
+              let toIdx = order.firstIndex(of: targetAppid) else { return }
+        order.swapAt(fromIdx, toIdx)
+        gameOrder = order
+        guard let prefix = backend.activePrefix else { return }
+        Task { await backend.setGameOrder(prefix: prefix, order: order) }
+    }
+
+    private func loadGameOrder() {
+        guard let prefix = backend.activePrefix else {
+            gameOrder = games.map { $0.appid }
+            return
+        }
+        Task {
+            let saved = await backend.getGameOrder(prefix: prefix)
+            if saved.isEmpty {
+                gameOrder = games.map { $0.appid }
+            } else {
+                let known = Set(saved)
+                let newIds = games.map { $0.appid }.filter { !known.contains($0) }
+                gameOrder = saved.filter { id in games.contains { $0.appid == id } } + newIds
+            }
+        }
     }
 }
 
@@ -74,7 +149,8 @@ struct EpicGameCard: View {
         return state
     }
 
-    private var installing: Bool { downloadState != nil }
+    private var installing: Bool { downloadState != nil && !(downloadState?.paused ?? false) }
+    private var isPaused: Bool { downloadState?.paused ?? false }
     private var installProgress: Double { downloadState?.progress ?? 0 }
     private var isQueued: Bool { downloadState?.queued ?? false }
     private var queuePosition: Int { downloadState?.queuePosition ?? 0 }
@@ -83,7 +159,7 @@ struct EpicGameCard: View {
         VStack(spacing: 0) {
             ZStack(alignment: .topTrailing) {
                 coverArea
-                if isHovering && game.isInstalled && !installing && !game.updateAvailable {
+                if isHovering && game.isInstalled && !installing && !isPaused && !game.updateAvailable {
                     gearButton
                 }
             }
@@ -97,7 +173,28 @@ struct EpicGameCard: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8)
-                if installing {
+                // Pause button — only for the active (non-queued, non-paused) download
+                if installing && !isQueued {
+                    Button { pauseInstall() } label: {
+                        Image(systemName: "pause.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 4)
+                }
+                // Resume button — when paused
+                if isPaused {
+                    Button { resumeInstall() } label: {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.indigo)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 4)
+                }
+                // Cancel — active, queued, or paused
+                if installing || isPaused {
                     Button { cancelInstall() } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 16))
@@ -131,7 +228,8 @@ struct EpicGameCard: View {
     @ViewBuilder
     private var coverArea: some View {
         Button {
-            if game.isInstalled && !game.updateAvailable { launch() }
+            if isPaused { resumeInstall() }
+            else if game.isInstalled && !game.updateAvailable { launch() }
             else if !installing { startInstall() }
         } label: {
             ZStack {
@@ -148,7 +246,7 @@ struct EpicGameCard: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // Gray overlay: full when not installed, reveals as download progresses
+                // Progress wipe overlay for active downloads
                 if installing && !isQueued {
                     Rectangle()
                         .fill(.black.opacity(0.55))
@@ -158,21 +256,20 @@ struct EpicGameCard: View {
                             anchor: .trailing
                         )
                         .animation(.linear(duration: 2.5), value: installProgress)
-                } else if !game.isInstalled {
+                } else if !game.isInstalled && !isPaused {
                     Rectangle()
                         .fill(.black.opacity(0.55))
                 }
 
-                // Hover / launching overlay for installed games
                 if isLaunching {
                     LaunchingOverlay(cornerRadius: 12)
-                } else if isHovering && game.isInstalled && !installing {
+                } else if isHovering && game.isInstalled && !installing && !isPaused {
                     Rectangle()
                         .fill(Color.primary.opacity(0.3))
                 }
 
-                // Update badge — top-left corner
-                if game.updateAvailable && game.isInstalled && !installing {
+                // Update badge
+                if game.updateAvailable && game.isInstalled && !installing && !isPaused {
                     VStack {
                         HStack {
                             Text("UPDATE")
@@ -199,13 +296,23 @@ struct EpicGameCard: View {
                                 .transition(.opacity)
                         }
                     }
-                } else if game.updateAvailable && game.isInstalled && !installing && isHovering {
+                } else if game.updateAvailable && game.isInstalled && !installing && !isPaused && isHovering {
                     VStack(spacing: 6) {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 36))
                             .foregroundStyle(.white.opacity(0.9))
                             .shadow(radius: 4)
                         Text("Update")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                } else if isPaused {
+                    VStack(spacing: 6) {
+                        Image(systemName: "pause.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(radius: 4)
+                        Text("\(Int(installProgress))% — Paused")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.9))
                     }
@@ -271,7 +378,7 @@ struct EpicGameCard: View {
     private var contextMenuItems: some View {
         if game.isInstalled {
             Button("Launch") { launch() }
-            if game.updateAvailable && !installing {
+            if game.updateAvailable && !installing && !isPaused {
                 Button("Update") { startInstall() }
             }
             Button("Launch Options…") { showLaunchOptions = true }
@@ -280,9 +387,15 @@ struct EpicGameCard: View {
                     NSWorkspace.shared.selectFile(exe, inFileViewerRootedAtPath: "")
                 }
             }
+        } else if isPaused {
+            Button("Resume Download") { resumeInstall() }
+            Button("Cancel Download") { cancelInstall() }
         } else if !installing {
             Button("Download & Install") { startInstall() }
+        } else if isQueued {
+            Button("Cancel Download") { cancelInstall() }
         } else {
+            Button("Pause Download") { pauseInstall() }
             Button("Cancel Download") { cancelInstall() }
         }
     }
@@ -314,6 +427,22 @@ struct EpicGameCard: View {
         guard let prefix = backend.activePrefix, let appName = game.epicAppName else { return }
         Task {
             _ = await backend.epicInstallGame(prefix: prefix, appName: appName)
+            await backend.refreshEpicDownloads()
+        }
+    }
+
+    private func pauseInstall() {
+        guard let appName = game.epicAppName else { return }
+        Task {
+            await backend.epicPauseInstall(appName: appName)
+            await backend.refreshEpicDownloads()
+        }
+    }
+
+    private func resumeInstall() {
+        guard let appName = game.epicAppName else { return }
+        Task {
+            await backend.epicResumeInstall(appName: appName)
             await backend.refreshEpicDownloads()
         }
     }
