@@ -33,6 +33,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -40,6 +41,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1575,6 +1577,185 @@ def cmd_get_steam_description(params: Dict[str, Any]) -> Any:
     }
 
 
+# --- MacNCheese-level Discord Rich Presence ------------------------------
+# Distinct from the rpc-bridge above (which forwards a GAME's own Discord RPC).
+# This reports "Playing MacNCheese" + the launched game straight from the
+# backend, so it works even for games that have no Discord integration.
+#
+# Requires a Discord application named "MacNCheese" — create one at
+# https://discord.com/developers/applications, then either paste its
+# Application ID into DISCORD_CLIENT_ID below or export MACNCHEESE_DISCORD_APP_ID.
+# The "Playing MacNCheese" headline comes from that app's name; the game shows
+# as the detail line. Empty id => presence is silently disabled (no-op).
+DISCORD_CLIENT_ID = os.environ.get("MACNCHEESE_DISCORD_APP_ID", "1508076871009697902").strip()
+
+_discord_lock = threading.Lock()
+_discord_sock = None  # connected + handshaked AF_UNIX socket, or None
+
+_DISCORD_STEAM_EXES = {
+    "steam.exe", "steamwebhelper.exe", "steamerrorreporter.exe",
+    "steamerrorreporter64.exe", "steamservice.exe", "gameoverlayui.exe",
+    "steamtours.exe",
+}
+
+
+def _discord_ipc_candidates() -> List[str]:
+    """Probe the standard Discord IPC socket locations (macOS/Linux)."""
+    bases: List[str] = []
+    for var in ("XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"):
+        v = os.environ.get(var)
+        if v:
+            bases.append(v.rstrip("/"))
+    bases.append("/tmp")
+    seen = set()
+    out: List[str] = []
+    for b in bases:
+        if b and b not in seen:
+            seen.add(b)
+            for i in range(10):
+                out.append(os.path.join(b, f"discord-ipc-{i}"))
+    return out
+
+
+def _discord_send(sock, op: int, payload: dict) -> None:
+    data = json.dumps(payload).encode("utf-8")
+    sock.sendall(struct.pack("<II", op, len(data)) + data)
+
+
+def _discord_recv(sock):
+    header = sock.recv(8)
+    if len(header) < 8:
+        return None, None
+    op, length = struct.unpack("<II", header)
+    buf = b""
+    while len(buf) < length:
+        chunk = sock.recv(length - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    try:
+        return op, json.loads(buf.decode("utf-8"))
+    except Exception:
+        return op, None
+
+
+def _discord_drop() -> None:
+    # Caller must hold _discord_lock.
+    global _discord_sock
+    if _discord_sock is not None:
+        try:
+            _discord_sock.close()
+        except Exception:
+            pass
+    _discord_sock = None
+
+
+def _discord_connect():
+    # Caller must hold _discord_lock. Returns a handshaked socket or None.
+    global _discord_sock
+    if not DISCORD_CLIENT_ID:
+        return None
+    if _discord_sock is not None:
+        return _discord_sock
+    for path in _discord_ipc_candidates():
+        if not os.path.exists(path):
+            continue
+        s = None
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(2.0)
+            s.connect(path)
+            _discord_send(s, 0, {"v": 1, "client_id": DISCORD_CLIENT_ID})
+            _discord_recv(s)  # READY (best-effort)
+            _discord_sock = s
+            return s
+        except Exception:
+            if s is not None:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            continue
+    return None
+
+
+def discord_set_game(game_name: str) -> None:
+    """Set 'Playing MacNCheese' + game presence. Safe no-op on any failure."""
+    if not DISCORD_CLIENT_ID or not game_name:
+        return
+    with _discord_lock:
+        sock = _discord_connect()
+        if sock is None:
+            return
+        payload = {
+            "cmd": "SET_ACTIVITY",
+            "nonce": str(uuid.uuid4()),
+            "args": {
+                "pid": os.getpid(),
+                "activity": {
+                    "details": game_name,
+                    "state": "via MacNCheese",
+                    "timestamps": {"start": int(time.time())},
+                    "assets": {
+                        "large_image": "macncheese",
+                        "large_text": "MacNCheese",
+                    },
+                },
+            },
+        }
+        try:
+            _discord_send(sock, 1, payload)
+            _discord_recv(sock)
+            log(f"discord: presence set -> {game_name}")
+        except Exception:
+            _discord_drop()
+
+
+def discord_clear() -> None:
+    """Clear MacNCheese presence. Safe no-op on any failure."""
+    if not DISCORD_CLIENT_ID:
+        return
+    with _discord_lock:
+        if _discord_sock is None:
+            return
+        payload = {
+            "cmd": "SET_ACTIVITY",
+            "nonce": str(uuid.uuid4()),
+            "args": {"pid": os.getpid(), "activity": None},
+        }
+        try:
+            _discord_send(_discord_sock, 1, payload)
+            _discord_recv(_discord_sock)
+            log("discord: presence cleared")
+        except Exception:
+            _discord_drop()
+
+
+def _discord_presence_for_launch(proc, exe, game_name: str) -> None:
+    """Report 'Playing MacNCheese' + game for a launched process and clear it
+    when the process exits. Skips Steam-family targets."""
+    if not DISCORD_CLIENT_ID:
+        return
+    base = os.path.basename(str(exe or "")).lower()
+    if base in _DISCORD_STEAM_EXES:
+        return
+    name = (game_name or "").strip()
+    if (not name or name.lower() == "steam") and base:
+        name = os.path.splitext(base)[0]
+    if not name or name.lower() == "steam":
+        return
+
+    def _watch():
+        discord_set_game(name)
+        try:
+            proc.wait()
+        except Exception:
+            pass
+        discord_clear()
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 def cmd_launch_game(params: Dict[str, Any]) -> Any:
     prefix = params.get("prefix")
     exe = params.get("exe")
@@ -1931,6 +2112,11 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
 
     _running_games[proc.pid] = proc
     log(f"Game launched with PID {proc.pid}, backend={backend}, log at {log_path}")
+
+    # MacNCheese-level Discord presence ("Playing MacNCheese" + this game).
+    # Reuses the per-bottle discord_rpc toggle; Steam-family exes are excluded.
+    if bottle_cfg.get("discord_rpc", True):
+        _discord_presence_for_launch(proc, exe, params.get("game_name", ""))
 
     return {"pid": proc.pid, "log_path": log_path, "backend": backend}
 
@@ -4652,12 +4838,18 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+    # MacNCheese-level Discord presence for Epic launches. Prefer the real
+    # title passed from the UI; fall back to the Epic app_name (codename).
+    try:
+        _epic_cfg = _load_bottles().get(_resolve_key(prefix), {})
+    except Exception:
+        _epic_cfg = {}
+    if _epic_cfg.get("discord_rpc", True):
+        _discord_presence_for_launch(proc, "", params.get("game_name", "") or app_name)
+
     return {"pid": proc.pid}
 
-
-# ---------------------------------------------------------------------------
-# Command dispatch table
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Per-game config (esync, msync, backend choice, etc.)
@@ -4759,6 +4951,10 @@ def cmd_legendary_resume_install(params: Dict[str, Any]) -> Any:
             threading.Thread(target=_legendary_queue_worker, daemon=True).start()
     return {"ok": True}
 
+
+# ---------------------------------------------------------------------------
+# Command dispatch table
+# ---------------------------------------------------------------------------
 
 COMMANDS: Dict[str, Any] = {
     "list_bottles": cmd_list_bottles,
