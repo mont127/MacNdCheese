@@ -166,6 +166,7 @@ def _legendary_queue_worker() -> None:
 
 BACKEND_AUTO = "auto"
 BACKEND_WINE = "wine"
+BACKEND_WINE_DEVEL = "wine_devel"  # Wine Staging 11.8 + OpenGL 3.2 macdrv patch (Mewgenics/SDL3)
 BACKEND_DXVK = "dxvk"
 BACKEND_DXMT = "dxmt"
 BACKEND_MESA_LLVMPIPE = "mesa:llvmpipe"
@@ -366,6 +367,16 @@ def _find_wine_stable() -> Optional[str]:
 def _find_wine_staging() -> Optional[str]:
     for name in ("wine64", "wine"):
         p = PORTABLE_DIR / "Wine Staging.app" / "Contents" / "Resources" / "wine" / "bin" / name
+        if p.exists():
+            return str(p)
+    return None
+
+def _find_wine_devel() -> Optional[str]:
+    """Wine Devel = standalone Wine Staging 11.8 with the OpenGL 3.2+ macdrv
+    patch, for SDL3/OpenGL games like Mewgenics (installer.sh install_wine_devel
+    → $PORTABLE_DIR/Wine Devel.app). Completely separate from Wine D3DMetal."""
+    for name in ("wine64", "wine"):
+        p = PORTABLE_DIR / "Wine Devel.app" / "Contents" / "Resources" / "wine" / "bin" / name
         if p.exists():
             return str(p)
     return None
@@ -701,7 +712,7 @@ def _apply_backend_env(env: Dict[str, str], backend: str) -> Dict[str, str]:
     
     backend_ovr = ""
 
-    if backend == BACKEND_WINE:
+    if backend in (BACKEND_WINE, BACKEND_WINE_DEVEL):
         backend_ovr = "dxgi,d3d11,d3d10core=b"
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
@@ -896,6 +907,14 @@ def _backend_wine_binary(backend: str, exe: str) -> Optional[str]:
             version = _get_wine_version(gptk_bin)
             log(f"Backend gptk_full using GPTK Full: {gptk_bin} ({version})")
             return gptk_bin
+    if backend == BACKEND_WINE_DEVEL:
+        wine_bin = _find_wine_devel()
+        if wine_bin:
+            log(f"Backend wine_devel using Wine Devel.app: {wine_bin} ({_get_wine_version(wine_bin)})")
+            return wine_bin
+        log("Backend wine_devel selected but Wine Devel.app not installed "
+            "(Setup -> Wine Devel). Needed for OpenGL/SDL3 games like Mewgenics.")
+        return None
     return None
 
 
@@ -1916,9 +1935,21 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
                     steam_env["WINE_D3DMETAL_NO_STEAM_HACK"] = "1"
                     # SHIM=1 keeps steamwebhelper.exe alive (CEF survives the
                     # gs.base / Apple TSD interactions that previously crashed
-                    # Chrome_InProcGpuThread). Verified 2026-05-21.
-                    steam_env["WINE_D3DMETAL_USE_PTHREAD_SHIM"] = "1"
-                    steam_env["WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE"] = "0"
+                    # Chrome_InProcGpuThread). Verified 2026-05-21 on the dev Mac.
+                    # BUT the shim's RIP-skip handler is a layout-dependent
+                    # landmine: on some Macs it crash-loops wine's EARLY PE init
+                    # (PATCH-055d circuit-breaker parks the worker during
+                    # __wine_main → nothing launches). So honor the user's
+                    # D3DMetal-tab "pthread / mach-exc shim" toggle here instead
+                    # of forcing it on; flip that toggle OFF on an affected Mac
+                    # and Steam will launch shim-free.
+                    _steam_d3dm = _load_d3dmetal_settings()
+                    steam_env["WINE_D3DMETAL_USE_PTHREAD_SHIM"] = (
+                        "1" if _steam_d3dm.get("WINE_D3DMETAL_USE_PTHREAD_SHIM", True) else "0"
+                    )
+                    steam_env["WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE"] = (
+                        "1" if _steam_d3dm.get("WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE", False) else "0"
+                    )
                     steam_env["WINE_D3DMETAL_USE_IOKIT_OBSERVER"] = "0"
                     # KERNEL SAFETY (see _apply_backend_env for full reasoning):
                     # MUST be on or the Mac will kernel-panic after 5-15 min.
@@ -2767,6 +2798,7 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
         {"id": BACKEND_DXMT, "label": "DXMT (experimental)", "available": _dxmt_available()},
         {"id": BACKEND_D3DMETAL3, "label": "D3DMetal (injection, recommended)", "available": _d3dmetal3_available()},
         {"id": BACKEND_WINE_D3DMETAL, "label": "Wine D3DMetal (CS2/Source 2, auto-launches Steam)", "available": _wine_d3dmetal_installed()},
+        {"id": BACKEND_WINE_DEVEL, "label": "Wine Devel (OpenGL/SDL3, e.g. Mewgenics)", "available": _find_wine_devel() is not None},
         {"id": BACKEND_GPTK, "label": "GPTK (D3DMetal, copy DLLs)", "available": _gptk_available()},
         {"id": BACKEND_GPTK_FULL, "label": "GPTK Full (Apple Toolkit)", "available": _gptk_full_available()},
     ]
@@ -2950,13 +2982,15 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
     has_wine_stable = _find_wine_stable() is not None
     has_wine_staging = _find_wine_staging() is not None
     has_wine_d3dmetal = _wine_d3dmetal_installed()
+    has_wine_devel = _find_wine_devel() is not None
     wine_version = _get_wine_version()
     return {
         "has_tools": has_tools,
-        "has_wine": has_wine_stable or has_wine_staging or has_wine_d3dmetal,
+        "has_wine": has_wine_stable or has_wine_staging or has_wine_d3dmetal or has_wine_devel,
         "has_wine_stable": has_wine_stable,
         "has_wine_staging": has_wine_staging,
         "has_wine_d3dmetal": has_wine_d3dmetal,
+        "has_wine_devel": has_wine_devel,
         "has_mesa": _mesa_available(),
         "has_dxvk64": _dxvk_available(),
         "has_dxvk32": has_dxvk32,
@@ -4233,7 +4267,14 @@ _D3DMETAL_DEFAULTS: Dict[str, bool] = {
     "WINE_D3DMETAL_NO_PATCH058":              True,
     "WINE_D3DMETAL_NO_PATCH044V2":            True,
     "WINE_D3DMETAL_NO_PATCH051":              True,
-    "WINE_D3DMETAL_FORCE_VISIBLE":            True,
+    # OFF by default: force-showing every NSWindow (shim PATCH-053) drags small
+    # borderless windows — notably cs2's IME composition window {200,200,111,33}
+    # — through AppKit's legacy -[NSWindow _oldPlaceWindow:fromServer:] path on
+    # the Cocoa main thread, where an objc_msgSend struct-arg ABI desync produces
+    # a non-canonical RIP and parks the main thread (crash on map load). Games
+    # show their own windows fine without it; flip ON only for a title whose
+    # window genuinely stays hidden. Verified 2026-05-24: cs2 loads maps with =0.
+    "WINE_D3DMETAL_FORCE_VISIBLE":            False,
     "WINE_D3DMETAL_NULL_FP_SKIP":             True,
     "DONT_BREAK_ON_ASSERT":                   True,
     "WINE_D3DMETAL_NO_STEAM_HACK":            True,
