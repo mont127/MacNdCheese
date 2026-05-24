@@ -38,7 +38,7 @@ struct CreateBottleSheet: View {
                     .foregroundStyle(.secondary)
                 Picker("", selection: $launcherType) {
                     Label("Steam", systemImage: "play.square.stack.fill").tag("steam")
-                    Label("Epic Games", systemImage: "e.circle.fill").tag("epic")
+                    Label { Text("Epic Games") } icon: { EpicIcon(size: 16) }.tag("epic")
                     Label("None (plain Wine)", systemImage: "wineglass").tag("custom")
                 }
                 .pickerStyle(.segmented)

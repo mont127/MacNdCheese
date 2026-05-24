@@ -187,6 +187,20 @@ struct GameGridView: View {
     }
 }
 
+struct LaunchingOverlay: View {
+    var cornerRadius: CGFloat = 12
+    @State private var pulsing = false
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(Color.black.opacity(pulsing ? 0.55 : 0.2))
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true)) {
+                    pulsing = true
+                }
+            }
+    }
+}
+
 struct GameCardView: View {
     @EnvironmentObject var backend: BackendClient
     let game: Game
@@ -221,16 +235,27 @@ struct GameCardView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        if isHovering {
+                        if isLaunching {
+                            LaunchingOverlay(cornerRadius: 12)
+                                .frame(height: 220)
+                        } else if isHovering {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(Color.primary.opacity(0.3))
                                 .frame(height: 220)
                         }
 
                         if isLaunching {
-                            ProgressView()
-                                .controlSize(.large)
-                                .tint(.white)
+                            VStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.large)
+                                    .tint(.white)
+                                if isHovering {
+                                    Text("Launching…")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.white.opacity(0.9))
+                                        .transition(.opacity)
+                                }
+                            }
                         }
                     }
                     .frame(height: 220)

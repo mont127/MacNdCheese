@@ -191,6 +191,13 @@ struct CheeseRepairAction: Identifiable, Codable {
     let destructive: Bool
 }
 
+struct EpicDownloadState {
+    var progress: Double
+    var queued: Bool
+    var queuePosition: Int
+    var prefix: String
+}
+
 struct UpdateInfo: Codable {
     let cheeseLatestTag: String?
     let gcenxLatestTag: String?

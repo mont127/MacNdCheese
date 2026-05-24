@@ -67,10 +67,17 @@ struct EpicGameCard: View {
     @State private var coverImage: NSImage? = nil
     @State private var isLaunching = false
 
-    // Install tracking
-    @State private var installing = false
-    @State private var installProgress: Double = 0
-    @State private var installPollTask: Task<Void, Never>? = nil
+    private var downloadState: EpicDownloadState? {
+        guard let appName = game.epicAppName,
+              let state = backend.epicDownloads[appName],
+              state.prefix == backend.activePrefix else { return nil }
+        return state
+    }
+
+    private var installing: Bool { downloadState != nil }
+    private var installProgress: Double { downloadState?.progress ?? 0 }
+    private var isQueued: Bool { downloadState?.queued ?? false }
+    private var queuePosition: Int { downloadState?.queuePosition ?? 0 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -128,11 +135,9 @@ struct EpicGameCard: View {
             else if !installing { startInstall() }
         } label: {
             ZStack {
-                // Background placeholder
                 RoundedRectangle(cornerRadius: 12)
                     .fill(.ultraThinMaterial)
 
-                // Cover image — always full opacity
                 if let image = coverImage {
                     Image(nsImage: image)
                         .resizable()
@@ -143,8 +148,8 @@ struct EpicGameCard: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // Gray overlay: full when not installed, left-to-right reveal while downloading
-                if installing {
+                // Gray overlay: full when not installed, reveals as download progresses
+                if installing && !isQueued {
                     Rectangle()
                         .fill(.black.opacity(0.55))
                         .scaleEffect(
@@ -158,39 +163,61 @@ struct EpicGameCard: View {
                         .fill(.black.opacity(0.55))
                 }
 
-                // Hover overlay for installed games
-                if isHovering && game.isInstalled {
+                // Hover / launching overlay for installed games
+                if isLaunching {
+                    LaunchingOverlay(cornerRadius: 12)
+                } else if isHovering && game.isInstalled && !installing {
                     Rectangle()
                         .fill(Color.primary.opacity(0.3))
                 }
 
-                // Center indicator: download arrow or progress %
-                if !game.isInstalled || installing {
+                // Center indicators
+                if isLaunching {
                     VStack(spacing: 6) {
-                        if installing {
-                            Text("\(Int(installProgress))%")
-                                .font(.system(.title2, design: .monospaced).weight(.bold))
-                                .foregroundStyle(.white)
-                                .shadow(radius: 4)
-                                .contentTransition(.numericText())
-                                .animation(.default, value: installProgress)
-                        } else {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .shadow(radius: 4)
-                        }
+                        ProgressView().controlSize(.large).tint(.white)
                         if isHovering {
-                            Text(installing ? "Installing…" : "Download")
+                            Text("Launching…")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .transition(.opacity)
+                        }
+                    }
+                } else if isQueued {
+                    VStack(spacing: 6) {
+                        Image(systemName: "clock.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(radius: 4)
+                        Text("Queue #\(queuePosition)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                } else if installing {
+                    VStack(spacing: 6) {
+                        Text("\(Int(installProgress))%")
+                            .font(.system(.title2, design: .monospaced).weight(.bold))
+                            .foregroundStyle(.white)
+                            .shadow(radius: 4)
+                            .contentTransition(.numericText())
+                            .animation(.default, value: installProgress)
+                        if isHovering {
+                            Text("Installing…")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.white.opacity(0.9))
                         }
                     }
-                }
-
-                // Launching spinner
-                if isLaunching {
-                    ProgressView().controlSize(.large).tint(.white)
+                } else if !game.isInstalled {
+                    VStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(radius: 4)
+                        if isHovering {
+                            Text("Download")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
+                    }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -255,43 +282,18 @@ struct EpicGameCard: View {
 
     private func startInstall() {
         guard let prefix = backend.activePrefix, let appName = game.epicAppName else { return }
-        installing = true
-        installProgress = 0
         Task {
-            guard await backend.epicInstallGame(prefix: prefix, appName: appName) != nil else {
-                installing = false
-                return
-            }
-            startProgressPolling(appName: appName, prefix: prefix)
-        }
-    }
-
-    private func startProgressPolling(appName: String, prefix: String) {
-        installPollTask?.cancel()
-        installPollTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                guard !Task.isCancelled else { break }
-                if let prog = await backend.epicInstallProgress(appName: appName) {
-                    installProgress = prog.progress
-                    if prog.done {
-                        installing = false
-                        await backend.scanGames(prefix: prefix)
-                        break
-                    }
-                } else {
-                    break
-                }
-            }
-            installing = false
+            _ = await backend.epicInstallGame(prefix: prefix, appName: appName)
+            await backend.refreshEpicDownloads()
         }
     }
 
     private func cancelInstall() {
-        installPollTask?.cancel()
-        installing = false
         guard let appName = game.epicAppName else { return }
-        Task { await backend.epicCancelInstall(appName: appName) }
+        Task {
+            await backend.epicCancelInstall(appName: appName)
+            await backend.refreshEpicDownloads()
+        }
     }
 
     private func loadCover() {

@@ -166,6 +166,7 @@ final class BackendClient: ObservableObject {
     @Published var epicDisplayName: String? = nil
     @Published var legendaryInstalled = false
     @Published var legendaryInstalling = false
+    @Published var epicDownloads: [String: EpicDownloadState] = [:]
     @Published var epicAuthURL: URL? = nil
 
     @Published var steamRunning = false
@@ -589,8 +590,9 @@ final class BackendClient: ObservableObject {
     }
 
     func epicCheckAuth() async {
+        guard let prefix = activePrefix else { return }
         do {
-            let result = try await send(cmd: "legendary_check_auth")
+            let result = try await send(cmd: "legendary_check_auth", params: ["prefix": prefix])
             if let dict = result as? [String: Any] {
                 epicAuthenticated = dict["authenticated"] as? Bool ?? false
                 epicDisplayName = dict["display_name"] as? String
@@ -599,8 +601,9 @@ final class BackendClient: ObservableObject {
     }
 
     func epicAuth(code: String) async -> (ok: Bool, displayName: String, error: String) {
+        guard let prefix = activePrefix else { return (false, "", "No active bottle") }
         do {
-            let result = try await send(cmd: "legendary_auth", params: ["code": code])
+            let result = try await send(cmd: "legendary_auth", params: ["code": code, "prefix": prefix])
             if let dict = result as? [String: Any] {
                 return (
                     dict["ok"] as? Bool ?? false,
@@ -614,20 +617,16 @@ final class BackendClient: ObservableObject {
         return (false, "", "Unknown error")
     }
 
-    func epicInstallGame(prefix: String, appName: String) async -> (pid: Int, logPath: String)? {
+    func epicInstallGame(prefix: String, appName: String) async -> Bool {
         do {
-            let result = try await send(cmd: "legendary_install_game", params: [
+            _ = try await send(cmd: "legendary_install_game", params: [
                 "prefix": prefix, "app_name": appName
             ])
-            if let dict = result as? [String: Any],
-               let pid = dict["pid"] as? Int,
-               let log = dict["log_path"] as? String {
-                return (pid, log)
-            }
+            return true
         } catch {
-            lastError = "Failed to install game: \(error.localizedDescription)"
+            lastError = "Failed to queue install: \(error.localizedDescription)"
+            return false
         }
-        return nil
     }
 
     func epicInstallProgress(appName: String) async -> (progress: Double, done: Bool, error: String?)? {
@@ -647,6 +646,24 @@ final class BackendClient: ObservableObject {
     func epicCancelInstall(appName: String) async {
         do {
             _ = try await send(cmd: "legendary_cancel_install", params: ["app_name": appName])
+        } catch {}
+    }
+
+    func refreshEpicDownloads() async {
+        do {
+            let result = try await send(cmd: "legendary_all_downloads", params: [:])
+            guard let dict = result as? [String: Any] else { return }
+            var downloads: [String: EpicDownloadState] = [:]
+            for (appName, info) in dict {
+                guard let info = info as? [String: Any] else { continue }
+                downloads[appName] = EpicDownloadState(
+                    progress: info["progress"] as? Double ?? 0,
+                    queued: info["queued"] as? Bool ?? false,
+                    queuePosition: info["queue_position"] as? Int ?? 0,
+                    prefix: info["prefix"] as? String ?? ""
+                )
+            }
+            epicDownloads = downloads
         } catch {}
     }
 

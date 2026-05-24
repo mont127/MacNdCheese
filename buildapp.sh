@@ -80,6 +80,7 @@ cp icon.icns "$RESOURCES/MacNCheese.icns"
 cp backend_server.py "$RESOURCES/backend_server.py"
 cp installer.sh "$RESOURCES/installer.sh"
 chmod +x "$RESOURCES/installer.sh"
+cp Epic.svg "$RESOURCES/Epic.svg"
 
 for img in Steam.png Wine.png Setting.png Add.png icon.png; do
     if [ -f "$img" ]; then
