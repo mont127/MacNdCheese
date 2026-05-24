@@ -83,7 +83,7 @@ struct EpicGameCard: View {
         VStack(spacing: 0) {
             ZStack(alignment: .topTrailing) {
                 coverArea
-                if isHovering && game.isInstalled && !installing {
+                if isHovering && game.isInstalled && !installing && !game.updateAvailable {
                     gearButton
                 }
             }
@@ -131,7 +131,7 @@ struct EpicGameCard: View {
     @ViewBuilder
     private var coverArea: some View {
         Button {
-            if game.isInstalled { launch() }
+            if game.isInstalled && !game.updateAvailable { launch() }
             else if !installing { startInstall() }
         } label: {
             ZStack {
@@ -171,6 +171,23 @@ struct EpicGameCard: View {
                         .fill(Color.primary.opacity(0.3))
                 }
 
+                // Update badge — top-left corner
+                if game.updateAvailable && game.isInstalled && !installing {
+                    VStack {
+                        HStack {
+                            Text("UPDATE")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 3)
+                                .background(.indigo, in: RoundedRectangle(cornerRadius: 4))
+                                .padding(8)
+                            Spacer()
+                        }
+                        Spacer()
+                    }
+                }
+
                 // Center indicators
                 if isLaunching {
                     VStack(spacing: 6) {
@@ -181,6 +198,16 @@ struct EpicGameCard: View {
                                 .foregroundStyle(.white.opacity(0.9))
                                 .transition(.opacity)
                         }
+                    }
+                } else if game.updateAvailable && game.isInstalled && !installing && isHovering {
+                    VStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(radius: 4)
+                        Text("Update")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.9))
                     }
                 } else if isQueued {
                     VStack(spacing: 6) {
@@ -244,6 +271,9 @@ struct EpicGameCard: View {
     private var contextMenuItems: some View {
         if game.isInstalled {
             Button("Launch") { launch() }
+            if game.updateAvailable && !installing {
+                Button("Update") { startInstall() }
+            }
             Button("Launch Options…") { showLaunchOptions = true }
             if let exe = game.exe {
                 Button("Show in Finder") {

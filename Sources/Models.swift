@@ -38,6 +38,7 @@ struct Game: Identifiable, Codable, Hashable {
     let coverUrl: String?
     let isManual: Bool
     var isInstalled: Bool
+    var updateAvailable: Bool
     var epicAppName: String?
 
     enum CodingKeys: String, CodingKey {
@@ -46,6 +47,7 @@ struct Game: Identifiable, Codable, Hashable {
         case coverUrl = "cover_url"
         case isManual = "is_manual"
         case isInstalled = "is_installed"
+        case updateAvailable = "update_available"
         case epicAppName = "epic_app_name"
     }
 
@@ -58,6 +60,7 @@ struct Game: Identifiable, Codable, Hashable {
         coverUrl = try c.decodeIfPresent(String.self, forKey: .coverUrl)
         isManual = try c.decodeIfPresent(Bool.self, forKey: .isManual) ?? false
         isInstalled = try c.decodeIfPresent(Bool.self, forKey: .isInstalled) ?? true
+        updateAvailable = try c.decodeIfPresent(Bool.self, forKey: .updateAvailable) ?? false
         epicAppName = try c.decodeIfPresent(String.self, forKey: .epicAppName)
     }
 }

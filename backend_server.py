@@ -4277,10 +4277,43 @@ def _build_games_list(prefix: str, owned_list: List[Dict[str, Any]]) -> List[Dic
             "exe_icon_format": "",
             "is_manual": False,
             "is_installed": is_installed,
+            "update_available": False,
             "epic_app_name": app_name,
         })
     games.sort(key=lambda g: (0 if g["is_installed"] else 1, g["name"].lower()))
     return games
+
+
+def _legendary_updates_from_metadata(prefix: str) -> set:
+    """Compare installed versions against legendary's cached metadata (no network).
+    Returns app_names that have a newer version available."""
+    installed = _read_installed_here(prefix)
+    config_dir = _legendary_config_dir(prefix)
+    updates: set = set()
+    for app_name, info in installed.items():
+        installed_version = info.get("version", "")
+        if not installed_version:
+            continue
+        # legendary stores per-game metadata in <config_dir>/metadata/<app_name>.json
+        # after `legendary list` runs; fall back to the global config dir.
+        for meta_dir in [config_dir / "metadata", Path.home() / ".config" / "legendary" / "metadata"]:
+            meta_path = meta_dir / f"{app_name}.json"
+            if not meta_path.exists():
+                continue
+            try:
+                with open(meta_path) as f:
+                    meta = json.load(f)
+                available_version = (
+                    meta.get("asset_infos", {})
+                        .get("Windows", {})
+                        .get("build_version", "")
+                )
+                if available_version and available_version != installed_version:
+                    updates.add(app_name)
+            except Exception:
+                pass
+            break  # stop at first found metadata
+    return updates
 
 
 def _refresh_legendary_cache(prefix: str) -> None:
@@ -4323,6 +4356,16 @@ def _refresh_legendary_cache(prefix: str) -> None:
 
         # Build final list with up-to-date installed status.
         games = _build_games_list(prefix, owned_list)
+
+        # Phase 3 — detect updates by comparing installed version against metadata on disk.
+        # `legendary list` (Phase 2) already refreshed the metadata cache, so this is instant.
+        updates_set = _legendary_updates_from_metadata(prefix)
+        if updates_set:
+            for g in games:
+                if g.get("epic_app_name") in updates_set:
+                    g["update_available"] = True
+            log(f"legendary: {len(updates_set)} update(s) available for {prefix}")
+
         _legendary_games_cache[prefix] = {"games": games, "ts": time.time(), "scanning": False}
         log(f"legendary: refreshed {len(games)} games from network for {prefix}")
 
