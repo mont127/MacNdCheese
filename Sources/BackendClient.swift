@@ -103,6 +103,7 @@ final class BackendClient: ObservableObject {
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode([Bottle].self, from: data) {
                 self.bottles = decoded
+                GameIndexCache.updateBottles(decoded)
                 // Restore last active bottle, fall back to first
                 if activePrefix == nil {
                     let last = UserDefaults.standard.string(forKey: "lastActivePrefix")
@@ -125,6 +126,9 @@ final class BackendClient: ObservableObject {
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode([Game].self, from: data) {
                 self.games = decoded
+                let bottleName = bottles.first { $0.path == prefix }?.name ?? ""
+                GameIndexCache.updateGames(decoded, bottlePath: prefix, bottleName: bottleName)
+                SpotlightIndexer.index(games: decoded, bottlePath: prefix, bottleName: bottleName)
             }
         } catch {
             lastError = "Failed to scan games: \(error.localizedDescription)"
@@ -287,6 +291,8 @@ final class BackendClient: ObservableObject {
     }
 
     func deleteBottle(path: String) async {
+        SpotlightIndexer.deleteForBottle(path)
+        GameIndexCache.removeGames(forBottle: path)
         do {
             _ = try await send(cmd: "delete_bottle", params: ["path": path])
             if activePrefix == path {
