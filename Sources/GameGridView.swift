@@ -315,6 +315,8 @@ struct GameCardView: View {
                     NSWorkspace.shared.selectFile(exe, inFileViewerRootedAtPath: "")
                 }
             }
+            Divider()
+            Button("Add to Siri…") { addToSiri() }
             if onMoveToFront != nil || onMoveToBack != nil {
                 Divider()
                 if let move = onMoveToFront {
@@ -354,6 +356,52 @@ struct GameCardView: View {
             )
             isLaunching = false
         }
+    }
+
+    private func addToSiri() {
+        guard let prefix = backend.activePrefix else { return }
+        let allowed = CharacterSet.urlQueryAllowed
+        let encodedBottle = prefix.addingPercentEncoding(withAllowedCharacters: allowed) ?? prefix
+        let encodedAppid = game.appid.addingPercentEncoding(withAllowedCharacters: allowed) ?? game.appid
+        let launchURL = "macncheese://launch?bottle=\(encodedBottle)&game=\(encodedAppid)"
+
+        // Build a minimal Shortcuts workflow that opens the macncheese:// URL.
+        // Using the stable "Open URL" action (is.workflow.actions.openurl) means
+        // this shortcut works regardless of App Intent registration or app name
+        // speech-to-text issues. The user names the shortcut whatever they want
+        // to say to Siri — no app name required.
+        let workflow: [String: Any] = [
+            "WFWorkflowName": game.name,
+            "WFWorkflowClientVersion": "1300",
+            "WFWorkflowMinimumClientVersion": 900,
+            "WFWorkflowMinimumClientVersionString": "900",
+            "WFWorkflowHasShortcutInputVariables": false,
+            "WFWorkflowHasOutputFallback": false,
+            "WFWorkflowImportQuestions": [],
+            "WFWorkflowInputContentItemClasses": [],
+            "WFWorkflowOutputContentItemClasses": [],
+            "WFWorkflowTypes": [],
+            "WFWorkflowActions": [
+                [
+                    "WFWorkflowActionIdentifier": "is.workflow.actions.openurl",
+                    "WFWorkflowActionParameters": [
+                        "WFInput": [
+                            "Value": ["string": launchURL],
+                            "WFSerializationType": "WFTextTokenString"
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        guard let data = try? PropertyListSerialization.data(
+            fromPropertyList: workflow, format: .binary, options: 0
+        ) else { return }
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(game.name).shortcut")
+        try? data.write(to: tmp)
+        NSWorkspace.shared.open(tmp)
     }
 
     private func loadCover() {
