@@ -1,3 +1,4 @@
+import AppIntents
 import AppKit
 import Foundation
 
@@ -106,7 +107,7 @@ final class MacNCheeseURLHandler {
         let cached = GameIndexCache.allGames()
             .first { $0.bottlePath == bottlePath && $0.appid == game.appid }
         if let cached {
-            var intent = LaunchGameIntent()
+            let intent = LaunchGameIntent()
             intent.game = GameEntity(
                 id: "\(cached.bottlePath):::\(cached.appid)",
                 name: cached.name,
