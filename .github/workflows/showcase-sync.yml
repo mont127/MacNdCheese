@@ -1,0 +1,83 @@
+# Copy this file to  .github/workflows/showcase-sync.yml  in the mont127/MacNdCheese repo.
+#
+# It reads the configured Discord forum channel (repo variables SHOWCASE_CHANNEL_ID /
+# SHOWCASE_GUILD_ID, set by the /showcase slash command), mirrors screenshots, and
+# commits showcase.json + media/ to the `showcase-data` branch. The MacNCheese Store's
+# Game Showcase tab reads that branch over raw.githubusercontent.com.
+#
+# Required repo secret:    DISCORD_BOT_TOKEN
+# Required repo variables:  SHOWCASE_CHANNEL_ID, SHOWCASE_GUILD_ID  (set by the listener)
+# Note: the sync script (discord-showcase-bot/showcase_sync.py) must exist on the
+#       repo's default branch so this workflow can run it.
+
+name: Showcase sync
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"        # every 10 minutes
+  workflow_dispatch:             # manual "Run workflow" button
+  repository_dispatch:
+    types: [showcase-set-channel] # fired by the listener right after /showcase set-channel
+
+permissions:
+  contents: write
+
+concurrency:
+  group: showcase-sync
+  cancel-in-progress: false
+
+env:
+  SHOWCASE_BRANCH: showcase-data
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout default branch (workflow + sync script)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare the showcase-data branch checkout (in ./data)
+        run: |
+          set -euo pipefail
+          REMOTE="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          rm -rf data && mkdir data && cd data
+          git init -q
+          git remote add origin "$REMOTE"
+          git config user.name  "showcase-bot"
+          git config user.email "showcase-bot@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$SHOWCASE_BRANCH" >/dev/null 2>&1; then
+            git fetch -q --depth=1 origin "$SHOWCASE_BRANCH"
+            git checkout -q -B "$SHOWCASE_BRANCH" FETCH_HEAD
+          else
+            git checkout -q -b "$SHOWCASE_BRANCH"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run showcase sync
+        run: python discord-showcase-bot/showcase_sync.py
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          SHOWCASE_CHANNEL_ID: ${{ vars.SHOWCASE_CHANNEL_ID }}
+          SHOWCASE_GUILD_ID: ${{ vars.SHOWCASE_GUILD_ID }}
+          SHOWCASE_REPO: ${{ github.repository }}
+          SHOWCASE_BRANCH: ${{ env.SHOWCASE_BRANCH }}
+          OUTPUT_DIR: data
+
+      - name: Commit & push if changed
+        run: |
+          set -euo pipefail
+          cd data
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No showcase changes."
+          else
+            git commit -q -m "showcase: update $(date -u +%FT%TZ)"
+            git push -q origin "HEAD:${SHOWCASE_BRANCH}"
+            echo "Pushed showcase update."
+          fi
