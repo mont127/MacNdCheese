@@ -127,6 +127,19 @@ struct ContentView: View {
             if isStore { /* no-op */ }
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                // Inside the Store there was no way back except the sidebar —
+                // give it an explicit "Return to Library" button.
+                if showStore {
+                    Button {
+                        showStore = false
+                    } label: {
+                        Label(L("Return to Library"), systemImage: "chevron.left")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .help(L("Return to Library"))
+                }
+            }
             ToolbarItem(placement: .destructiveAction) {
                 killWineserverButton
             }

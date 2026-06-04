@@ -4182,6 +4182,28 @@ def cmd_run_cheese_repair(params: Dict[str, Any]) -> Any:
                 rc = _run_job_command(job, [wine, "wineboot", "-u"], env=_wine_env(prefix))
                 job["failed"] = rc != 0
 
+            elif action == "steam_simple_fix":
+                # "Steam not launching?" one-click fix: back up the current Wine
+                # Stable, download/install the latest MacNCheese Wine, then re-run
+                # wineboot -u so the prefix is rebuilt against the fresh Wine.
+                stable_app = PORTABLE_DIR / "Wine Stable.app"
+                if stable_app.exists():
+                    backup = _diagnostic_backup_path(stable_app)
+                    _job_append(job, f"Moving {stable_app} to {backup}")
+                    shutil.move(str(stable_app), str(backup))
+                    _remove_version_marker("wine_stable")
+                _job_append(job, "=== Downloading the latest MacNCheese Wine ===")
+                if _run_installer_action_for_repair(job, "install_wine", prefix) != 0:
+                    job["failed"] = True
+                else:
+                    wine = _find_wine()
+                    if not wine:
+                        raise FileNotFoundError("Wine not found after install")
+                    Path(prefix).expanduser().mkdir(parents=True, exist_ok=True)
+                    _job_append(job, "=== Running wineboot -u on the bottle ===")
+                    rc = _run_job_command(job, [wine, "wineboot", "-u"], env=_wine_env(prefix))
+                    job["failed"] = rc != 0
+
             elif action == "backup_recreate_prefix":
                 wine = _find_wine()
                 if not wine:

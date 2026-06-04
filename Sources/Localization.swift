@@ -129,6 +129,10 @@ enum Localization {
         "Select Game EXE": "选择游戏 EXE",
 
         // ── Launcher / Steam ─────────────────────────────────────────────
+        "Steam not launching? Run this simple fix!": "Steam 无法启动？运行这个简单修复！",
+        "Downloads the latest MacNCheese Wine and re-runs wineboot on this bottle.": "下载最新的 MacNCheese Wine 并在此容器上重新运行 wineboot。",
+        "Run Fix": "运行修复",
+        "Return to Library": "返回游戏库",
         "Open Steam": "打开 Steam",
         "Close Steam": "关闭 Steam",
         "Open Launcher": "打开启动器",

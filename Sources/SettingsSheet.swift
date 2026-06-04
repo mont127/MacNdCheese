@@ -865,6 +865,40 @@ struct DiagnoseSettingsTab: View {
                     .disabled(isDiagnosing || isRepairing)
                 }
 
+                // One-click fix for the most common support case: Steam won't
+                // start. Re-downloads the latest MacNCheese Wine and re-runs
+                // wineboot on the active bottle (existing repair-job pipeline).
+                GroupBox {
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                            .font(.title2)
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("Steam not launching? Run this simple fix!"))
+                                .fontWeight(.semibold)
+                            Text(L("Downloads the latest MacNCheese Wine and re-runs wineboot on this bottle."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            pendingRepair = CheeseRepairAction(
+                                id: "steam_simple_fix",
+                                title: L("Steam not launching? Run this simple fix!"),
+                                details: L("Downloads the latest MacNCheese Wine and re-runs wineboot on this bottle."),
+                                destructive: false,
+                                recommended: true
+                            )
+                        } label: {
+                            Label(L("Run Fix"), systemImage: "bolt.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                        .disabled(isDiagnosing || isRepairing)
+                    }
+                    .padding(6)
+                }
+
                 if isDiagnosing {
                     HStack {
                         ProgressView().controlSize(.small)
