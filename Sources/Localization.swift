@@ -109,6 +109,7 @@ enum Localization {
         "Bottles": "容器",
         "Create Bottle": "创建容器",
         "New Bottle": "新建容器",
+        "New Bottle…": "新建容器…",
         "No bottle selected": "未选择容器",
         "Create a bottle to get started.": "创建一个容器以开始。",
         "Show in Finder": "在访达中显示",

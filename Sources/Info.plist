@@ -28,5 +28,20 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.games</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.marcel.macncheese</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>macncheese</string>
+            </array>
+        </dict>
+    </array>
+    <key>NSUserActivityTypes</key>
+    <array>
+        <string>com.apple.corespotlight.search-continue-activity</string>
+    </array>
 </dict>
 </plist>
