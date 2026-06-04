@@ -137,14 +137,14 @@ private struct EpicDownloadingView: View {
             Spacer()
             EpicLogo(size: 80)
                 .padding(.bottom, 12)
-            Text("EPIC GAMES")
+            Text(L("EPIC GAMES"))
                 .font(.system(.largeTitle, design: .default).weight(.bold))
                 .tracking(4)
             Spacer().frame(height: 32)
             ProgressView()
                 .controlSize(.large)
                 .padding(.bottom, 12)
-            Text("Preparing Epic Games support…")
+            Text(L("Preparing Epic Games support…"))
                 .foregroundStyle(.secondary)
                 .font(.subheadline)
             Spacer()
@@ -170,11 +170,11 @@ struct EpicAuthView: View {
             EpicLogo(size: 80)
                 .padding(.bottom, 8)
 
-            Text("EPIC GAMES")
+            Text(L("EPIC GAMES"))
                 .font(.system(.largeTitle, design: .default).weight(.bold))
                 .tracking(4)
 
-            Text("Connect your Epic Games account to access your library.")
+            Text(L("Connect your Epic Games account to access your library."))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -192,7 +192,7 @@ struct EpicAuthView: View {
                     } else {
                         Image(systemName: "person.badge.key")
                     }
-                    Text(isAuthenticating ? "Signing in…" : "Connect")
+                    Text(isAuthenticating ? L("Signing in…") : L("Connect"))
                         .fontWeight(.bold)
                 }
                 .frame(width: 160, height: 44)
@@ -234,7 +234,7 @@ struct EpicAuthView: View {
                 onAuthenticated()
             } else {
                 errorMessage = result.error.isEmpty
-                    ? "Authentication failed. Please try again."
+                    ? L("Authentication failed. Please try again.")
                     : result.error
             }
         }
@@ -251,10 +251,10 @@ struct EpicWebAuthSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Sign in to Epic Games")
+                Text(L("Sign in to Epic Games"))
                     .font(.headline)
                 Spacer()
-                Button("Cancel") { isPresented = false }
+                Button(L("Cancel")) { isPresented = false }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 16)
@@ -280,10 +280,10 @@ struct EpicStoreSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Epic Games Store")
+                Text(L("Epic Games Store"))
                     .font(.headline)
                 Spacer()
-                Button("Done") { isPresented = false }
+                Button(L("Done")) { isPresented = false }
                     .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 16)

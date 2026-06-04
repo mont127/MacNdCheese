@@ -20,53 +20,53 @@ struct CreateBottleSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Text("Create a Bottle")
+            Text(L("Create a Bottle"))
                 .font(.title2)
                 .fontWeight(.bold)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Bottle Name")
+                Text(L("Bottle Name"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("e.g. My Games", text: $name)
+                TextField(L("e.g. My Games"), text: $name)
                     .textFieldStyle(.roundedBorder)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Launcher")
+                Text(L("Launcher"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker("", selection: $launcherType) {
                     Label("Steam", systemImage: "play.square.stack.fill").tag("steam")
-                    Label { Text("Epic Games") } icon: { EpicIcon(size: 16) }.tag("epic")
-                    Label("None (plain Wine)", systemImage: "wineglass").tag("custom")
+                    Label { Text(L("Epic Games")) } icon: { EpicIcon(size: 16) }.tag("epic")
+                    Label(L("None (plain Wine)"), systemImage: "wineglass").tag("custom")
                 }
                 .pickerStyle(.segmented)
                 Text(launcherType == "steam"
-                     ? "Steam will be used to manage and launch games."
+                     ? L("Steam will be used to manage and launch games.")
                      : launcherType == "epic"
-                     ? "Epic Games library via Legendary. Connect your account after creation."
-                     : "No launcher – add games manually.")
+                     ? L("Epic Games library via Legendary. Connect your account after creation.")
+                     : L("No launcher – add games manually."))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("Custom location", isOn: $useCustomPath)
+                Toggle(L("Custom location"), isOn: $useCustomPath)
                     .font(.caption)
 
                 if useCustomPath {
                     HStack(spacing: 6) {
-                        TextField("Path", text: $customPath)
+                        TextField(L("Path"), text: $customPath)
                             .textFieldStyle(.roundedBorder)
                             .font(.caption)
-                        Button("Browse…") {
+                        Button(L("Browse…")) {
                             let panel = NSOpenPanel()
                             panel.canChooseFiles = false
                             panel.canChooseDirectories = true
                             panel.canCreateDirectories = true
-                            panel.prompt = "Select"
+                            panel.prompt = L("Select")
                             if panel.runModal() == .OK, let url = panel.url {
                                 customPath = url.path
                             }
@@ -85,12 +85,12 @@ struct CreateBottleSheet: View {
             Spacer()
 
             HStack {
-                Button("Cancel") { dismiss() }
+                Button(L("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                Button("Create") {
+                Button(L("Create")) {
                     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                     isCreating = true
                     Task {

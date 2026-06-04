@@ -75,7 +75,7 @@ final class BackendClient: ObservableObject {
                 await refreshAll()
             }
         } catch {
-            lastError = "Failed to start backend: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to start backend: %@"), error.localizedDescription)
         }
     }
 
@@ -103,7 +103,6 @@ final class BackendClient: ObservableObject {
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode([Bottle].self, from: data) {
                 self.bottles = decoded
-                GameIndexCache.updateBottles(decoded)
                 // Restore last active bottle, fall back to first
                 if activePrefix == nil {
                     let last = UserDefaults.standard.string(forKey: "lastActivePrefix")
@@ -114,7 +113,7 @@ final class BackendClient: ObservableObject {
                 }
             }
         } catch {
-            lastError = "Failed to load bottles: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to load bottles: %@"), error.localizedDescription)
         }
     }
 
@@ -126,12 +125,9 @@ final class BackendClient: ObservableObject {
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode([Game].self, from: data) {
                 self.games = decoded
-                let bottleName = bottles.first { $0.path == prefix }?.name ?? ""
-                GameIndexCache.updateGames(decoded, bottlePath: prefix, bottleName: bottleName)
-                SpotlightIndexer.index(games: decoded, bottlePath: prefix, bottleName: bottleName)
             }
         } catch {
-            lastError = "Failed to scan games: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to scan games: %@"), error.localizedDescription)
         }
     }
 
@@ -148,7 +144,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "") async {
+    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false) async {
         do {
             let screenInfo = NSScreen.screens.map { s in
                 "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"
@@ -157,14 +153,14 @@ final class BackendClient: ObservableObject {
                 "prefix": prefix, "exe": exe, "args": args, "backend": backend, "install_dir": installDir,
                 "retina_mode": retinaMode, "metal_hud": metalHud, "esync": esync, "msync": msync,
                 "screen_info": screenInfo, "game_name": gameName, "steam_appid": steamAppId,
-                "steam_mode": steamMode, "custom_env": customEnv,
+                "steam_mode": steamMode, "custom_env": customEnv, "debug": debug,
             ])
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode(LaunchResult.self, from: data) {
                 runningGamePid = decoded.pid
             }
         } catch {
-            lastError = "Failed to launch game: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to launch game: %@"), error.localizedDescription)
         }
     }
 
@@ -189,7 +185,7 @@ final class BackendClient: ObservableObject {
                 let _ = dict["already_running"] as? Bool ?? false
             }
         } catch {
-            lastError = "Failed to launch: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to launch: %@"), error.localizedDescription)
             return
         }
         startSteamPolling()
@@ -207,7 +203,7 @@ final class BackendClient: ObservableObject {
                 let _ = dict["already_running"] as? Bool ?? false
             }
         } catch {
-            lastError = "Failed to launch Steam: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to launch Steam: %@"), error.localizedDescription)
             return
         }
         startSteamPolling()
@@ -277,7 +273,7 @@ final class BackendClient: ObservableObject {
                 pollAndFocusSetup()
             }
         } catch {
-            lastError = "Failed to create bottle: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to create bottle: %@"), error.localizedDescription)
         }
     }
 
@@ -286,13 +282,11 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "reorder_bottles", params: ["paths": paths])
         } catch {
-            lastError = "Failed to reorder bottles: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to reorder bottles: %@"), error.localizedDescription)
         }
     }
 
     func deleteBottle(path: String) async {
-        SpotlightIndexer.deleteForBottle(path)
-        GameIndexCache.removeGames(forBottle: path)
         do {
             _ = try await send(cmd: "delete_bottle", params: ["path": path])
             if activePrefix == path {
@@ -301,7 +295,7 @@ final class BackendClient: ObservableObject {
             }
             await loadBottles()
         } catch {
-            lastError = "Failed to delete bottle: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to delete bottle: %@"), error.localizedDescription)
         }
     }
 
@@ -309,7 +303,7 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "kill_wineserver", params: ["prefix": prefix])
         } catch {
-            lastError = "Failed to kill wineserver: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to kill wineserver: %@"), error.localizedDescription)
         }
     }
 
@@ -317,7 +311,7 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "init_prefix", params: ["prefix": prefix])
         } catch {
-            lastError = "Failed to init prefix: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to init prefix: %@"), error.localizedDescription)
         }
     }
 
@@ -325,7 +319,7 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "clean_prefix", params: ["prefix": prefix])
         } catch {
-            lastError = "Failed to clean prefix: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to clean prefix: %@"), error.localizedDescription)
         }
     }
 
@@ -333,7 +327,7 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "run_exe", params: ["prefix": prefix, "exe": exe, "args": args])
         } catch {
-            lastError = "Failed to run exe: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to run exe: %@"), error.localizedDescription)
         }
     }
 
@@ -341,7 +335,7 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "open_prefix_folder", params: ["prefix": prefix])
         } catch {
-            lastError = "Failed to open folder: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to open folder: %@"), error.localizedDescription)
         }
     }
 
@@ -350,7 +344,7 @@ final class BackendClient: ObservableObject {
             let result = try await send(cmd: "get_bottle_config", params: ["path": path])
             return result as? [String: Any]
         } catch {
-            lastError = "Failed to get bottle config: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to get bottle config: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -362,33 +356,17 @@ final class BackendClient: ObservableObject {
             _ = try await send(cmd: "set_bottle_config", params: params)
             await loadBottles()
         } catch {
-            lastError = "Failed to save config: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to save config: %@"), error.localizedDescription)
         }
     }
 
-    func getD3DMetalSettings() async -> [String: Bool]? {
-        do {
-            let result = try await send(cmd: "get_d3dmetal_settings", params: [:])
-            return result as? [String: Bool]
-        } catch {
-            lastError = "Failed to get D3DMetal settings: \(error.localizedDescription)"
-        }
-        return nil
-    }
 
-    func setD3DMetalSettings(_ values: [String: Bool]) async {
-        do {
-            _ = try await send(cmd: "set_d3dmetal_settings", params: ["values": values])
-        } catch {
-            lastError = "Failed to save D3DMetal settings: \(error.localizedDescription)"
-        }
-    }
 
     func setGameOrder(prefix: String, order: [String]) async {
         do {
             _ = try await send(cmd: "set_game_order", params: ["prefix": prefix, "order": order])
         } catch {
-            lastError = "Failed to save game order: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to save game order: %@"), error.localizedDescription)
         }
     }
 
@@ -416,7 +394,7 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "set_game_config", params: params)
         } catch {
-            lastError = "Failed to save game config: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to save game config: %@"), error.localizedDescription)
         }
     }
 
@@ -427,7 +405,18 @@ final class BackendClient: ObservableObject {
             _ = try await send(cmd: "add_manual_game", params: params)
             await scanGames(prefix: prefix)
         } catch {
-            lastError = "Failed to add game: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to add game: %@"), error.localizedDescription)
+        }
+    }
+
+    /// Remove a manually-added (non-Steam) game from the bottle's list only —
+    /// the files on disk are left untouched. Re-scans so the grid updates.
+    func removeManualGame(prefix: String, exe: String) async {
+        do {
+            _ = try await send(cmd: "remove_manual_game", params: ["prefix": prefix, "exe": exe])
+            await scanGames(prefix: prefix)
+        } catch {
+            lastError = String(format: L("Failed to remove game: %@"), error.localizedDescription)
         }
     }
 
@@ -440,7 +429,27 @@ final class BackendClient: ObservableObject {
                 return decoded
             }
         } catch {
-            lastError = "Failed to get components status: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to get components status: %@"), error.localizedDescription)
+        }
+        return nil
+    }
+
+    /// Start the application self-update: download the newest DMG from
+    /// mont127/MacNdCheese, extract+codesign the .app, and stage a detached
+    /// swapper. Returns a job id; poll getInstallProgress, then quit the app so
+    /// the swapper can replace it and relaunch.
+    func applyAppUpdate(appPath: String, appPid: Int, dmgURL: String) async -> String? {
+        do {
+            let result = try await send(cmd: "apply_app_update", params: [
+                "app_path": appPath,
+                "app_pid": appPid,
+                "dmg_url": dmgURL,
+            ])
+            if let dict = result as? [String: Any], let jobId = dict["job_id"] as? String {
+                return jobId
+            }
+        } catch {
+            lastError = String(format: L("Failed to start update: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -456,7 +465,7 @@ final class BackendClient: ObservableObject {
                 return decoded
             }
         } catch {
-            lastError = "Failed to get install progress: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to get install progress: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -469,7 +478,7 @@ final class BackendClient: ObservableObject {
                 return decoded
             }
         } catch {
-            lastError = "Failed to get update info: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to get update info: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -482,7 +491,7 @@ final class BackendClient: ObservableObject {
                 return decoded
             }
         } catch {
-            lastError = "Failed to list backends: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to list backends: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -491,7 +500,7 @@ final class BackendClient: ObservableObject {
         do {
             _ = try await send(cmd: "open_winecfg", params: ["prefix": prefix])
         } catch {
-            lastError = "Failed to open winecfg: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to open winecfg: %@"), error.localizedDescription)
         }
     }
 
@@ -501,7 +510,7 @@ final class BackendClient: ObservableObject {
             await loadBottles()
             return true
         } catch {
-            lastError = "Failed to move bottle: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to move bottle: %@"), error.localizedDescription)
             return false
         }
     }
@@ -516,7 +525,7 @@ final class BackendClient: ObservableObject {
                 return decoded
             }
         } catch {
-            lastError = "Diagnosis failed: \(error.localizedDescription)"
+            lastError = String(format: L("Diagnosis failed: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -530,7 +539,7 @@ final class BackendClient: ObservableObject {
                 return jobId
             }
         } catch {
-            lastError = "Repair failed: \(error.localizedDescription)"
+            lastError = String(format: L("Repair failed: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -557,7 +566,7 @@ final class BackendClient: ObservableObject {
                 return jobId
             }
         } catch {
-            lastError = "Failed to start installer: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to start installer: %@"), error.localizedDescription)
         }
         return nil
     }
@@ -579,7 +588,7 @@ final class BackendClient: ObservableObject {
             let result = try await send(cmd: "detect_exes", params: ["install_dir": installDir])
             if let arr = result as? [String] { return arr }
         } catch {
-            lastError = "Failed to detect exes: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to detect exes: %@"), error.localizedDescription)
         }
         return []
     }
@@ -641,7 +650,7 @@ final class BackendClient: ObservableObject {
             ])
             return true
         } catch {
-            lastError = "Failed to queue install: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to queue install: %@"), error.localizedDescription)
             return false
         }
     }
@@ -708,7 +717,8 @@ final class BackendClient: ObservableObject {
         metalHud: Bool = false,
         esync: Bool = true,
         msync: Bool = true,
-        customEnv: String = ""
+        customEnv: String = "",
+        debug: Bool = false
     ) async {
         do {
             _ = try await send(cmd: "legendary_launch_game", params: [
@@ -720,9 +730,10 @@ final class BackendClient: ObservableObject {
                 "esync": esync,
                 "msync": msync,
                 "custom_env": customEnv,
+                "debug": debug,
             ])
         } catch {
-            lastError = "Failed to launch \(appName): \(error.localizedDescription)"
+            lastError = String(format: L("Failed to launch %@: %@"), appName, error.localizedDescription)
         }
     }
 
@@ -734,7 +745,7 @@ final class BackendClient: ObservableObject {
                 self.status = decoded
             }
         } catch {
-            lastError = "Failed to get status: \(error.localizedDescription)"
+            lastError = String(format: L("Failed to get status: %@"), error.localizedDescription)
         }
     }
 

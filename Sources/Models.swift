@@ -121,16 +121,18 @@ struct ComponentsStatus: Codable {
     let hasWine: Bool
     let hasWineStable: Bool
     let hasWineStaging: Bool
-    let hasWineD3DMetal: Bool
     let hasWineDevel: Bool
     let hasMesa: Bool
     let hasDxvk64: Bool
     let hasDxvk32: Bool
     let hasDxmt: Bool
+    let hasDxmtOpenXR: Bool
     let hasGptkDlls: Bool
     let hasD3dMetal3: Bool
+    let hasWineD3DMetal: Bool
     let hasVkd3d: Bool
     let hasWineOpenXR: Bool
+    let hasMonadoRuntime: Bool
     let wineVersion: String?
 
     enum CodingKeys: String, CodingKey {
@@ -138,37 +140,41 @@ struct ComponentsStatus: Codable {
         case hasWine = "has_wine"
         case hasWineStable = "has_wine_stable"
         case hasWineStaging = "has_wine_staging"
-        case hasWineD3DMetal = "has_wine_d3dmetal"
         case hasWineDevel = "has_wine_devel"
         case hasMesa = "has_mesa"
         case hasDxvk64 = "has_dxvk64"
         case hasDxvk32 = "has_dxvk32"
         case hasDxmt = "has_dxmt"
+        case hasDxmtOpenXR = "has_dxmt_openxr"
         case hasGptkDlls = "has_gptk_dlls"
         case hasD3dMetal3 = "has_d3dmetal3"
+        case hasWineD3DMetal = "has_wine_d3dmetal"
         case hasVkd3d = "has_vkd3d"
         case hasWineOpenXR = "has_wineopenxr"
+        case hasMonadoRuntime = "has_monado_runtime"
         case wineVersion = "wine_version"
     }
 
     // Backwards-compat init for older backends that don't yet send
-    // has_wine_d3dmetal / has_wine_devel / has_wineopenxr. Treat as absent → false.
+    // has_wine_devel / has_wineopenxr. Treat as absent → false.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hasTools          = try c.decode(Bool.self, forKey: .hasTools)
         hasWine           = try c.decode(Bool.self, forKey: .hasWine)
         hasWineStable     = try c.decode(Bool.self, forKey: .hasWineStable)
         hasWineStaging    = try c.decode(Bool.self, forKey: .hasWineStaging)
-        hasWineD3DMetal   = try c.decodeIfPresent(Bool.self, forKey: .hasWineD3DMetal) ?? false
         hasWineDevel      = try c.decodeIfPresent(Bool.self, forKey: .hasWineDevel) ?? false
         hasMesa           = try c.decode(Bool.self, forKey: .hasMesa)
         hasDxvk64         = try c.decode(Bool.self, forKey: .hasDxvk64)
         hasDxvk32         = try c.decode(Bool.self, forKey: .hasDxvk32)
         hasDxmt           = try c.decode(Bool.self, forKey: .hasDxmt)
+        hasDxmtOpenXR     = try c.decodeIfPresent(Bool.self, forKey: .hasDxmtOpenXR) ?? false
         hasGptkDlls       = try c.decode(Bool.self, forKey: .hasGptkDlls)
         hasD3dMetal3      = try c.decode(Bool.self, forKey: .hasD3dMetal3)
+        hasWineD3DMetal   = try c.decodeIfPresent(Bool.self, forKey: .hasWineD3DMetal) ?? false
         hasVkd3d          = try c.decode(Bool.self, forKey: .hasVkd3d)
         hasWineOpenXR     = try c.decodeIfPresent(Bool.self, forKey: .hasWineOpenXR) ?? false
+        hasMonadoRuntime  = try c.decodeIfPresent(Bool.self, forKey: .hasMonadoRuntime) ?? false
         wineVersion       = try c.decodeIfPresent(String.self, forKey: .wineVersion)
     }
 }

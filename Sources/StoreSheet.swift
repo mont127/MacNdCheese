@@ -1,6 +1,7 @@
 import SwiftUI
 
 private enum StoreTab: String, CaseIterable, Identifiable {
+    case gameShowcase = "Game Showcase"
     case downloads = "Downloads"
     case discussions = "Discussions"
     case issues = "Issues"
@@ -10,6 +11,7 @@ private enum StoreTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var systemImage: String {
         switch self {
+        case .gameShowcase: return "gamecontroller"
         case .downloads: return "arrow.down.circle"
         case .discussions: return "bubble.left.and.bubble.right"
         case .issues: return "ladybug"
@@ -20,24 +22,37 @@ private enum StoreTab: String, CaseIterable, Identifiable {
 }
 
 struct StoreView: View {
-    @State private var selectedTab: StoreTab = .downloads
+    /// Toolbar search text, forwarded to the Game Showcase tab for filtering.
+    var searchText: String = ""
+    @State private var selectedTab: StoreTab = .gameShowcase
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "storefront")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.tint)
+                Text(L("MacNCheese Store"))
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Spacer()
+            }
+            .padding(20)
+
             Picker("", selection: $selectedTab) {
                 ForEach(StoreTab.allCases) { tab in
-                    Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                    Label(L(tab.rawValue), systemImage: tab.systemImage).tag(tab)
                 }
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
-            .padding(.top, 16)
             .padding(.bottom, 12)
 
             Divider()
 
             Group {
                 switch selectedTab {
+                case .gameShowcase: GameShowcaseView(searchText: searchText)
                 case .downloads:    DownloadsView()
                 case .discussions:  GitHubListView(kind: .discussions)
                 case .issues:       GitHubListView(kind: .issues)
@@ -50,7 +65,7 @@ struct StoreView: View {
     }
 }
 
-
+// MARK: - Downloads
 
 private let storeRepo = "mont127/MacNdCheese"
 
@@ -137,7 +152,7 @@ private struct DownloadsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Release")
+                Text(L("Release"))
                     .foregroundStyle(.secondary)
                 Picker("", selection: Binding(
                     get: { store.selectedVersion },
@@ -157,13 +172,13 @@ private struct DownloadsView: View {
                 Spacer()
 
                 if !store.releaseURL.isEmpty, let url = URL(string: store.releaseURL) {
-                    Link("Open on GitHub", destination: url)
+                    Link(L("Open on GitHub"), destination: url)
                         .font(.callout)
                 }
             }
 
             if store.loading {
-                HStack { ProgressView().controlSize(.small); Text("Loading...").foregroundStyle(.secondary) }
+                HStack { ProgressView().controlSize(.small); Text(L("Loading...")).foregroundStyle(.secondary) }
             } else if let err = store.error {
                 Text(err).foregroundStyle(.red)
             } else if let total = store.totalDownloads {
@@ -172,11 +187,11 @@ private struct DownloadsView: View {
                         .font(.system(size: 56, weight: .bold, design: .rounded))
                         .foregroundStyle(.tint)
                     VStack(alignment: .leading) {
-                        Text("total downloads")
+                        Text(L("total downloads"))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                         if !store.publishedAt.isEmpty {
-                            Text("Published \(prettyDate(store.publishedAt))")
+                            Text(String(format: L("Published %@"), prettyDate(store.publishedAt)))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
@@ -185,7 +200,7 @@ private struct DownloadsView: View {
                 .padding(.vertical, 6)
 
                 if !store.perAssetCounts.isEmpty {
-                    Text("Per asset")
+                    Text(L("Per asset"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
@@ -220,7 +235,7 @@ private struct DownloadsView: View {
     }
 }
 
-
+// MARK: - Discussions / Issues / Pull Requests list
 
 private enum GitHubKind {
     case discussions, issues, pullRequests
@@ -400,7 +415,7 @@ private struct GitHubListView: View {
             HStack {
                 Spacer()
                 if let url = URL(string: kind.pageURL) {
-                    Link("Open all on GitHub →", destination: url).font(.callout)
+                    Link(L("Open all on GitHub →"), destination: url).font(.callout)
                 }
             }
             .padding(12)
@@ -409,21 +424,21 @@ private struct GitHubListView: View {
     }
 }
 
-
+// MARK: - Insights
 
 private struct InsightsView: View {
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "chart.line.uptrend.xyaxis").font(.system(size: 56)).foregroundStyle(.tint)
-            Text("Insights & Traffic").font(.title3).fontWeight(.semibold)
-            Text("GitHub's Insights and Traffic data require repo push access to view via API.\nOpen it on GitHub instead.")
+            Text(L("Insights & Traffic")).font(.title3).fontWeight(.semibold)
+            Text(L("GitHub's Insights and Traffic data require repo push access to view via API.\nOpen it on GitHub instead."))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 40)
             if let url = URL(string: "https://github.com/mont127/MacNdCheese/graphs/traffic") {
                 Link(destination: url) {
-                    Label("Open Insights on GitHub", systemImage: "arrow.up.right.square")
+                    Label(L("Open Insights on GitHub"), systemImage: "arrow.up.right.square")
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                 }
