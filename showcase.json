@@ -1,8 +1,22 @@
 {
-  "generated_at": "2026-06-04T16:35:55Z",
+  "generated_at": "2026-06-05T23:23:24Z",
   "channel_id": "1491031152583249950",
   "channel_name": "game-show",
   "posts": [
+    {
+      "id": "1512581231924084827",
+      "title": "Gothic 1 Remake",
+      "author": {
+        "name": "KongBai",
+        "avatar_url": "https://cdn.discordapp.com/avatars/1083475134347755630/181823b9bf7329401f75f836d8b43d6e.png?size=64"
+      },
+      "created_at": "2026-06-05T22:17:48.091000+00:00",
+      "tags": [],
+      "body": "",
+      "screenshots": [],
+      "comments": [],
+      "url": "https://discord.com/channels/1480145028348383235/1512581231924084827"
+    },
     {
       "id": "1512129152931729553",
       "title": "Stumble Guys",
