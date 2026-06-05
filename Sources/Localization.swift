@@ -128,6 +128,22 @@ enum Localization {
         "Re-scan the bottle for games.": "重新扫描容器中的游戏。",
         "Select Game EXE": "选择游戏 EXE",
 
+        // ── Wine lifecycle (leak fixes) ──────────────────────────────────
+        "This game is already running. If it's frozen, press the red stop button (Kill Wineserver), then launch again.": "该游戏已在运行。如果它已无响应，请按红色停止按钮（终止 Wineserver）后重新启动。",
+        "Wine is still running": "Wine 仍在运行",
+        "Games or Wine processes started by MacNCheese are still running. Quit them too?": "由 MacNCheese 启动的游戏或 Wine 进程仍在运行。要一并退出吗？",
+        "Quit Wine & Exit": "退出 Wine 并关闭",
+        "Leave Running & Exit": "保留运行并关闭",
+        "Remember my choice": "记住我的选择",
+        "On Quit": "退出时",
+        "Ask every time": "每次询问",
+        "Quit all Wine processes": "退出所有 Wine 进程",
+        "Leave Wine running": "保留 Wine 运行",
+        "What happens to running games and Wine when you close MacNCheese.": "关闭 MacNCheese 时如何处理正在运行的游戏和 Wine。",
+        "Power": "电源",
+        "Stop background Steam when no game is running": "无游戏运行时停止后台 Steam",
+        "Background Steam keeps using CPU after games quit; this stops it after 5 idle minutes. Steam you opened yourself is never touched.": "后台 Steam 在游戏退出后仍持续占用 CPU；空闲 5 分钟后将自动停止。你自己打开的 Steam 不受影响。",
+
         // ── Launcher / Steam ─────────────────────────────────────────────
         "Steam not launching? Run this simple fix!": "Steam 无法启动？运行这个简单修复！",
         "Downloads the latest MacNCheese Wine and re-runs wineboot on this bottle.": "下载最新的 MacNCheese Wine 并在此容器上重新运行 wineboot。",

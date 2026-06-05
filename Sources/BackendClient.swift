@@ -158,7 +158,17 @@ final class BackendClient: ObservableObject {
                 "retina_mode": retinaMode, "metal_hud": metalHud, "esync": esync, "msync": msync,
                 "screen_info": screenInfo, "game_name": gameName, "steam_appid": steamAppId,
                 "steam_mode": steamMode, "custom_env": customEnv, "debug": debug,
+                "auto_stop_steam": UserDefaults.standard.object(forKey: "auto_stop_steam") as? Bool ?? true,
             ])
+            // Backend duplicate-launch guard: the same exe is still alive from a
+            // previous launch, so nothing new was spawned. Tell the user what to
+            // do instead of silently stacking Wine instances.
+            if let dict = result as? [String: Any],
+               (dict["already_running"] as? Bool) == true {
+                runningGamePid = dict["pid"] as? Int
+                lastError = L("This game is already running. If it's frozen, press the red stop button (Kill Wineserver), then launch again.")
+                return
+            }
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode(LaunchResult.self, from: data) {
                 runningGamePid = decoded.pid
@@ -200,7 +210,8 @@ final class BackendClient: ObservableObject {
         let retinaMode = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
         do {
             let result = try await send(cmd: "launch_steam", params: [
-                "prefix": prefix, "retina_mode": retinaMode
+                "prefix": prefix, "retina_mode": retinaMode,
+                "auto_stop_steam": UserDefaults.standard.object(forKey: "auto_stop_steam") as? Bool ?? true,
             ])
             if let dict = result as? [String: Any] {
                 steamRunning = true
@@ -218,7 +229,8 @@ final class BackendClient: ObservableObject {
         steamPollTask?.cancel()
         steamPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                // 5s is plenty for "did Steam die?" and halves idle wakeups.
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !Task.isCancelled, let self else { break }
                 do {
                     let result = try await self.send(cmd: "get_steam_running")

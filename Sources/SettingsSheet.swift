@@ -838,6 +838,12 @@ struct DiagnoseSettingsTab: View {
     @State private var repairDone = false
     @State private var repairFailed = false
     @State private var isRepairing = false
+    // What happens to running Wine when the app quits: "ask" | "kill" | "leave".
+    // Also settable from the quit alert's "Remember my choice" checkbox.
+    @AppStorage("quit_wine_behavior") private var quitWineBehavior = "ask"
+    // Power saver: stop the background (silent) Steam a few minutes after the
+    // last game exits — its CEF stack burns CPU/battery while idle.
+    @AppStorage("auto_stop_steam") private var autoStopSteam = true
 
     var body: some View {
         ScrollView {
@@ -895,6 +901,32 @@ struct DiagnoseSettingsTab: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.orange)
                         .disabled(isDiagnosing || isRepairing)
+                    }
+                    .padding(6)
+                }
+
+                GroupBox(L("On Quit")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: $quitWineBehavior) {
+                            Text(L("Ask every time")).tag("ask")
+                            Text(L("Quit all Wine processes")).tag("kill")
+                            Text(L("Leave Wine running")).tag("leave")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Text(L("What happens to running games and Wine when you close MacNCheese."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                }
+
+                GroupBox(L("Power")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(L("Stop background Steam when no game is running"), isOn: $autoStopSteam)
+                        Text(L("Background Steam keeps using CPU after games quit; this stops it after 5 idle minutes. Steam you opened yourself is never touched."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(6)
                 }

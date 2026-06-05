@@ -1968,9 +1968,51 @@ install_monado_runtime() {
     echo "NOTE: no portable Wine tree found yet — install Wine + wineopenxr to use VR."
   fi
 
+  script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
   monado_dylib=""
   monado_tag=""
-  _monado_build_from_source || exit 1
+  payload_src=""
+
+  # Source priority: bundled prebuilt (app Resources, zero deps) -> prebuilt
+  # MONADO_URL tarball -> from-source. Prebuilt is STRONGLY preferred: the
+  # from-source path failed in the wild on testers' machines (missing deps,
+  # toolchain drift — "ninja: build stopped"). The payload is self-contained:
+  # libopenxr_monado.dylib + @loader_path libjpeg/libvulkan + libMoltenVK with
+  # an ICD manifest the launcher points VK_DRIVER_FILES at.
+  if [ -n "$script_dir" ] && [ -f "$script_dir/monado-runtime/libopenxr_monado.dylib" ]; then
+    echo "Using bundled prebuilt Monado runtime: $script_dir/monado-runtime"
+    payload_src="$script_dir/monado-runtime"
+    monado_tag="bundled"
+  elif [ -n "${MONADO_URL:-}" ]; then
+    echo "Downloading prebuilt Monado runtime from $MONADO_URL ..."
+    archive="$WORK_DIR/monado-runtime.tar.gz"
+    unpack_dir="$WORK_DIR/monado-unpack"
+    rm -rf "$unpack_dir"; mkdir -p "$unpack_dir"
+    download_file "$MONADO_URL" "$archive"
+    tar -xzf "$archive" -C "$unpack_dir"
+    for c in "$unpack_dir/monado-runtime" "$unpack_dir"; do
+      if [ -f "$c/libopenxr_monado.dylib" ]; then payload_src="$c"; break; fi
+    done
+    [ -n "$payload_src" ] || { echo "ERROR: prebuilt archive missing libopenxr_monado.dylib"; exit 1; }
+    monado_tag="prebuilt"
+  fi
+
+  if [ -n "$payload_src" ]; then
+    # Install the self-contained payload into PORTABLE_DIR/monado and register
+    # that copy (no Homebrew deps needed on the target machine at all).
+    mkdir -p "$PORTABLE_DIR/monado"
+    cp -f "$payload_src"/*.dylib "$PORTABLE_DIR/monado/"
+    [ -f "$payload_src/MoltenVK_icd.json" ] && cp -f "$payload_src/MoltenVK_icd.json" "$PORTABLE_DIR/monado/"
+    # cp preserves Homebrew's read-only mode; codesign needs write permission.
+    chmod -R u+w "$PORTABLE_DIR/monado"
+    for f in "$PORTABLE_DIR/monado"/*.dylib; do
+      /usr/bin/codesign --force --sign - --timestamp=none "$f" 2>/dev/null || true
+    done
+    monado_dylib="$PORTABLE_DIR/monado/libopenxr_monado.dylib"
+  else
+    echo "No prebuilt Monado available — falling back to the from-source build."
+    _monado_build_from_source || exit 1
+  fi
 
   register_monado_runtime "$monado_dylib" || echo "WARNING: Monado built but registration failed."
 
@@ -1984,7 +2026,8 @@ uninstall_monado_runtime() {
   # Only remove the system-wide manifest if it points at OUR build, so a user's
   # own runtime registration is never clobbered.
   sys_file="/usr/local/share/openxr/1/active_runtime.json"
-  if [ -f "$sys_file" ] && grep -q "$MONADO_SRC_DIR" "$sys_file" 2>/dev/null; then
+  if [ -f "$sys_file" ] && { grep -q "$MONADO_SRC_DIR" "$sys_file" 2>/dev/null \
+      || grep -q "$PORTABLE_DIR/monado" "$sys_file" 2>/dev/null; }; then
     rm -f "$sys_file" 2>/dev/null || true
     echo "Removed system-wide $sys_file"
   fi

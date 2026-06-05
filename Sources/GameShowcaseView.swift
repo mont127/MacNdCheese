@@ -164,7 +164,7 @@ struct GameShowcaseView: View {
             } else if filteredPosts.isEmpty {
                 centered {
                     Image(systemName: "magnifyingglass").font(.system(size: 44)).foregroundStyle(.secondary)
-                    Text(String(format: L("No games match \u{201C}%@\u{201D}"), searchText)).font(.title3).fontWeight(.semibold)
+                    Text(String(format: L("No games match “%@”"), searchText)).font(.title3).fontWeight(.semibold)
                     Text(L("Try a different search.")).foregroundStyle(.secondary)
                 }
             } else {

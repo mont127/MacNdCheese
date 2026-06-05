@@ -18,6 +18,102 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    // ── Quit-time Wine cleanup (field report: MiKo/Hafliss) ─────────────
+    // Quitting the launcher used to leave Wine processes running invisibly in
+    // the background. On quit, if MacNCheese's Wine is still alive, honor the
+    // saved preference ("ask" | "kill" | "leave") or ask. Matching is on OUR
+    // portable deps path only — other Wine installs (CrossOver/Whisky) are
+    // never touched — and it works even if the backend already exited.
+    private static let wineMatchPattern = "Application Support/MacNCheese/deps"
+
+    /// Real executable path of a pid (libproc). Wine's Windows-side processes
+    /// (services.exe, winedevice.exe, the game itself) show a pure "C:\..."
+    /// argv in ps — invisible to command-line matching — but their true binary
+    /// is our wine loader under deps. Verified live: 8/8 such pids resolved to
+    /// the deps path. Other Wine installs resolve to THEIR paths, so they are
+    /// never touched.
+    private func pidExecutable(_ pid: pid_t) -> String {
+        var buf = [CChar](repeating: 0, count: 4096)
+        let n = proc_pidpath(pid, &buf, UInt32(buf.count))
+        return n > 0 ? String(cString: buf) : ""
+    }
+
+    /// All host pids belonging to MacNCheese's Wine: unix-path matches (wine,
+    /// wineserver, gstreamer helpers) + Windows-argv processes whose real
+    /// executable lives under our deps dir.
+    private func macNCheeseWinePIDs() -> [pid_t] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-axo", "pid=,command="]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        guard (try? p.run()) != nil else { return [] }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+
+        let me = ProcessInfo.processInfo.processIdentifier
+        var pids: [pid_t] = []
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard let sp = line.firstIndex(of: " "), let pid = pid_t(line[..<sp]) else { continue }
+            if pid == me { continue }
+            let cmd = String(line[line.index(after: sp)...])
+            if cmd.contains("backend_server.py") || cmd.contains(".app/Contents/MacOS/MacNCheese") { continue }
+            if cmd.contains(Self.wineMatchPattern) {
+                pids.append(pid)
+            } else if cmd.count > 2, Array(cmd)[1] == ":", Array(cmd)[2] == "\\",
+                      pidExecutable(pid).contains(Self.wineMatchPattern) {
+                pids.append(pid)
+            }
+        }
+        return pids
+    }
+
+    private func macNCheeseWineRunning() -> Bool {
+        !macNCheeseWinePIDs().isEmpty
+    }
+
+    private func killAllMacNCheeseWine() {
+        // Polite first, then definitive — hung games ignore SIGTERM.
+        for sig in [SIGTERM, SIGKILL] {
+            let pids = macNCheeseWinePIDs()
+            if pids.isEmpty { break }
+            for pid in pids { kill(pid, sig) }
+            if sig == SIGTERM { usleep(900_000) }
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard macNCheeseWineRunning() else { return .terminateNow }
+
+        switch UserDefaults.standard.string(forKey: "quit_wine_behavior") ?? "ask" {
+        case "kill":
+            killAllMacNCheeseWine()
+            return .terminateNow
+        case "leave":
+            return .terminateNow
+        default:
+            let alert = NSAlert()
+            alert.messageText = L("Wine is still running")
+            alert.informativeText = L("Games or Wine processes started by MacNCheese are still running. Quit them too?")
+            alert.addButton(withTitle: L("Quit Wine & Exit"))
+            alert.addButton(withTitle: L("Leave Running & Exit"))
+            alert.addButton(withTitle: L("Cancel"))
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = L("Remember my choice")
+            let resp = alert.runModal()
+            if resp == .alertThirdButtonReturn { return .terminateCancel }
+            let kill = (resp == .alertFirstButtonReturn)
+            if alert.suppressionButton?.state == .on {
+                UserDefaults.standard.set(kill ? "kill" : "leave", forKey: "quit_wine_behavior")
+            }
+            if kill { killAllMacNCheeseWine() }
+            return .terminateNow
+        }
+    }
+
     /// Primary entry point for Spotlight taps on macOS. This is called before
     /// SwiftUI view modifiers on cold launch, so store the launch and also post
     /// a notification for already-running windows.

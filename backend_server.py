@@ -33,6 +33,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -643,6 +644,12 @@ def _apply_monado_runtime_env(env: Dict[str, str]) -> Dict[str, str]:
     try:
         if _monado_runtime_available():
             env["XR_RUNTIME_JSON"] = str(MONADO_RUNTIME_MANIFEST)
+            # Self-contained prebuilt runtime: point the Vulkan loader at the
+            # bundled MoltenVK ICD so VR works with NO Homebrew Vulkan install.
+            icd = MONADO_RUNTIME_MANIFEST.parent / "MoltenVK_icd.json"
+            if icd.exists():
+                env["VK_DRIVER_FILES"] = str(icd)
+                env["VK_ICD_FILENAMES"] = str(icd)  # legacy loader name
             dylib = _read_openxr_runtime_dylib(MONADO_RUNTIME_MANIFEST)
             if dylib and _dylib_is_x86_64(Path(dylib)) is False:
                 log("dxmt_openxr: WARNING — installed Monado runtime is not x86_64; "
@@ -1585,6 +1592,9 @@ def _detect_all_exes(game_dir: Path) -> List[str]:
 # ---------------------------------------------------------------------------
 
 _running_games: Dict[int, subprocess.Popen] = {}
+# (prefix, exe) -> last launch PID. Guards against the field-reported leak where
+# a hung game makes users click Launch repeatedly, stacking Wine instances.
+_launched_games: Dict[Tuple[str, str], int] = {}
 
 # ---------------------------------------------------------------------------
 # Command implementations
@@ -1983,6 +1993,32 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     # Both silent and open launch Steam via the SAME Wine-Stable path
     # (cmd_launch_steam) — the no-shim D3DMetal wine can't render Steam's CEF UI.
     steam_mode = params.get("steam_mode", "silent")
+    # Mirror the frontend's power toggle so the idle-Steam watchdog follows it.
+    global _auto_stop_steam
+    if "auto_stop_steam" in params:
+        _auto_stop_steam = bool(params.get("auto_stop_steam"))
+
+    # ── Duplicate-launch guard (field report: MiKo) ──────────────────────
+    # When a game hangs without a window, users click Launch repeatedly and
+    # every click used to stack another detached Wine instance. If the SAME exe
+    # in the SAME prefix is still alive from a previous launch, refuse to spawn
+    # another and tell the UI instead (it shows "already running — use Kill").
+    _dup_key = (str(prefix), str(exe))
+    _prev_pid = _launched_games.get(_dup_key)
+    if _prev_pid:
+        _prev_proc = _running_games.get(_prev_pid)
+        if _prev_proc is not None:
+            _prev_alive = _prev_proc.poll() is None
+        else:
+            try:
+                os.kill(_prev_pid, 0)
+                _prev_alive = True
+            except OSError:
+                _prev_alive = False
+        if _prev_alive:
+            log(f"Duplicate launch blocked: {exe} already running as PID {_prev_pid}")
+            return {"pid": _prev_pid, "already_running": True}
+        _launched_games.pop(_dup_key, None)
     if not prefix:
         raise ValueError("Missing 'prefix' parameter")
     if not exe:
@@ -2157,6 +2193,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     )
 
     _running_games[proc.pid] = proc
+    _launched_games[_dup_key] = proc.pid
     log(f"Game launched with PID {proc.pid}, backend={backend}, log at {log_path}")
 
 
@@ -2168,6 +2205,20 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
 
 
 _steam_process: Optional[subprocess.Popen] = None
+# ── Background-Steam power management (field report: Hafliss) ──────────────
+# A silent-launched Steam kept its full CEF/steamwebhelper stack running
+# forever after games quit — Activity Monitor showed "wine" at ~2700 energy
+# impact while idle. Silent Steam is only a Steamworks provider (no UI is ever
+# shown), so: launch it with -no-browser (skips the CEF stack entirely) and
+# auto-stop it a few minutes after the last game exits.
+STEAM_SILENT_ARGS = "-silent -tcp -no-browser"
+STEAM_IDLE_GRACE_S = 300  # stop silent Steam 5 min after the last game exits
+_steam_started_silent = False
+_steam_prefix: str = ""
+_steam_started_ts: float = 0.0
+_last_game_exit_ts: float = 0.0
+_auto_stop_steam = True  # frontend mirrors its Settings toggle on every launch
+_steam_watchdog_started = False
 
 
 def cmd_launch_steam(params: Dict[str, Any]) -> Any:
@@ -2175,12 +2226,14 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
 
     Mirrors the logic in MacNCheese.py  MainWindow.launch_steam().
     """
-    global _steam_process
+    global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts, _auto_stop_steam
 
     prefix = params.get("prefix")
     retina_mode = params.get("retina_mode", False)
     backend = params.get("backend", "auto")
     silent = bool(params.get("silent", False))
+    if "auto_stop_steam" in params:
+        _auto_stop_steam = bool(params.get("auto_stop_steam"))
     if not prefix:
         raise ValueError("Missing 'prefix' parameter")
 
@@ -2221,6 +2274,9 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
             start_new_session=True,
         )
         _steam_process = proc
+        _steam_started_silent = False  # custom launchers are user-visible; never auto-stop
+        _steam_prefix = str(prefix)
+        _steam_started_ts = time.time()
         log(f"Custom launcher launched with PID {proc.pid}")
         return {"pid": proc.pid, "log_path": log_path, "already_running": False}
     elif launcher_exe:
@@ -2291,7 +2347,7 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     export WINEDBG=-all
     cd {shlex.quote(str(steam_dir))} || exit 1
     rm -rf config/htmlcache appcache/httpcache appcache/htmlcache
-    "$MNC_WINE" steam.exe {"-silent -tcp" if silent else "-tcp"} > {shlex.quote(log_path)} 2>&1
+    "$MNC_WINE" steam.exe {STEAM_SILENT_ARGS if silent else "-tcp"} > {shlex.quote(log_path)} 2>&1
     """
 
     cmd = f"cd ~ && /usr/bin/arch -x86_64 /bin/zsh <<'MNCEOF'\n{heredoc}MNCEOF"
@@ -2306,7 +2362,12 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     )
 
     _steam_process = proc
-    log(f"Steam launched with PID {proc.pid}, log at {log_path}")
+    _steam_started_silent = silent
+    _steam_prefix = str(prefix)
+    _steam_started_ts = time.time()
+    if silent:
+        _ensure_steam_idle_watchdog()
+    log(f"Steam launched with PID {proc.pid} (silent={silent}), log at {log_path}")
 
     # Optionally block until Steam is fully authenticated (API up). Required before
     # launching a Steamworks game (cs2/RE4) — otherwise SteamAPI_Init fails with
@@ -2694,27 +2755,138 @@ def cmd_set_bottle_config(params: Dict[str, Any]) -> Any:
     return existing
 
 
+_libproc = None
+
+
+def _pid_executable(pid: int) -> str:
+    """Real executable path of a pid via libproc's proc_pidpath. Wine's
+    Windows-side processes (services.exe, winedevice.exe, the game itself)
+    show a PURE Windows argv ("C:\\...") in ps — but their true binary is our
+    wine loader under PORTABLE_DIR, which is the precise ownership signal.
+    (Verified live: 8/8 Windows-style pids resolved to our deps path.)"""
+    global _libproc
+    try:
+        import ctypes
+        if _libproc is None:
+            _libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        buf = ctypes.create_string_buffer(4096)
+        n = _libproc.proc_pidpath(pid, buf, 4096)
+        return buf.value.decode() if n > 0 else ""
+    except Exception:
+        return ""
+
+
+def _macncheese_wine_pids(extra_substrings: Optional[List[str]] = None) -> List[int]:
+    """PIDs of host processes belonging to MacNCheese's Wine stack: anything
+    whose command line references our portable deps dir (wine, wineserver,
+    preloaders, gstreamer helpers — they all run from there) or any of the
+    given extra substrings (e.g. a specific prefix path). Matching on OUR
+    paths means other Wine installs (CrossOver/Whisky/...) are never touched.
+    The backend itself and the app are excluded."""
+    pats = [str(PORTABLE_DIR)] + [s for s in (extra_substrings or []) if s]
+    me, parent = os.getpid(), os.getppid()
+    pids: List[int] = []
+    try:
+        out = subprocess.run(["/bin/ps", "-axo", "pid=,command="],
+                             capture_output=True, text=True, timeout=10)
+        for line in out.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                pid_s, cmdline = line.split(None, 1)
+                pid = int(pid_s)
+            except ValueError:
+                continue
+            if pid in (me, parent) or "backend_server.py" in cmdline:
+                continue
+            if ".app/Contents/MacOS/MacNCheese" in cmdline:
+                continue  # the launcher app itself
+            if any(p in cmdline for p in pats):
+                pids.append(pid)
+                continue
+            # Windows-argv processes ("C:\..." / "Z:\...") are invisible to the
+            # cmdline match — resolve their REAL executable instead. Other Wine
+            # installs (CrossOver/Whisky) resolve to THEIR paths, so the
+            # never-touch guarantee holds.
+            if len(cmdline) > 2 and cmdline[1] == ":" and cmdline[2] == "\\":
+                exe = _pid_executable(pid)
+                if exe and any(p in exe for p in pats):
+                    pids.append(pid)
+    except Exception as exc:
+        log(f"kill: ps scan failed: {exc}")
+    return pids
+
+
+def _kill_pids(pids: List[int], sig: int) -> int:
+    sent = 0
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+            sent += 1
+        except OSError:
+            pass
+    return sent
+
+
 def cmd_kill_wineserver(params: Dict[str, Any]) -> Any:
+    """Stop MacNCheese's Wine — for real. Field report (Hafliss): the old
+    single graceful `wineserver -k` left hung games and other Wine builds'
+    processes running, forcing users into Activity Monitor. Now:
+      1. graceful `wineserver -k` for EVERY portable Wine build present,
+      2. short wait,
+      3. SIGTERM stragglers (matched by OUR deps/prefix paths only),
+      4. SIGKILL whatever still survives.
+    Returns how many were force-killed and how many remain."""
     prefix = params.get("prefix")
     if not prefix:
         raise ValueError("Missing 'prefix' parameter")
 
-    wineserver = _find_wineserver()
-    if not wineserver:
-        raise FileNotFoundError("wineserver not found")
-
     env = _wine_env(prefix)
-    try:
-        subprocess.run(
-            [wineserver, "-k"],
-            env=env,
-            timeout=10,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        log("wineserver -k timed out")
-    return None
+
+    # 1) graceful shutdown on every portable Wine build that exists (each build
+    #    has its own wineserver; the D3DMetal one was previously never asked).
+    servers: List[str] = []
+    for app in ("Wine Stable.app", "Wine Staging.app", "Wine Devel.app", "Wine D3DMetal.app"):
+        cand = PORTABLE_DIR / app / "Contents" / "Resources" / "wine" / "bin" / "wineserver"
+        if cand.exists():
+            servers.append(str(cand))
+    if not servers:
+        ws = _find_wineserver()
+        if ws:
+            servers.append(ws)
+    for ws in servers:
+        try:
+            subprocess.run([ws, "-k"], env=env, timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            log(f"wineserver -k timed out: {ws}")
+
+    # 2) give graceful shutdown a moment to drain.
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        if not _macncheese_wine_pids([str(prefix)]):
+            break
+        time.sleep(0.3)
+
+    # 3) + 4) escalate on survivors (hung processes ignore wineserver -k).
+    force_killed = 0
+    survivors = _macncheese_wine_pids([str(prefix)])
+    if survivors:
+        log(f"kill_wineserver: escalating to SIGTERM for {len(survivors)} survivors: {survivors}")
+        _kill_pids(survivors, signal.SIGTERM)
+        time.sleep(1.0)
+        survivors = _macncheese_wine_pids([str(prefix)])
+        if survivors:
+            log(f"kill_wineserver: SIGKILL for {len(survivors)} stubborn pids: {survivors}")
+            force_killed = _kill_pids(survivors, signal.SIGKILL)
+            time.sleep(0.5)
+
+    remaining = _macncheese_wine_pids([str(prefix)])
+    _running_games.clear()
+    _launched_games.clear()
+    log(f"kill_wineserver: done (force_killed={force_killed}, remaining={len(remaining)})")
+    return {"force_killed": force_killed, "remaining": len(remaining)}
 
 
 def cmd_get_status(params: Dict[str, Any]) -> Any:
@@ -4052,6 +4224,7 @@ def cmd_get_exe_icon(params: Dict[str, Any]) -> Any:
 
 
 def cmd_get_running_games(params: Dict[str, Any]) -> Any:
+    global _last_game_exit_ts
     alive: List[Dict[str, Any]] = []
     dead_pids: List[int] = []
 
@@ -4065,8 +4238,73 @@ def cmd_get_running_games(params: Dict[str, Any]) -> Any:
     # Clean up finished processes
     for pid in dead_pids:
         _running_games.pop(pid, None)
+    if dead_pids and not alive:
+        # Last game just exited — anchors the background-Steam idle timer.
+        _last_game_exit_ts = time.time()
 
     return alive
+
+
+def _stop_background_steam(reason: str) -> None:
+    """Stop the silent Steam WE started, plus the prefix's lingering Wine
+    services. killpg reaches the whole bash→zsh→wine tree because the launch
+    used start_new_session=True."""
+    global _steam_process
+    proc = _steam_process
+    if proc is None:
+        return
+    log(f"power: stopping background Steam (pid {proc.pid}) — {reason}")
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except OSError:
+        pass
+    time.sleep(3.0)
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    # services.exe & friends idle in the prefix too — drain them as well.
+    ws = _find_wineserver()
+    if ws and _steam_prefix:
+        try:
+            subprocess.run([ws, "-k"], env=_wine_env(_steam_prefix), timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    _steam_process = None
+
+
+def _ensure_steam_idle_watchdog() -> None:
+    """Power saver (field report: idle background Steam at ~2700 energy impact):
+    a silent-launched Steam has no reason to outlive the games it served — stop
+    it STEAM_IDLE_GRACE_S after the last game exits. User-visible Steam ("Open
+    Steam" / custom launchers) is never auto-stopped."""
+    global _steam_watchdog_started
+    if _steam_watchdog_started:
+        return
+    _steam_watchdog_started = True
+
+    def _loop() -> None:
+        while True:
+            time.sleep(30)
+            try:
+                if not _auto_stop_steam or not _steam_started_silent:
+                    continue
+                proc = _steam_process
+                if proc is None or proc.poll() is not None:
+                    continue
+                if any(p.poll() is None for p in _running_games.values()):
+                    continue
+                anchor = max(_steam_started_ts, _last_game_exit_ts)
+                if time.time() - anchor >= STEAM_IDLE_GRACE_S:
+                    _stop_background_steam(
+                        f"idle for {STEAM_IDLE_GRACE_S // 60} min with no game running"
+                    )
+            except Exception as exc:
+                log(f"power: steam watchdog error: {exc}")
+
+    threading.Thread(target=_loop, daemon=True, name="steam-idle-watchdog").start()
 
 
 def cmd_get_steam_running(_params: Dict[str, Any]) -> Any:
@@ -5354,6 +5592,15 @@ def _respond(req_id: Any, ok: bool, data: Any = None, error: str = "") -> None:
 # Main loop
 # ---------------------------------------------------------------------------
 
+# Polled by the UI on short timers; logging every call drowns the log.
+_QUIET_POLL_CMDS = {
+    "get_steam_running",
+    "get_running_games",
+    "get_install_progress",
+    "legendary_status",
+    "epic_download_progress",
+}
+
 def main() -> None:
     log("MacNCheese backend server started")
     log(f"PORTABLE_DIR = {PORTABLE_DIR}")
@@ -5386,7 +5633,10 @@ def main() -> None:
                 continue
 
             try:
-                log(f"Handling cmd={cmd_name} id={req_id}")
+                # High-frequency UI polls (every 0.5–3s, forever) used to flood
+                # the log with tens of thousands of identical lines — skip them.
+                if cmd_name not in _QUIET_POLL_CMDS:
+                    log(f"Handling cmd={cmd_name} id={req_id}")
                 result = handler(request)
                 _respond(req_id, True, data=result)
             except Exception as exc:
