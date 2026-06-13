@@ -442,6 +442,63 @@ enum Localization {
         "Wine Logs": "Wine 日志",
         "Winecfg": "Winecfg",
         "wineopenxr (D3D11 OpenXR bridge, builds from source)": "wineopenxr（D3D11 OpenXR 桥接，从源码构建）",
+
+        // ── First-run onboarding installer ───────────────────────────────
+        "Welcome to MacNCheese": "欢迎使用 MacNCheese",
+        "Play Windows games on your Mac.": "在你的 Mac 上畅玩 Windows 游戏。",
+        "Checking what's already installed…": "正在检查已安装的组件…",
+        "MacNCheese will set up everything it needs to run games:": "MacNCheese 将安装运行游戏所需的全部组件：",
+        "Runs Windows apps and games.": "运行 Windows 应用和游戏。",
+        "Graphics (DXVK + Mesa)": "图形（DXVK + Mesa）",
+        "DirectX-to-Vulkan translation for 3D games.": "为 3D 游戏提供 DirectX 到 Vulkan 的转换。",
+        "git, 7-Zip and wget used during setup.": "安装过程中使用的 git、7-Zip 和 wget。",
+        "Also install advanced graphics": "同时安装高级图形组件",
+        "Wine Staging, DXMT and VKD3D-Proton. Larger download.": "Wine Staging、DXMT 和 VKD3D-Proton。下载更大。",
+        "This downloads a few hundred MB the first time and may take several minutes.": "首次安装需下载数百 MB，可能需要几分钟。",
+        "Install & Get Started": "安装并开始",
+        "Skip for now": "暂时跳过",
+        "You're all set!": "一切就绪！",
+        "Wine and graphics support are already installed.": "Wine 和图形支持已安装。",
+        "Get Started": "开始使用",
+        "Setup finished with some errors": "安装完成，但存在一些错误",
+        "Setup complete!": "安装完成！",
+        "You can finish anyway and retry missing pieces later in Settings → Setup.": "你仍可继续，稍后在「设置 → 安装设置」中重试缺失的组件。",
+        "installer.sh not found — reinstall MacNCheese.": "未找到 installer.sh——请重新安装 MacNCheese。",
+
+        // ── Bottle tab Wine selector ─────────────────────────────────────
+        "Picks the best installed Wine.": "自动选择最合适的已安装 Wine。",
+        "Using %@%@": "正在使用 %@%@",
+        "Using %@": "正在使用 %@",
+        "Using a detected Wine build.": "正在使用检测到的 Wine 版本。",
+        "No Wine installed yet — install one below.": "尚未安装 Wine——请在下方安装。",
+        "Re-scan installed Wine": "重新扫描已安装的 Wine",
+        "Automatic": "自动",
+        "Wine Stable": "Wine Stable",
+        "Wine Staging": "Wine Staging",
+        "Wine Devel": "Wine Devel",
+        "Not installed": "未安装",
+        "Install": "安装",
+        "Failed to detect Wine: %@": "检测 Wine 失败：%@",
+
+        // ── Game launch sheet / detail page ──────────────────────────────
+        "Starting Steam…": "正在启动 Steam…",
+        "Launch game": "启动游戏",
+        "Description of the game": "游戏简介",
+        "Wine & Graphics": "Wine 与图形",
+        "Screenshots": "游戏截图",
+
+        // ── Onboarding: Wine D3DMetal + Steam guide ──────────────────────
+        "Wine D3DMetal": "Wine D3DMetal",
+        "Apple's high-performance Direct3D engine.": "Apple 高性能 Direct3D 引擎。",
+        "Install Steam": "安装 Steam",
+        "Last step: install Steam.": "最后一步：安装 Steam。",
+        "Pick your SteamSetup.exe — MacNCheese will create a ready-to-play Steam bottle and run the installer.": "选择你的 SteamSetup.exe——MacNCheese 将创建一个可直接使用的 Steam 容器并运行安装程序。",
+        "Don't have it? Download SteamSetup.exe from store.steampowered.com/about, then choose it here.": "没有？请从 store.steampowered.com/about 下载 SteamSetup.exe，然后在此选择。",
+        "Setting up Steam…": "正在设置 Steam…",
+        "Choose SteamSetup.exe…": "选择 SteamSetup.exe…",
+        "Steam is installing": "Steam 正在安装",
+        "Follow the Steam Setup window to finish, then come back here. A \"Steam\" bottle is ready in your library.": "请按 Steam 安装窗口完成安装，然后返回此处。「Steam」容器已在你的游戏库中就绪。",
+        "Finish": "完成",
     ]
 }
 
@@ -485,18 +542,12 @@ struct LanguageSettingsTab: View {
 struct LanguagePickerSheet: View {
     @EnvironmentObject var loc: LocalizationManager
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openSettings) private var openSettings
-
-    /// First-run onboarding: after the language is chosen, open Settings on the
-    /// Setup tab so the user can install everything right away. SettingsSheet
-    /// reads (and clears) this flag in onAppear.
-    static let showSetupFlag = "mnc_open_setup_after_language"
 
     var body: some View {
         VStack(spacing: 18) {
             Image(systemName: "globe")
                 .font(.system(size: 46))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Color.brand)
             Text(L("Choose your language"))
                 .font(.title2).fontWeight(.bold)
             Text("中文 · English")
@@ -505,20 +556,18 @@ struct LanguagePickerSheet: View {
             HStack(spacing: 14) {
                 ForEach(AppLanguage.allCases) { lang in
                     Button {
+                        // First-run flow: language → onboarding installer.
+                        // ContentView presents OnboardingView once needsChoice
+                        // flips false (see ContentView.evaluateOnboarding).
                         loc.choose(lang)
                         dismiss()
-                        // First-run flow: language → installation/setup menu.
-                        UserDefaults.standard.set(true, forKey: Self.showSetupFlag)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                            openSettings()
-                        }
                     } label: {
                         Text(lang.displayName)
                             .frame(minWidth: 110)
                             .padding(.vertical, 6)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(loc.language == lang ? Color.accentColor : Color.secondary)
+                    .tint(loc.language == lang ? Color.brand : Color.secondary)
                 }
             }
             .padding(.top, 4)

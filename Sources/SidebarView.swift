@@ -123,7 +123,7 @@ struct BottleRow: View {
                     .foregroundStyle(.blue)
             } else {
                 Image(systemName: "wineglass")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Color.brand)
             }
         }
         .padding(.vertical, 2)

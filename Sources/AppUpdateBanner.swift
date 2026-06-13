@@ -14,7 +14,7 @@ struct AppUpdateBanner: View {
             HStack(spacing: 12) {
                 Image(systemName: updateChecker.installFailed
                       ? "exclamationmark.triangle.fill" : "arrow.down.circle.fill")
-                    .foregroundStyle(updateChecker.installFailed ? .orange : Color.accentColor)
+                    .foregroundStyle(updateChecker.installFailed ? .orange : Color.brand)
 
                 VStack(alignment: .leading, spacing: 1) {
                     if updateChecker.installing {

@@ -5,6 +5,8 @@ struct GameGridView: View {
     @EnvironmentObject var backend: BackendClient
     let games: [Game]
     @Binding var searchText: String
+    /// Open the in-pane game detail page (replaces the old modal launch sheet).
+    var onOpenDetail: (Game) -> Void = { _ in }
 
     @State private var gameOrder: [String] = []
     @State private var draggingAppid: String? = nil
@@ -51,6 +53,7 @@ struct GameGridView: View {
                 ForEach(displayedGames) { game in
                     GameCardView(
                         game: game,
+                        onOpen: { onOpenDetail(game) },
                         onMoveToFront: { moveToFront(game.appid) },
                         onMoveToBack: { moveToBack(game.appid) }
                     )
@@ -58,7 +61,7 @@ struct GameGridView: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 14)
                             .stroke(
-                                dropTargetAppid == game.appid ? Color.accentColor : Color.clear,
+                                dropTargetAppid == game.appid ? Color.brand : Color.clear,
                                 lineWidth: 2
                             )
                     )
@@ -129,7 +132,7 @@ struct GameGridView: View {
                         }
                     }
                     .buttonStyle(.bordered)
-                    .tint(backend.steamRunning ? .red : Color.accentColor)
+                    .tint(backend.steamRunning ? .red : Color.brand)
                 }
             }
             ToolbarItem(placement: .primaryAction) {
@@ -262,10 +265,10 @@ struct LaunchingOverlay: View {
 struct GameCardView: View {
     @EnvironmentObject var backend: BackendClient
     let game: Game
+    var onOpen: () -> Void = {}
     var onMoveToFront: (() -> Void)? = nil
     var onMoveToBack: (() -> Void)? = nil
     @State private var isHovering = false
-    @State private var showLaunchOptions = false
     @State private var coverImage: NSImage?
     @State private var isLaunching = false
 
@@ -274,7 +277,7 @@ struct GameCardView: View {
             // Cover image area
             ZStack(alignment: .topTrailing) {
                 Button {
-                    directLaunch()
+                    onOpen()
                 } label: {
                     ZStack {
                         RoundedRectangle(cornerRadius: 12)
@@ -297,8 +300,11 @@ struct GameCardView: View {
                             LaunchingOverlay(cornerRadius: 12)
                                 .frame(height: 220)
                         } else if isHovering {
+                            // No redundant play button: the whole tile (and the
+                            // gear) opens the game page, where the real Launch +
+                            // options live. Just a subtle hover scrim here.
                             RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.primary.opacity(0.3))
+                                .fill(Color.black.opacity(0.28))
                                 .frame(height: 220)
                         }
 
@@ -324,7 +330,7 @@ struct GameCardView: View {
 
                 if isHovering {
                     Button {
-                        showLaunchOptions = true
+                        onOpen()
                     } label: {
                         Image(systemName: "gearshape.fill")
                             .font(.system(size: 14, weight: .semibold))
@@ -354,18 +360,19 @@ struct GameCardView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isHovering ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08),
+                    isHovering ? Color.brand.opacity(0.65) : Color.primary.opacity(0.08),
                     lineWidth: 1
                 )
         )
         .scaleEffect(isHovering ? 1.02 : 1.0)
-        .shadow(color: isHovering ? Color.accentColor.opacity(0.2) : .clear, radius: 12)
+        .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
+        .shadow(color: isHovering ? Color.brand.opacity(0.35) : .clear, radius: 16)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in isHovering = hovering }
         .onAppear { loadCover() }
         .contextMenu {
             Button(L("Launch")) { directLaunch() }
-            Button(L("Launch Options…")) { showLaunchOptions = true }
+            Button(L("Launch Options…")) { onOpen() }
             if let exe = game.exe {
                 Button(L("Show in Finder")) {
                     NSWorkspace.shared.selectFile(exe, inFileViewerRootedAtPath: "")
@@ -386,9 +393,6 @@ struct GameCardView: View {
                 Divider()
                 Button(L("Remove from Library"), role: .destructive) { removeFromLibrary() }
             }
-        }
-        .sheet(isPresented: $showLaunchOptions) {
-            GameLaunchSheet(game: game, coverImage: coverImage)
         }
     }
 

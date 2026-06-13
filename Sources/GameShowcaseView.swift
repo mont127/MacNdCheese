@@ -228,7 +228,7 @@ private struct ShowcaseCard: View {
                                 .font(.caption2)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(Color.accentColor.opacity(0.15), in: Capsule())
+                                .background(Color.brand.opacity(0.15), in: Capsule())
                                 .foregroundStyle(.tint)
                         }
                     }
@@ -327,12 +327,12 @@ private struct ShowcaseCommentRow: View {
             AsyncImage(url: url) { img in
                 img.resizable().scaledToFill()
             } placeholder: {
-                Circle().fill(Color.accentColor.opacity(0.2))
+                Circle().fill(Color.brand.opacity(0.2))
             }
             .frame(width: 22, height: 22)
             .clipShape(Circle())
         } else {
-            Circle().fill(Color.accentColor.opacity(0.2)).frame(width: 22, height: 22)
+            Circle().fill(Color.brand.opacity(0.2)).frame(width: 22, height: 22)
         }
     }
 }

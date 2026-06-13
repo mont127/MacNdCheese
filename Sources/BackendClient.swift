@@ -275,7 +275,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func createBottle(name: String, path: String? = nil, launcherType: String = "steam", defaultBackend: String = "auto") async {
+    func createBottle(name: String, path: String? = nil, launcherType: String = "steam", defaultBackend: String = "auto", steamSetupPath: String? = nil) async {
         do {
             var params: [String: Any] = [
                 "name": name,
@@ -283,6 +283,7 @@ final class BackendClient: ObservableObject {
                 "default_backend": defaultBackend,
             ]
             if let path = path { params["path"] = path }
+            if let steamSetupPath { params["steam_setup_path"] = steamSetupPath }
             _ = try await send(cmd: "create_bottle", params: params)
             await loadBottles()
             if launcherType == "steam" {
@@ -397,6 +398,20 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    /// Steam description + showcase screenshots in one call (powers the game
+    /// detail page). Uses the backend's curl-based fetch, so it works on Pythons
+    /// whose urllib lacks CA certs.
+    func getSteamMedia(appid: String) async -> SteamMedia? {
+        do {
+            let result = try await send(cmd: "get_steam_media", params: ["appid": appid])
+            if let data = try? JSONSerialization.data(withJSONObject: result),
+               let decoded = try? JSONDecoder().decode(SteamMedia.self, from: data) {
+                return decoded
+            }
+        } catch {}
+        return nil
+    }
+
     func getGameConfig(prefix: String, appid: String) async -> [String: Any] {
         do {
             let result = try await send(cmd: "get_game_config", params: ["prefix": prefix, "appid": appid])
@@ -448,6 +463,22 @@ final class BackendClient: ObservableObject {
             }
         } catch {
             lastError = String(format: L("Failed to get components status: %@"), error.localizedDescription)
+        }
+        return nil
+    }
+
+    /// Probe which Wine builds are actually installed on disk (with their real
+    /// --version strings) so the Bottle tab can show a truthful, detected Wine
+    /// selector instead of a hardcoded list.
+    func detectWine() async -> WineDetection? {
+        do {
+            let result = try await send(cmd: "detect_wine")
+            if let data = try? JSONSerialization.data(withJSONObject: result),
+               let decoded = try? JSONDecoder().decode(WineDetection.self, from: data) {
+                return decoded
+            }
+        } catch {
+            lastError = String(format: L("Failed to detect Wine: %@"), error.localizedDescription)
         }
         return nil
     }

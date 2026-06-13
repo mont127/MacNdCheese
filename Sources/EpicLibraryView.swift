@@ -64,7 +64,7 @@ struct EpicLibraryView: View {
                             .overlay(
                                 RoundedRectangle(cornerRadius: 14)
                                     .stroke(
-                                        dropTargetAppid == game.appid ? Color.accentColor : Color.clear,
+                                        dropTargetAppid == game.appid ? Color.brand : Color.clear,
                                         lineWidth: 2
                                     )
                             )
@@ -210,12 +210,12 @@ struct EpicGameCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isHovering ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08),
+                    isHovering ? Color.brand.opacity(0.5) : Color.primary.opacity(0.08),
                     lineWidth: 1
                 )
         )
         .scaleEffect(isHovering ? 1.02 : 1.0)
-        .shadow(color: isHovering ? Color.accentColor.opacity(0.2) : .clear, radius: 12)
+        .shadow(color: isHovering ? Color.brand.opacity(0.2) : .clear, radius: 12)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in isHovering = hovering }
         .onAppear { loadCover() }

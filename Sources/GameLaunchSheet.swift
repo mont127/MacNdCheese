@@ -31,6 +31,12 @@ struct GameLaunchSheet: View {
         return game.exe ?? ""
     }
 
+    /// Button label while a launch is in flight. With Steam enabled the backend
+    /// blocks until Steam is signed in, so reflect that wait.
+    private var launchingLabel: String {
+        steamMode == "none" ? L("Launching…") : L("Starting Steam…")
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 20) {
             coverArt
@@ -371,13 +377,15 @@ struct GameLaunchSheet: View {
                     } else {
                         Image(systemName: "play.fill")
                     }
-                    Text(L("Play"))
+                    // While launching we may be blocking on Steam reaching
+                    // [Logged On] — say so instead of a bare spinner.
+                    Text(isLaunching ? launchingLabel : L("Play"))
                         .fontWeight(.bold)
                 }
-                .frame(minWidth: 100)
+                .frame(minWidth: 130)
             }
             .buttonStyle(.borderedProminent)
-            .tint(.cyan)
+            .tint(Color.brand)
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
             .disabled((game.epicAppName == nil && effectiveExe.isEmpty) || isLaunching)

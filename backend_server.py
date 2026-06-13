@@ -437,6 +437,8 @@ def _find_wine_for_bottle(wine_binary_pref: str = "auto") -> Optional[str]:
         return _find_wine_stable() or _find_wine()
     if wine_binary_pref == "staging":
         return _find_wine_staging() or _find_wine()
+    if wine_binary_pref == "devel":
+        return _find_wine_devel() or _find_wine()
     # auto: prefer stable, fall back to staging, then system
     return _find_wine()
 
@@ -1242,12 +1244,79 @@ def _restore_wine_lib_from_dxmt_backup() -> List[str]:
     return touched
 
 
-def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) -> None:
+def _patch_copy(src: Path, dst: Path, record: List[Tuple[str, bool]]) -> None:
+    """Copy src→dst as a per-launch DLL swap, recording it so it can be reverted
+    when the game exits. Any pre-existing dst is preserved as <dst>.mncbak (only
+    when no backup exists yet, so a crash-leftover backup keeps the true original).
+    The record entry is (dst, existed_before) — existed_before tells the revert
+    whether to restore the backup or just delete the DLL we added."""
+    try:
+        existed = dst.exists()
+        if existed:
+            bak = dst.with_name(dst.name + ".mncbak")
+            if not bak.exists():
+                shutil.move(str(dst), str(bak))
+        shutil.copy2(str(src), str(dst))
+        record.append((str(dst), existed))
+    except Exception as e:
+        log(f"patch_copy failed for {dst}: {e}")
+
+
+def _revert_patches(record: List[Tuple[str, bool]]) -> None:
+    """Undo the per-launch DLL swap recorded by _patch_copy: restore the backed-up
+    original for DLLs that existed before, or remove the ones we added."""
+    reverted = 0
+    for dst_str, existed in record:
+        try:
+            dst = Path(dst_str)
+            bak = dst.with_name(dst.name + ".mncbak")
+            if existed:
+                if bak.exists():
+                    shutil.move(str(bak), str(dst))  # restore original over our copy
+                    reverted += 1
+            elif dst.exists():
+                dst.unlink()                          # we added it — remove
+                reverted += 1
+        except Exception as e:
+            log(f"revert failed for {dst_str}: {e}")
+    if reverted:
+        log(f"Reverted {reverted} swapped DLL(s) after game exit")
+
+
+def _revert_after_game_exit(proc: subprocess.Popen, record: List[Tuple[str, bool]],
+                            backend: str = "") -> None:
+    """Daemon thread: wait for the launched game to exit, then undo its DLL swap
+    so nothing is left replaced. Reverts the per-game-dir copies, and for the
+    DXMT family also restores the SHARED Wine-Stable lib (DXMT overwrites
+    d3d11/dxgi/d3d10core there) — otherwise Steam, which runs on Wine Stable,
+    would load DXMT's Direct3D afterwards and fail to launch."""
+    try:
+        proc.wait()
+    except Exception:
+        return
+    time.sleep(3.0)  # let file handles close before touching the DLLs
+    _revert_patches(record)
+    if backend in (BACKEND_DXMT, BACKEND_DXMT_OPENXR):
+        try:
+            restored = _restore_wine_lib_from_dxmt_backup()
+            if restored:
+                log(f"Restored stock Wine lib after {backend} game exit: {', '.join(restored)}")
+        except Exception as exc:
+            log(f"wine-lib restore after game exit failed: {exc}")
+
+
+def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) -> List[Tuple[str, bool]]:
     """
     Copy required DLLs into the game directory before launch.
     This is the critical step the original app does in prepare_game()/patch_selected_game().
     Without it, Wine can't find the native DLLs even with WINEDLLOVERRIDES set.
+
+    Returns a patch record (game-dir DLLs that were swapped in) so the caller can
+    revert it when the game exits — see _revert_after_game_exit. Only the game-dir
+    copies are tracked; the DXMT/Wine-lib syncs are shared global state and keep
+    their own restore logic.
     """
+    record: List[Tuple[str, bool]] = []
     game_dir = Path(install_dir) if install_dir else exe_path.parent
     target_dirs = _collect_target_dirs(game_dir, exe_path)
 
@@ -1263,14 +1332,14 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
         dxvk_bin = DEFAULT_DXVK_INSTALL / "bin"
         if not all((dxvk_bin / dll).exists() for dll in DXVK_DLLS):
             log(f"DXVK DLLs not found at {dxvk_bin}, skipping patch")
-            return
+            return record
         for tdir in target_dirs:
             tdir.mkdir(parents=True, exist_ok=True)
             for dll in DXVK_DLLS:
-                shutil.copy2(str(dxvk_bin / dll), str(tdir / dll))
+                _patch_copy(dxvk_bin / dll, tdir / dll, record)
             for dll in DXVK_OPTIONAL_DLLS:
                 if (dxvk_bin / dll).exists():
-                    shutil.copy2(str(dxvk_bin / dll), str(tdir / dll))
+                    _patch_copy(dxvk_bin / dll, tdir / dll, record)
             log(f"Copied DXVK DLLs -> {tdir}")
 
     elif backend.startswith("mesa:"):
@@ -1289,7 +1358,7 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
 
         if missing:
             log(f"Mesa DLLs not found at {DEFAULT_MESA_DIR}: {', '.join(missing)}, skipping patch")
-            return
+            return record
 
         optional = []
         if driver == "zink" and (DEFAULT_MESA_DIR / "zink_dri.dll").exists():
@@ -1307,9 +1376,9 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
                     except Exception:
                         pass
             for dll in dlls:
-                shutil.copy2(str(DEFAULT_MESA_DIR / dll), str(tdir / dll))
+                _patch_copy(DEFAULT_MESA_DIR / dll, tdir / dll, record)
             for dll in optional:
-                shutil.copy2(str(DEFAULT_MESA_DIR / dll), str(tdir / dll))
+                _patch_copy(DEFAULT_MESA_DIR / dll, tdir / dll, record)
             log(f"Copied Mesa ({driver}) DLLs -> {tdir}")
 
 
@@ -1323,10 +1392,10 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
             for tdir in target_dirs:
                 tdir.mkdir(parents=True, exist_ok=True)
                 for dll in vkd3d_dlls:
-                    shutil.copy2(str(vkd3d_bin / dll), str(tdir / dll))
+                    _patch_copy(vkd3d_bin / dll, tdir / dll, record)
                 for dll in vkd3d_optional:
                     if (vkd3d_bin / dll).exists():
-                        shutil.copy2(str(vkd3d_bin / dll), str(tdir / dll))
+                        _patch_copy(vkd3d_bin / dll, tdir / dll, record)
                 log(f"Copied VKD3D-Proton DLLs -> {tdir}")
 
     elif backend == BACKEND_DXMT:
@@ -1409,7 +1478,7 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
                 for dll in gptk_launch_dlls:
                     src = gptk_dll_dir / dll
                     if src.exists():
-                        shutil.copy2(str(src), str(tdir / dll))
+                        _patch_copy(src, tdir / dll, record)
                 log(f"Copied GPTK launch DLLs -> {tdir}")
 
     elif backend == BACKEND_D3DMETAL3:
@@ -1432,12 +1501,14 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
                 for dll in d3dmetal_dlls:
                     src = gptk_dll_dir / dll
                     if src.exists():
-                        shutil.copy2(str(src), str(tdir / dll))
+                        _patch_copy(src, tdir / dll, record)
                 log(f"Copied D3DMetal3 DLLs -> {tdir}")
 
     elif backend == BACKEND_GPTK_FULL:
         # This backend needs DXVK/VKD3D DLLs removed (unpatch)
         _unpatch_dxvk(game_dir)
+
+    return record
 
 
 VKD3D_DLLS = ("d3d12.dll", "d3d12core.dll")
@@ -1770,6 +1841,29 @@ def cmd_get_steam_description(params: Dict[str, Any]) -> Any:
     }
 
 
+def cmd_get_steam_media(params: Dict[str, Any]) -> Any:
+    """Description + showcase media (screenshots, header) for a Steam app id, from
+    one cached appdetails fetch. Powers the game detail page's gallery."""
+    appid = str(params.get("appid", "")).strip()
+    if not appid:
+        raise ValueError("Missing 'appid' parameter")
+    data = _fetch_steam_appdetails(appid) or {}
+    shots = data.get("screenshots") or []
+    screenshots = [s.get("path_full") for s in shots if isinstance(s, dict) and s.get("path_full")]
+    thumbnails = [s.get("path_thumbnail") for s in shots if isinstance(s, dict) and s.get("path_thumbnail")]
+    raw_html = (data.get("detailed_description")
+                or data.get("about_the_game")
+                or data.get("short_description") or "")
+    return {
+        "appid": appid,
+        "description": _steam_html_to_text(raw_html) or "",
+        "short_description": _steam_html_to_text(data.get("short_description") or "") or "",
+        "header_image": data.get("header_image") or "",
+        "screenshots": screenshots,
+        "thumbnails": thumbnails,
+    }
+
+
 
 DISCORD_CLIENT_ID = os.environ.get("MACNCHEESE_DISCORD_APP_ID", "1508076871009697902").strip()
 
@@ -2041,38 +2135,45 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     key = _resolve_key(prefix)
     bottle_cfg = _load_bottles().get(key, {})
     wine_pref = bottle_cfg.get("wine_binary", "auto")
-    wine = _backend_wine_binary(backend, exe) or _find_wine_for_bottle(wine_pref)
-   
-    if backend == BACKEND_D3DMETAL3 and steam_mode != "none":
-        # The no-shim D3DMetal wine cannot render Steam's CEF UI, so Steam is
-        # always launched via cmd_launch_steam (Wine Stable — the exact wine the
-        # "Open Steam" button uses). steam_mode just picks silent (-silent, no
-        # window) vs open (full UI); BOTH use Wine Stable. cs2/Steamworks games
-        # then connect to that Steam over the shared wineserver.
+
+    # Steam launcher selection from the launch sheet ("Silent Steam" / "Open
+    # Steam" / "No Steam") — honoured for EVERY backend, not just D3DMetal. We
+    # bring Steam up the SAME way the "Open Steam" button does (cmd_launch_steam
+    # → Wine Stable), so a Steamworks game always finds an authenticated Steam
+    # client. steam_mode picks silent (-silent, background, no window) vs open
+    # (full Steam UI); "none" skips Steam entirely (best for standalone games).
+    # We BLOCK until Steam reaches [Logged On] before launching the game — a
+    # Steamworks game started before the Steam API is authenticated dies with
+    # "Steam denied appID". An already-running Steam is assumed ready.
+    # (The no-shim D3DMetal wine in particular can't render Steam's CEF UI, which
+    # is the original reason Steam must come up via Wine Stable, not the backend.)
+    # Only for Steam bottles — a "None"/custom bottle's launch must not drag up
+    # Steam (or the bottle's custom launcher) on every game start.
+    is_steam_bottle = bottle_cfg.get("launcher_type", "steam") == "steam"
+    if steam_mode != "none" and is_steam_bottle:
         try:
             steam_result = cmd_launch_steam({
                 "prefix": prefix,
                 "retina_mode": retina_mode,
-                "backend": BACKEND_D3DMETAL3,
+                "backend": backend,
                 "silent": (steam_mode == "silent"),
-                # BLOCK until Steam reaches [Logged On] before launching the game —
-                # a Steamworks game started before the API is up dies with
-                # "Steam denied appID". (Already-running Steam is assumed ready.)
                 "wait_ready": True,
             })
             if steam_result.get("already_running"):
-                log("D3DMetal3: Steam already running, proceeding to game launch")
+                log("Steam already running, proceeding to game launch")
             else:
-                log(f"D3DMetal3: Steam launched ({steam_mode}, pid {steam_result.get('pid')}) "
+                log(f"Steam launched ({steam_mode}, pid {steam_result.get('pid')}) "
                     f"via Wine Stable; ready={steam_result.get('ready')} "
                     f"({steam_result.get('status')})")
         except Exception as exc:
-            log(f"D3DMetal3: Steam auto-launch failed: {exc} (continuing anyway)")
+            log(f"Steam auto-launch failed: {exc} (continuing anyway)")
 
    
 
 
-    wine = _backend_wine_binary(backend, exe) or _find_wine()
+    # Honour the bottle's Wine selection (Auto / Stable / Staging / Devel) when
+    # the graphics backend doesn't force a Wine of its own (d3dmetal3/gptk/devel).
+    wine = _backend_wine_binary(backend, exe) or _find_wine_for_bottle(wine_pref)
     if not wine:
         raise FileNotFoundError("Wine not found. Install Wine first.")
 
@@ -2081,8 +2182,9 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     # Make Steam's SDL3/SDL2 findable so SteamAPI_Init doesn't assert
     # "Failed to load SDL3.dll" (it lives in the Steam root, off the search path).
     _ensure_steam_sdl_resolvable(prefix)
+    patch_record: List[Tuple[str, bool]] = []
     try:
-        _prepare_game_for_backend(backend, exe_path, effective_install_dir)
+        patch_record = _prepare_game_for_backend(backend, exe_path, effective_install_dir) or []
     except Exception as exc:
         log(f"Warning: DLL patching failed: {exc}")
 
@@ -2196,6 +2298,14 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     _launched_games[_dup_key] = proc.pid
     log(f"Game launched with PID {proc.pid}, backend={backend}, log at {log_path}")
 
+    # Revert the per-launch DLL swap once the game exits, so nothing is left
+    # replaced: the game-dir copies (D3DMetal/GPTK/DXVK/…) and, for DXMT, the
+    # shared Wine-Stable lib (so Steam can launch cleanly afterwards).
+    if patch_record or backend in (BACKEND_DXMT, BACKEND_DXMT_OPENXR):
+        threading.Thread(
+            target=_revert_after_game_exit, args=(proc, patch_record, backend), daemon=True
+        ).start()
+
 
     if bottle_cfg.get("discord_rpc", True):
         _discord_presence_for_launch(proc, exe, params.get("game_name", ""))
@@ -2240,6 +2350,17 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     # Check if Steam is already running
     if _steam_process is not None and _steam_process.poll() is None:
         return {"already_running": True, "pid": _steam_process.pid}
+
+    # Steam runs on Wine Stable. A prior DXMT game replaces Wine Stable's shared
+    # lib d3d11/dxgi/d3d10core (and drops winemetal.dll); if left in place, Steam
+    # loads DXMT's Metal-based Direct3D and fails to launch. Restore the stock
+    # DLLs first so Steam always starts on clean Direct3D. (In the game-launch
+    # flow Steam comes up + reaches [Logged On] BEFORE the per-game DLL prep
+    # re-applies DXMT, so the game still gets DXMT and Steam stays stock.)
+    try:
+        _restore_wine_lib_from_dxmt_backup()
+    except Exception as exc:
+        log(f"Steam launch: wine-lib restore failed: {exc}")
 
     if backend == "auto":
         backend = _resolve_auto_backend()
@@ -2502,19 +2623,26 @@ def cmd_launch_launcher(params: Dict[str, Any]) -> Any:
 _setup_proc: Optional[subprocess.Popen] = None
 
 
-def _download_and_run_steam_setup(prefix: str, wine: str) -> None:
-    """Download SteamSetup.exe and run it in the given prefix (background thread)."""
+def _download_and_run_steam_setup(prefix: str, wine: str, setup_path: Optional[str] = None) -> None:
+    """Run SteamSetup.exe in the given prefix (background thread). Uses a
+    user-supplied installer at `setup_path` when given (the onboarding Steam
+    guide passes the file the user picked); otherwise downloads the official
+    SteamSetup.exe."""
     global _setup_proc
     try:
-        setup_path = Path(tempfile.gettempdir()) / "SteamSetup.exe"
-        if not setup_path.exists():
-            log("Downloading SteamSetup.exe...")
-            urllib.request.urlretrieve(STEAM_SETUP_URL, str(setup_path))
-            log("SteamSetup.exe downloaded.")
+        if setup_path and Path(setup_path).expanduser().exists():
+            exe = Path(setup_path).expanduser()
+            log(f"Using provided SteamSetup.exe: {exe}")
+        else:
+            exe = Path(tempfile.gettempdir()) / "SteamSetup.exe"
+            if not exe.exists():
+                log("Downloading SteamSetup.exe...")
+                urllib.request.urlretrieve(STEAM_SETUP_URL, str(exe))
+                log("SteamSetup.exe downloaded.")
         env = _wine_env(prefix)
         log(f"Launching SteamSetup.exe in {prefix}")
         proc = subprocess.Popen(
-            [wine, str(setup_path)],
+            [wine, str(exe)],
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -2588,9 +2716,11 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
 
    
     if launcher_type == "steam" and wine:
+        # steam_setup_path: a user-supplied SteamSetup.exe (onboarding Steam
+        # guide). When absent, _download_and_run_steam_setup fetches the official one.
         threading.Thread(
             target=_download_and_run_steam_setup,
-            args=(path_str, wine),
+            args=(path_str, wine, params.get("steam_setup_path")),
             daemon=True,
         ).start()
 
@@ -3181,35 +3311,54 @@ def _steam_html_to_text(raw: str) -> str:
     return text.strip()
 
 
-def _fetch_steam_description(appid: str) -> Optional[str]:
-    """Fetch and cache the Steam store extended description for an app id."""
+def _fetch_steam_appdetails(appid: str) -> Optional[Dict[str, Any]]:
+    """Fetch + cache the Steam store appdetails `data` blob for an app id.
+
+    Uses system curl, NOT urllib: framework Pythons without CA certs fail with
+    SSL CERTIFICATE_VERIFY_FAILED on store.steampowered.com (that's why the
+    description previously came back empty); curl uses the macOS trust store."""
     appid = str(appid).strip()
     if not appid.isdigit():
         return None
 
-    cache_key = f"steam/{appid}"
+    cache_key = f"steam_appdetails/{appid}"
     cached = _steam_cache.get(cache_key)
     if cached and (time.time() - cached[0]) < _STEAM_CACHE_TTL:
         return cached[1]
 
     try:
         url = f"https://store.steampowered.com/api/appdetails?appids={appid}&l=en&cc=us"
-        req = urllib.request.Request(url, headers={"User-Agent": "MacNCheese/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            payload = json.loads(resp.read())
+        out = subprocess.run(
+            ["/usr/bin/curl", "-fsSL", "--max-time", "15",
+             "-H", "User-Agent: MacNCheese/1.0", url],
+            capture_output=True, text=True,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            _steam_cache[cache_key] = (time.time(), None)
+            return None
+        payload = json.loads(out.stdout)
         app_data = payload.get(appid, {})
         if not app_data.get("success"):
             _steam_cache[cache_key] = (time.time(), None)
             return None
-
-        data = app_data.get("data", {})
-        raw_html = data.get("detailed_description") or data.get("about_the_game") or data.get("short_description") or ""
-        description = _steam_html_to_text(raw_html)
-        _steam_cache[cache_key] = (time.time(), description or None)
-        return description or None
+        data = app_data.get("data", {}) or {}
+        _steam_cache[cache_key] = (time.time(), data)
+        return data
     except Exception as exc:
-        log(f"Failed to fetch Steam description for {appid}: {exc}")
+        log(f"Failed to fetch Steam appdetails for {appid}: {exc}")
         return None
+
+
+def _fetch_steam_description(appid: str) -> Optional[str]:
+    """Steam store extended description for an app id (HTML stripped to text)."""
+    data = _fetch_steam_appdetails(appid)
+    if not data:
+        return None
+    raw_html = (data.get("detailed_description")
+                or data.get("about_the_game")
+                or data.get("short_description") or "")
+    description = _steam_html_to_text(raw_html)
+    return description or None
 
 
 def cmd_get_update_info(params: Dict[str, Any]) -> Any:
@@ -3295,6 +3444,58 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
     }
 
 
+def cmd_detect_wine(params: Dict[str, Any]) -> Any:
+    """Probe the actual installed Wine builds on disk and report each one with
+    its real --version string and binary path. Drives the Bottle tab's Wine
+    selector so it reflects what's genuinely installed instead of a hardcoded
+    list. The selectable preferences are stable / staging / auto (what
+    _find_wine_for_bottle honours); devel/d3dmetal are reported as informational
+    extras since they're chosen via the graphics backend, not wine_binary."""
+    variants: List[Dict[str, Any]] = []
+    for vid, label, selectable, finder in (
+        ("stable", "Wine Stable", True, _find_wine_stable),
+        ("staging", "Wine Staging", True, _find_wine_staging),
+        ("devel", "Wine Devel", True, _find_wine_devel),
+    ):
+        path = finder()
+        variants.append({
+            "id": vid,
+            "label": label,
+            "selectable": selectable,
+            "installed": path is not None,
+            "path": path or "",
+            "version": _get_wine_version(path) if path else None,
+        })
+
+    # Wine D3DMetal is a self-contained .app launched via `open -n`; report it
+    # so the UI can show it's present, even though it isn't a wine_binary pref.
+    d3dmetal_launcher = PORTABLE_DIR / "Wine D3DMetal.app" / "Contents" / "MacOS" / "wine"
+    d3dmetal_installed = _wine_d3dmetal_installed()
+    variants.append({
+        "id": "d3dmetal",
+        "label": "Wine D3DMetal",
+        "selectable": False,
+        "installed": d3dmetal_installed,
+        "path": str(d3dmetal_launcher) if d3dmetal_installed else "",
+        "version": None,
+    })
+
+    # What "Auto" actually resolves to right now, so the UI can say e.g.
+    # "Auto → Wine Stable (wine-9.0)".
+    auto_path = _find_wine_for_bottle("auto")
+    auto_id = None
+    if auto_path:
+        for v in variants:
+            if v["path"] and v["path"] == auto_path:
+                auto_id = v["id"]
+                break
+
+    return {
+        "variants": variants,
+        "auto_resolved_id": auto_id,
+        "auto_resolved_path": auto_path or "",
+        "auto_resolved_version": _get_wine_version(auto_path) if auto_path else None,
+    }
 
 
 def _is_apple_silicon() -> bool:
@@ -5524,6 +5725,7 @@ COMMANDS: Dict[str, Any] = {
     "list_bottles": cmd_list_bottles,
     "scan_games": cmd_scan_games,
     "get_steam_description": cmd_get_steam_description,
+    "get_steam_media": cmd_get_steam_media,
     "launch_game": cmd_launch_game,
     "launch_steam": cmd_launch_steam,
     "create_bottle": cmd_create_bottle,
@@ -5543,6 +5745,7 @@ COMMANDS: Dict[str, Any] = {
     "detect_exes": cmd_detect_exes,
     "list_backends": cmd_list_backends,
     "get_components_status": cmd_get_components_status,
+    "detect_wine": cmd_detect_wine,
     "get_update_info": cmd_get_update_info,
     "check_app_update": cmd_check_app_update,
     "apply_app_update": cmd_apply_app_update,
@@ -5634,7 +5837,7 @@ def main() -> None:
 
             try:
                 # High-frequency UI polls (every 0.5–3s, forever) used to flood
-                # the log with tens of thousands of identical lines — skip them.
+                # the log with tens of thousands of identical lines - skip them.
                 if cmd_name not in _QUIET_POLL_CMDS:
                     log(f"Handling cmd={cmd_name} id={req_id}")
                 result = handler(request)

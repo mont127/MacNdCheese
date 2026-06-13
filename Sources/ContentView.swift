@@ -18,6 +18,8 @@ struct ContentView: View {
     @State private var showEpicStore = false
     @State private var newBottleName = ""
     @State private var showKillConfirmation = false
+    @State private var showOnboarding = false
+    @State private var detailGame: Game?
 
     @ViewBuilder private var killWineserverButton: some View {
         Button {
@@ -69,45 +71,72 @@ struct ContentView: View {
         return L("Library")
     }
 
+    private func openDetail(_ game: Game?) {
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            detailGame = game
+        }
+    }
+
+    @ViewBuilder private var detailContent: some View {
+        if showStore {
+            StoreView(searchText: searchText)
+                .transition(.opacity)
+        } else if backend.activePrefix == nil {
+            NoPrefixView(showCreateBottle: $showCreateBottle)
+                .transition(.opacity)
+        } else if activeBottle?.isEpicBottle == true {
+            EpicLandingView(searchText: $searchText)
+                .id(backend.activePrefix)
+                .transition(.opacity)
+        } else if backend.games.isEmpty {
+            if activeBottle?.isSteamBottle ?? true {
+                SteamLandingView()
+                    .transition(.opacity)
+            } else {
+                EmptyBottleLandingView()
+                    .transition(.opacity)
+            }
+        } else {
+            GameGridView(
+                games: filteredGames,
+                searchText: $searchText,
+                onOpenDetail: { openDetail($0) }
+            )
+            .transition(.opacity)
+        }
+    }
+
+    private var detailPane: some View {
+        ZStack {
+            Color.clear
+            detailContent
+
+            // In-pane game detail / launch page. Sits on top of the grid (which
+            // stays mounted, so the toolbar is preserved) and animates in/out.
+            // The sidebar is the other split column, untouched.
+            if let game = detailGame {
+                GameDetailView(game: game, onClose: { openDetail(nil) })
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                    .zIndex(3)
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
+        .animation(.easeInOut(duration: 0.22), value: showStore)
+        .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
+        .background(Color(.windowBackgroundColor))
+        .navigationTitle(detailTitle)
+        .navigationSubtitle(detailSubtitle)
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
         } detail: {
-            ZStack {
-                Color.clear
-
-                if showStore {
-                    StoreView(searchText: searchText)
-                        .transition(.opacity)
-                } else if backend.activePrefix == nil {
-                    NoPrefixView(showCreateBottle: $showCreateBottle)
-                        .transition(.opacity)
-                } else if activeBottle?.isEpicBottle == true {
-                    EpicLandingView(searchText: $searchText)
-                        .id(backend.activePrefix)
-                        .transition(.opacity)
-                } else if backend.games.isEmpty {
-                    if activeBottle?.isSteamBottle ?? true {
-                        SteamLandingView()
-                            .transition(.opacity)
-                    } else {
-                        EmptyBottleLandingView()
-                            .transition(.opacity)
-                    }
-                } else {
-                    GameGridView(games: filteredGames, searchText: $searchText)
-                        .transition(.opacity)
-                }
-            }
-            .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
-            .animation(.easeInOut(duration: 0.22), value: showStore)
-            .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
-            .background(Color(.windowBackgroundColor))
-            .navigationTitle(detailTitle)
-            .navigationSubtitle(detailSubtitle)
+            detailPane
         }
-        .onChange(of: backend.activePrefix) { _, _ in showStore = false }
+        .onChange(of: backend.activePrefix) { _, _ in showStore = false; detailGame = nil }
         .navigationSplitViewStyle(.balanced)
+        .tint(.brand)   // brand accent for sidebar selection + prominent buttons
         .searchable(text: $searchText, placement: .toolbar, prompt: showStore ? L("Search showcase") : L("Search games"))
         .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
             showCreateBottle = true
@@ -166,10 +195,75 @@ struct ContentView: View {
         .sheet(isPresented: $loc.needsChoice) {
             LanguagePickerSheet()
         }
+        // First-run onboarding installer — shown automatically after the language
+        // is chosen, so a new user gets a working Wine + graphics stack without
+        // ever opening Settings. Lives in its own modifier to keep this body's
+        // type-checking light.
+        .modifier(OnboardingPresenter(show: $showOnboarding))
     }
 }
 
 
+
+/// Owns first-run onboarding presentation so ContentView's already-large body
+/// stays light to type-check. Shows OnboardingView once the language is chosen
+/// and the backend reports Wine is missing; existing installs are marked
+/// complete silently so an upgrader is never nagged. Any dismissal (button,
+/// Escape, click-out) marks it complete so it won't reappear.
+private struct OnboardingPresenter: ViewModifier {
+    @EnvironmentObject var backend: BackendClient
+    @EnvironmentObject var loc: LocalizationManager
+    @AppStorage(OnboardingView.completeKey) private var onboardingComplete = false
+    @Binding var show: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $show, onDismiss: {
+                onboardingComplete = true
+                MacNCheeseSupport.markInitialized()
+            }) {
+                OnboardingView()
+            }
+            .onAppear { evaluate() }
+            .onChange(of: backend.isConnected) { _, connected in
+                if connected { evaluate() }
+            }
+            .onChange(of: loc.needsChoice) { _, needs in
+                if !needs { evaluate() }
+            }
+    }
+
+    private func evaluate() {
+        guard !show, !loc.needsChoice else { return }
+
+        // First launch is keyed on MacNCheese's Application Support folder, not
+        // just a UserDefaults flag. If the user deleted it (a clean reset) or
+        // this is a genuine first run, re-onboard even if a stale "complete"
+        // flag survived in UserDefaults.
+        if !MacNCheeseSupport.exists {
+            onboardingComplete = false
+            // Defer a tick so we don't present while the language sheet (bound to
+            // the same view) is still dismissing.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                if !MacNCheeseSupport.exists { show = true }
+            }
+            return
+        }
+
+        // Folder exists: respect the completed/skipped flag, but if onboarding
+        // was never finished and Wine still isn't installed, offer it.
+        guard !onboardingComplete else { return }
+        Task {
+            // nil = backend not ready yet; a later isConnected change retries.
+            guard let status = await backend.getComponentsStatus() else { return }
+            if status.hasWine {
+                onboardingComplete = true
+            } else {
+                show = true
+            }
+        }
+    }
+}
 
 struct SteamLandingView: View {
     @EnvironmentObject var backend: BackendClient
@@ -191,7 +285,7 @@ struct SteamLandingView: View {
 
             Image(systemName: "gamecontroller.fill")
                 .font(.system(size: 80))
-                .foregroundStyle(Color.accentColor.opacity(0.8))
+                .foregroundStyle(Color.brand.opacity(0.8))
                 .padding(.bottom, 8)
 
             Text(customExeName?.uppercased() ?? "STEAM")
@@ -234,7 +328,7 @@ struct SteamLandingView: View {
                 .frame(width: 160, height: 44)
             }
             .buttonStyle(.borderedProminent)
-            .tint(backend.steamRunning ? .red : Color.accentColor)
+            .tint(backend.steamRunning ? .red : Color.brand)
             .controlSize(.large)
             .disabled(backend.activePrefix == nil || isLaunching)
 
@@ -287,7 +381,7 @@ struct NoPrefixView: View {
         VStack(spacing: 12) {
             Image(systemName: "plus.circle")
                 .font(.system(size: 56))
-                .foregroundStyle(Color.accentColor.opacity(0.8))
+                .foregroundStyle(Color.brand.opacity(0.8))
             Text(L("No bottle selected"))
                 .font(.title)
                 .fontWeight(.bold)
@@ -327,7 +421,7 @@ struct EmptyBottleLandingView: View {
             Spacer()
             Image(systemName: "wineglass")
                 .font(.system(size: 72))
-                .foregroundStyle(Color.accentColor.opacity(0.8))
+                .foregroundStyle(Color.brand.opacity(0.8))
                 .padding(.bottom, 12)
             Text(L("No Games"))
                 .font(.title)
@@ -360,7 +454,7 @@ struct EmptyBottleLandingView: View {
                     .frame(minWidth: 160)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(backend.steamRunning ? .red : Color.accentColor)
+                .tint(backend.steamRunning ? .red : Color.brand)
                 .controlSize(.large)
                 .disabled(isLaunching)
                 Spacer().frame(height: 20)

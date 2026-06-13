@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum InstallerPathStore {
+enum InstallerPathStore {
     static let dxvkSrcKey = "installerPaths.dxvkSrc"
     static let dxvkInstallKey = "installerPaths.dxvkInstall"
     static let dxvkInstall32Key = "installerPaths.dxvkInstall32"
@@ -43,9 +43,22 @@ private enum InstallerPathStore {
         }
         return stored
     }
+
+    /// The Mesa Windows build the installer pulls when "Mesa" is selected.
+    static let mesaURL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
+
+    /// Locate the bundled installer.sh (next to the app Resources or the source
+    /// repo). Returns nil when neither exists. Shared by the Setup tab and the
+    /// first-run onboarding installer so both look in the same places.
+    static func installerScriptPath() -> String? {
+        let home = NSHomeDirectory()
+        let resourcePath = Bundle.main.resourcePath ?? Bundle.main.bundlePath
+        let candidates = [resourcePath + "/installer.sh", home + "/macndcheese/installer.sh"]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
 }
 
-private struct InstallerPaths {
+struct InstallerPaths {
     let dxvkSrc: String
     let dxvkInstall64: String
     let dxvkInstall32: String
@@ -96,7 +109,7 @@ struct SettingsSheet: View {
             // Tab content
             Group {
                 switch selectedTab {
-                case "bottle": BottleSettingsTab()
+                case "bottle": BottleSettingsTab(selectedTab: $selectedTab)
                 case "paths": PathsSettingsTab()
                 case "setup": SetupSettingsTab()
                 case "diagnose": DiagnoseSettingsTab()
@@ -109,14 +122,7 @@ struct SettingsSheet: View {
         }
         .frame(width: 680, height: 620)
         .background(.ultraThinMaterial)
-        .onAppear {
-            // First-run onboarding: the language popup sets this flag so the
-            // user lands directly on the Setup tab to install everything.
-            if UserDefaults.standard.bool(forKey: LanguagePickerSheet.showSetupFlag) {
-                UserDefaults.standard.removeObject(forKey: LanguagePickerSheet.showSetupFlag)
-                selectedTab = "setup"
-            }
-        }
+        .tint(.brand)
     }
 }
 
@@ -127,6 +133,7 @@ struct SettingsSheet: View {
 
 struct BottleSettingsTab: View {
     @EnvironmentObject var backend: BackendClient
+    @Binding var selectedTab: String
     @State private var bottleName = ""
     @State private var launcherExe = ""
     @State private var iconPath = ""
@@ -136,6 +143,8 @@ struct BottleSettingsTab: View {
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
     @State private var isMoving = false
+    @State private var wineDetection: WineDetection?
+    @State private var isDetectingWine = false
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -181,15 +190,16 @@ struct BottleSettingsTab: View {
                         }
                     }
 
-                    // Wine version
-                    SettingsRow(label: L("Wine")) {
-                        Picker("", selection: $wineBinary) {
-                            Text(L("Auto (prefer Stable)")).tag("auto")
-                            Text(L("Stable")).tag("stable")
-                            Text(L("Staging")).tag("staging")
-                        }
-                        .labelsHidden()
-                    }
+                    // Wine version — detection-driven: reflects which Wine
+                    // builds are actually installed (with their real versions).
+                    WineSelector(
+                        selection: $wineBinary,
+                        detection: wineDetection,
+                        isLoading: isDetectingWine,
+                        onChange: { saveBottleConfig() },
+                        onInstall: { selectedTab = "setup" },
+                        onRefresh: { loadWineDetection() }
+                    )
 
                     // Metal HUD (global for this prefix)
                     Toggle(isOn: $metalHud) {
@@ -294,7 +304,7 @@ struct BottleSettingsTab: View {
                         Spacer()
                         Button(L("Save Changes")) { saveBottleConfig() }
                             .buttonStyle(.borderedProminent)
-                            .tint(.cyan)
+                            .tint(Color.brand)
                     }
                     .padding(.top, 8)
 
@@ -307,8 +317,16 @@ struct BottleSettingsTab: View {
             }
             .padding(20)
         }
-        .onAppear { loadFields() }
+        .onAppear { loadFields(); loadWineDetection() }
         .onChange(of: backend.activePrefix) { loadFields() }
+    }
+
+    private func loadWineDetection() {
+        isDetectingWine = true
+        Task {
+            wineDetection = await backend.detectWine()
+            isDetectingWine = false
+        }
     }
 
     private func loadFields() {
@@ -657,7 +675,7 @@ struct SetupSettingsTab: View {
                     Spacer()
                     Button(L("Update")) { runUpdate() }
                         .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
+                        .tint(Color.brand)
                         .disabled(isRunning || isLoadingStatus)
                 }
             }
@@ -707,16 +725,13 @@ struct SetupSettingsTab: View {
     }
 
     private func runUpdate() {
-        let home = NSHomeDirectory()
-        let resourcePath = Bundle.main.resourcePath ?? Bundle.main.bundlePath
-        let candidates = [resourcePath + "/installer.sh", home + "/macndcheese/installer.sh"]
-        guard let installerPath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        guard let installerPath = InstallerPathStore.installerScriptPath() else {
             return
         }
 
-        let prefix = backend.activePrefix ?? home + "/wined"
+        let prefix = backend.activePrefix ?? NSHomeDirectory() + "/wined"
         let pathSettings = InstallerPathStore.current()
-        let mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
+        let mesaUrl = InstallerPathStore.mesaURL
 
         // Plan actions: install if toggled on, uninstall if toggled off but was installed
         var uninstallActions: [String] = []
@@ -769,6 +784,11 @@ struct SetupSettingsTab: View {
             while true {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard let progress = await backend.getInstallProgress(jobId: jobId, offset: installLogOffset) else {
+                    // Lost contact: end in a terminal state so the Update button
+                    // re-enables instead of staying stuck on a spinner.
+                    installDone = true
+                    installFailed = true
+                    isRunning = false
                     break
                 }
                 installLogLines.append(contentsOf: progress.lines)
@@ -867,7 +887,7 @@ struct DiagnoseSettingsTab: View {
                         Label(isDiagnosing ? L("Scanning") : L("Run Diagnosis"), systemImage: "stethoscope")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.cyan)
+                    .tint(Color.brand)
                     .disabled(isDiagnosing || isRepairing)
                 }
 
@@ -1223,7 +1243,7 @@ struct RepairActionRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: repair.destructive ? "exclamationmark.arrow.triangle.2.circlepath" : "wrench.and.screwdriver")
-                .foregroundStyle(repair.destructive ? .orange : .cyan)
+                .foregroundStyle(repair.destructive ? .orange : Color.brand)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1233,10 +1253,10 @@ struct RepairActionRow: View {
                     if repair.recommended {
                         Text(L("Recommended"))
                             .font(.caption2)
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(Color.brand)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(.cyan.opacity(0.14), in: Capsule())
+                            .background(Color.brand.opacity(0.14), in: Capsule())
                     }
                 }
                 Text(repair.details)
@@ -1392,6 +1412,154 @@ struct LogsSettingsTab: View {
         } catch {
             logText = String(format: L("Failed to read log: %@"), error.localizedDescription)
         }
+    }
+}
+
+// MARK: - Wine Selector
+
+/// Detection-driven Wine picker for the Bottle tab. Shows Automatic / Stable /
+/// Staging, each annotated with whether that build is actually installed and its
+/// real `wine --version`. Builds that aren't installed can't be selected and
+/// offer a shortcut to the Setup tab to install them.
+struct WineSelector: View {
+    @Binding var selection: String
+    let detection: WineDetection?
+    let isLoading: Bool
+    let onChange: () -> Void
+    let onInstall: () -> Void
+    let onRefresh: () -> Void
+
+    private var autoSubtitle: String {
+        guard let detection else { return L("Picks the best installed Wine.") }
+        if let id = detection.autoResolvedId,
+           let variant = detection.variant(id) {
+            let version = variant.version.map { " (\($0))" } ?? ""
+            return String(format: L("Using %@%@"), variant.label, version)
+        }
+        if let path = detection.autoResolvedPath, !path.isEmpty {
+            return detection.autoResolvedVersion.map { String(format: L("Using %@"), $0) }
+                ?? L("Using a detected Wine build.")
+        }
+        return L("No Wine installed yet — install one below.")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(L("Wine"))
+                    .font(.caption).fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                if isLoading { ProgressView().controlSize(.mini) }
+                Spacer()
+                Button { onRefresh() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .foregroundStyle(.secondary)
+                .help(L("Re-scan installed Wine"))
+                .disabled(isLoading)
+            }
+
+            VStack(spacing: 0) {
+                WineOptionRow(
+                    title: L("Automatic"),
+                    subtitle: autoSubtitle,
+                    installed: true,
+                    version: nil,
+                    selectable: true,
+                    isSelected: selection == "auto",
+                    onSelect: { choose("auto") },
+                    onInstall: nil
+                )
+                Divider().padding(.leading, 34)
+                variantRow("stable", L("Wine Stable"))
+                Divider().padding(.leading, 34)
+                variantRow("staging", L("Wine Staging"))
+                Divider().padding(.leading, 34)
+                variantRow("devel", L("Wine Devel"))
+            }
+            .background(.black.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.06)))
+        }
+    }
+
+    private func variantRow(_ id: String, _ title: String) -> some View {
+        let variant = detection?.variant(id)
+        let installed = variant?.installed ?? false
+        // A not-installed build still renders as selected if it's the saved
+        // preference, so the user can see (and fix) the mismatch.
+        let selectable = installed || selection == id
+        return WineOptionRow(
+            title: title,
+            subtitle: nil,
+            installed: installed,
+            version: variant?.version,
+            selectable: selectable,
+            isSelected: selection == id,
+            onSelect: { choose(id) },
+            onInstall: installed ? nil : onInstall
+        )
+    }
+
+    private func choose(_ id: String) {
+        guard selection != id else { return }
+        selection = id
+        onChange()
+    }
+}
+
+private struct WineOptionRow: View {
+    let title: String
+    let subtitle: String?
+    let installed: Bool
+    let version: String?
+    let selectable: Bool
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onInstall: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                .font(.system(size: 16))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).fontWeight(.medium)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let version, installed {
+                    Text(version)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            if let onInstall, !installed {
+                Text(L("Not installed"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Button(L("Install")) { onInstall() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            } else if installed {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .help(L("Installed"))
+            }
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
+        .onTapGesture { if selectable { onSelect() } }
+        .opacity(selectable ? 1 : 0.5)
     }
 }
 
