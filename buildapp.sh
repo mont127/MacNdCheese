@@ -102,9 +102,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>
     <string>MacNCheese</string>
     <key>CFBundleVersion</key>
-    <string>7.0.0</string>
+    <string>9.0.3</string>
     <key>CFBundleShortVersionString</key>
-    <string>7.0.0</string>
+    <string>9.0.3</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
