@@ -57,7 +57,7 @@ Click the **Install Steam** / **Run installer** button. The Steam installer will
 
 ##  FAQ
 
-## Mewgenics runs.
+## Does Mewgenics run on macndcheese?
 Wait like 30 seconds for startup make sure to launch with silent steam. Use the custom OpenGL wine backend and make sure to change the main wine with the custom OpenGL backend.
 
 
@@ -65,7 +65,7 @@ Wait like 30 seconds for startup make sure to launch with silent steam. Use the 
 ###  What even is this?
 MacNCheese is a free launcher that runs Windows games on macOS using Wine. It automatically sets up all the technical stuff (graphics translation layers, DLL overrides, etc.) so you don't have to.
 ### Is it free?
-100% free and open source, forever.
+100% free and open source.
 
 
 
@@ -120,13 +120,13 @@ Because setting this up manually is painful, repetitive, and full of obscure com
 
 **Run from source:**
 ```bash
-bash install.sh
+bash buildapp.sh
 ```
 
 **Manual full setup (the hard way):**
 
 <details>
-<summary>Click to expand — only if you enjoy suffering 😅</summary>
+<summary>Click to expand — only if you enjoy suffering 😅(DXVK NOT DXMT OUTDATED!!!!!!)</summary>
 
 ### 1. Install dependencies
 ```bash
