@@ -6,6 +6,11 @@ import Foundation
 final class BackendClient: ObservableObject {
     @Published var bottles: [Bottle] = []
     @Published var games: [Game] = []
+    @Published var apps: [WineApp] = []
+    /// Executables passed to the app via Finder ("Open With") that are waiting
+    /// for a bottle to be chosen. Buffered here so a cold launch (where the
+    /// file arrives before ContentView exists) isn't lost.
+    @Published var pendingExecutables: [URL] = []
     @Published var status: BackendStatus?
     @Published var componentsStatus: ComponentsStatus?
     @Published var isConnected = false
@@ -94,6 +99,7 @@ final class BackendClient: ObservableObject {
         await loadStatus()
         if let prefix = activePrefix {
             await scanGames(prefix: prefix)
+            await scanApps(prefix: prefix)
         }
     }
 
@@ -135,9 +141,24 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    func scanApps(prefix: String) async {
+        do {
+            let result = try await send(cmd: "scan_apps", params: ["prefix": prefix])
+            // Discard results if the user switched bottles while in flight.
+            guard activePrefix == prefix else { return }
+            if let data = try? JSONSerialization.data(withJSONObject: result),
+               let decoded = try? JSONDecoder().decode([WineApp].self, from: data) {
+                self.apps = decoded
+            }
+        } catch {
+            // Non-fatal: an old backend without scan_apps just yields no apps.
+        }
+    }
+
     func selectBottle(_ path: String) {
         activePrefix = path
         games = []  // clear immediately so stale games don't show for the new bottle
+        apps = []
         let isEpic = bottles.first { $0.path == path }?.isEpicBottle ?? false
         Task {
             if isEpic {
@@ -145,17 +166,18 @@ final class BackendClient: ObservableObject {
                 await epicCheckAuth()
             }
             await scanGames(prefix: path)
+            await scanApps(prefix: path)
         }
     }
 
-    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false) async {
+    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, gameMode: Bool = true, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false) async {
         do {
             let screenInfo = NSScreen.screens.map { s in
                 "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"
             }.joined(separator: " | ")
             let result = try await send(cmd: "launch_game", params: [
                 "prefix": prefix, "exe": exe, "args": args, "backend": backend, "install_dir": installDir,
-                "retina_mode": retinaMode, "metal_hud": metalHud, "esync": esync, "msync": msync,
+                "retina_mode": retinaMode, "metal_hud": metalHud, "game_mode": gameMode, "esync": esync, "msync": msync,
                 "screen_info": screenInfo, "game_name": gameName, "steam_appid": steamAppId,
                 "steam_mode": steamMode, "custom_env": customEnv, "debug": debug,
                 "auto_stop_steam": UserDefaults.standard.object(forKey: "auto_stop_steam") as? Bool ?? true,
@@ -342,11 +364,41 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    /// Launch a discovered Windows application using the bottle's default
+    /// graphics backend, the same pipeline games use.
+    func launchApp(prefix: String, app: WineApp) async {
+        let bottle = bottles.first { $0.path == prefix }
+        let backendId = bottle?.defaultBackend ?? "auto"
+        let installDir = URL(fileURLWithPath: app.exe).deletingLastPathComponent().path
+        await launchGame(
+            prefix: prefix,
+            exe: app.exe,
+            args: app.args,
+            backend: backendId,
+            installDir: installDir,
+            gameName: app.name
+        )
+    }
+
     func runExe(prefix: String, exe: String, args: String = "") async {
         do {
             _ = try await send(cmd: "run_exe", params: ["prefix": prefix, "exe": exe, "args": args])
         } catch {
             lastError = String(format: L("Failed to run exe: %@"), error.localizedDescription)
+        }
+    }
+
+    /// Launch the uninstaller for an app. Returns the method used
+    /// ("uninstaller" = the app's own uninstaller, "control_panel" = Wine's
+    /// Add/Remove Programs fallback), or nil on failure.
+    @discardableResult
+    func uninstallApp(prefix: String, app: WineApp) async -> String? {
+        do {
+            let result = try await send(cmd: "uninstall_app", params: ["prefix": prefix, "exe": app.exe])
+            return (result as? [String: Any])?["method"] as? String
+        } catch {
+            lastError = "Failed to uninstall app: \(error.localizedDescription)"
+            return nil
         }
     }
 
@@ -764,6 +816,7 @@ final class BackendClient: ObservableObject {
         backend: String = "auto",
         retinaMode: Bool = false,
         metalHud: Bool = false,
+        gameMode: Bool = true,
         esync: Bool = true,
         msync: Bool = true,
         customEnv: String = "",
@@ -776,6 +829,7 @@ final class BackendClient: ObservableObject {
                 "backend": backend,
                 "retina_mode": retinaMode,
                 "metal_hud": metalHud,
+                "game_mode": gameMode,
                 "esync": esync,
                 "msync": msync,
                 "custom_env": customEnv,

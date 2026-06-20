@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacNdCheese}",
+            "name": "Debug MacNCheese",
+            "target": "MacNCheese",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug MacNCheese"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacNdCheese}",
+            "name": "Release MacNCheese",
+            "target": "MacNCheese",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release MacNCheese"
+        }
+    ]
+}

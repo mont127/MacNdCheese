@@ -82,6 +82,16 @@ cp installer.sh "$RESOURCES/installer.sh"
 chmod +x "$RESOURCES/installer.sh"
 cp Epic.svg "$RESOURCES/Epic.svg"
 
+# Bundle Apple's gamepolicyctl so the backend can force macOS Game Mode on for
+# launched Wine games without requiring Xcode. It only links OS frameworks, so
+# the ad-hoc re-sign below (codesign --deep) is sufficient.
+if [ -f vendor/gamepolicyctl ]; then
+    cp vendor/gamepolicyctl "$RESOURCES/gamepolicyctl"
+    chmod +x "$RESOURCES/gamepolicyctl"
+else
+    echo "WARNING: vendor/gamepolicyctl missing — Game Mode forcing will be disabled in this build" >&2
+fi
+
 for img in Steam.png Wine.png Setting.png Add.png icon.png; do
     if [ -f "$img" ]; then
         cp "$img" "$RESOURCES/$img"
@@ -118,7 +128,80 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
     <key>LSApplicationCategoryType</key>
-    <string>public.app-category.games</string>
+    <string>public.app-category.utilities</string>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.microsoft.windows-executable</string>
+            <key>UTTypeDescription</key>
+            <string>Windows Executable</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.unix-executable</string>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>exe</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/x-msdownload</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.microsoft.windows-installer</string>
+            <key>UTTypeDescription</key>
+            <string>Windows Installer Package</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>msi</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/x-msi</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Windows Executable</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.microsoft.windows-executable</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Windows Installer Package</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.microsoft.windows-installer</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
@@ -131,6 +214,21 @@ find "$APP_ROOT" -name "*.cstemp" -delete
 xattr -cr "$APP_ROOT"
 
 /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP_ROOT"
+
+# gamepolicyctl must keep Apple's ORIGINAL signature: it carries Apple-private
+# entitlements (com.apple.gamepolicyd.tool.* + mach-lookup) needed to reach the
+# gamepolicyd daemon, which an ad-hoc re-sign would strip (breaking Game Mode
+# control). --deep leaves a Mach-O in Resources/ untouched, but guard anyway:
+# if its signature was clobbered, restore the pristine copy and reseal the
+# bundle WITHOUT --deep.
+GP_RES="$RESOURCES/gamepolicyctl"
+if [ -f "$GP_RES" ] && ! /usr/bin/codesign -dvv "$GP_RES" 2>&1 | grep -q "Authority=Apple"; then
+    echo "Restoring Apple-signed gamepolicyctl after deep sign"
+    cp vendor/gamepolicyctl "$GP_RES"
+    chmod +x "$GP_RES"
+    /usr/bin/codesign --force --sign - --timestamp=none "$APP_ROOT"
+fi
+
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_ROOT" 2>&1 || true
 
 echo ""

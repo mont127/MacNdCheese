@@ -215,5 +215,7 @@ MacNCheese.dmg
 CLAUDE.md
 Apple_HIG_Complet.pdf
 assets
+.understand-anything
+For_Claude/
 # Local-only release builder — must never be committed
 dmgndappbuilder.sh

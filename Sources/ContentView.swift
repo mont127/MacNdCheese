@@ -1,10 +1,5 @@
 import SwiftUI
 
-extension Notification.Name {
-    /// Posted by the "New Bottle" menu command; ContentView listens for it.
-    static let createNewBottle = Notification.Name("createNewBottle")
-}
-
 struct ContentView: View {
     @EnvironmentObject var backend: BackendClient
     @EnvironmentObject var announcements: AnnouncementChecker
@@ -18,6 +13,8 @@ struct ContentView: View {
     @State private var showEpicStore = false
     @State private var newBottleName = ""
     @State private var showKillConfirmation = false
+    @State private var openQueue: [URL] = []
+    @State private var currentOpenRequest: OpenExeRequest?
     @State private var showOnboarding = false
     @State private var detailGame: Game?
 
@@ -88,7 +85,7 @@ struct ContentView: View {
             EpicLandingView(searchText: $searchText)
                 .id(backend.activePrefix)
                 .transition(.opacity)
-        } else if backend.games.isEmpty {
+        } else if backend.games.isEmpty && backend.apps.isEmpty {
             if activeBottle?.isSteamBottle ?? true {
                 SteamLandingView()
                     .transition(.opacity)
@@ -123,9 +120,22 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
         .animation(.easeInOut(duration: 0.22), value: showStore)
         .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
+        .animation(.easeInOut(duration: 0.22), value: backend.apps.isEmpty)
         .background(Color(.windowBackgroundColor))
         .navigationTitle(detailTitle)
         .navigationSubtitle(detailSubtitle)
+    }
+
+    /// Pull any executables Finder handed us into the local queue and present
+    /// the next one if no open sheet is currently showing.
+    private func ingestPendingOpens() {
+        openQueue.append(contentsOf: PendingOpen.shared.drain())
+        showNextOpenIfIdle()
+    }
+
+    private func showNextOpenIfIdle() {
+        guard currentOpenRequest == nil, !openQueue.isEmpty else { return }
+        currentOpenRequest = OpenExeRequest(url: openQueue.removeFirst())
     }
 
     var body: some View {
@@ -141,8 +151,15 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
             showCreateBottle = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openWindowsExecutable)) { _ in
+            ingestPendingOpens()
+        }
+        .onAppear { ingestPendingOpens() }
         .sheet(isPresented: $showCreateBottle) {
             CreateBottleSheet()
+        }
+        .sheet(item: $currentOpenRequest, onDismiss: { showNextOpenIfIdle() }) { request in
+            OpenExeSheet(url: request.url)
         }
         .sheet(isPresented: $showEpicStore) {
             EpicStoreSheet(isPresented: $showEpicStore)

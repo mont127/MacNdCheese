@@ -88,6 +88,11 @@ struct GameGridView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
+
+            if !backend.apps.isEmpty {
+                AppsSectionView(apps: backend.apps)
+                    .padding(.bottom, 24)
+            }
         }
         .contentMargins(.top, 20, for: .scrollContent)
         .scrollClipDisabled()
@@ -439,6 +444,138 @@ struct GameCardView: View {
                 }
             } catch {
                 // Cover not available, use placeholder
+            }
+        }
+    }
+}
+
+// MARK: - Applications section
+
+/// Installed Windows applications discovered in the bottle (Start Menu /
+/// Program Files), shown below the games grid.
+struct AppsSectionView: View {
+    let apps: [WineApp]
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 16)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Applications")
+                .font(.headline)
+                .padding(.horizontal, 24)
+
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(apps) { app in
+                    AppCardView(app: app)
+                }
+            }
+            .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct AppCardView: View {
+    @EnvironmentObject var backend: BackendClient
+    let app: WineApp
+    @State private var isHovering = false
+    @State private var isLaunching = false
+    @State private var showUninstallConfirm = false
+
+    private var icon: NSImage? {
+        guard let b64 = app.iconBase64,
+              let data = Data(base64Encoded: b64) else { return nil }
+        return NSImage(data: data)
+    }
+
+    var body: some View {
+        Button {
+            launch()
+        } label: {
+            VStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(.ultraThinMaterial)
+                        .frame(width: 72, height: 72)
+                    if let icon {
+                        Image(nsImage: icon)
+                            .resizable().interpolation(.high)
+                            .scaledToFit()
+                            .frame(width: 48, height: 48)
+                    } else {
+                        Image(systemName: "app.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.secondary)
+                    }
+                    if isLaunching {
+                        LaunchingOverlay(cornerRadius: 14)
+                            .frame(width: 72, height: 72)
+                        ProgressView().controlSize(.small).tint(.white)
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(
+                            isHovering ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08),
+                            lineWidth: 1
+                        )
+                )
+                .scaleEffect(isHovering ? 1.05 : 1.0)
+
+                Text(app.name)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .onHover { isHovering = $0 }
+        .help(app.name)
+        .accessibilityLabel("Launch \(app.name)")
+        .contextMenu {
+            Button("Launch") { launch() }
+            Button("Show in Finder") {
+                NSWorkspace.shared.selectFile(app.exe, inFileViewerRootedAtPath: "")
+            }
+            Divider()
+            Button("Uninstall…", role: .destructive) { showUninstallConfirm = true }
+        }
+        .confirmationDialog(
+            "Uninstall \(app.name)?",
+            isPresented: $showUninstallConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Uninstall", role: .destructive) { uninstall() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This opens the program's uninstaller. Follow its prompts to remove \(app.name) from this bottle.")
+        }
+    }
+
+    private func launch() {
+        guard let prefix = backend.activePrefix, !isLaunching else { return }
+        isLaunching = true
+        Task {
+            await backend.launchApp(prefix: prefix, app: app)
+            isLaunching = false
+        }
+    }
+
+    private func uninstall() {
+        guard let prefix = backend.activePrefix else { return }
+        Task {
+            await backend.uninstallApp(prefix: prefix, app: app)
+            // The uninstaller is interactive; rescan a few times so the app
+            // disappears from the list once the user finishes removing it.
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard backend.activePrefix == prefix else { break }
+                await backend.scanApps(prefix: prefix)
+                if !backend.apps.contains(where: { $0.exe == app.exe }) { break }
             }
         }
     }

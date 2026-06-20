@@ -17,6 +17,7 @@ struct GameLaunchSheet: View {
     @State private var loadingBackends = true
     @State private var retinaMode: Bool = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
     @State private var metalHud: Bool = false
+    @State private var gameMode: Bool = true
     @State private var advancedDebug: Bool = false
     @State private var enableEsync: Bool = true
     @State private var enableMsync: Bool = true
@@ -53,6 +54,7 @@ struct GameLaunchSheet: View {
                         argsSection
                         retinaSection
                         metalHudToggle
+                        gameModeToggle
                         advancedDebugToggle
                         environmentSection
                         synchronizationSection
@@ -229,6 +231,10 @@ struct GameLaunchSheet: View {
         }
     }
 
+    private var hasRetinaScreen: Bool {
+        NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
+    }
+
     private var retinaSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle(isOn: $retinaMode) {
@@ -240,6 +246,7 @@ struct GameLaunchSheet: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+        .opacity(hasRetinaScreen ? 1.0 : 0.5)
     }
 
     private var metalHudToggle: some View {
@@ -247,6 +254,20 @@ struct GameLaunchSheet: View {
             Text(L("Metal HUD"))
                 .font(.caption)
                 .fontWeight(.semibold)
+        }
+    }
+
+    private var gameModeToggle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: $gameMode) {
+                Text(L("Game Mode"))
+                    .font(.caption)
+                    .fontWeight(.semibold)
+            }
+            Text(L("Forces macOS Game Mode on while the game runs (prioritizes CPU/GPU and reduces input latency). macOS can't auto-detect Wine games as games, so we enable it for you."))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -402,6 +423,7 @@ struct GameLaunchSheet: View {
         if let a = cfg["args"] as? String { extraArgs = a }
         if let r = cfg["retina_mode"] as? Bool { retinaMode = r }
         if let h = cfg["metal_hud"] as? Bool { metalHud = h }
+        if let gm = cfg["game_mode"] as? Bool { gameMode = gm }
         if let d = cfg["debug"] as? Bool { advancedDebug = d }
         if let e = cfg["esync"] as? Bool { enableEsync = e }
         if let m = cfg["msync"] as? Bool { enableMsync = m }
@@ -419,6 +441,7 @@ struct GameLaunchSheet: View {
             "args": extraArgs,
             "retina_mode": retinaMode,
             "metal_hud": metalHud,
+            "game_mode": gameMode,
             "debug": advancedDebug,
             "esync": sync.esync,
             "msync": sync.msync,
@@ -455,6 +478,7 @@ struct GameLaunchSheet: View {
         guard let prefix = backend.activePrefix,
               let config = await backend.getBottleConfig(path: prefix) else { return }
         metalHud = config["metal_hud"] as? Bool ?? false
+        gameMode = config["game_mode"] as? Bool ?? true
         advertiseAVX = config["rosetta_avx"] as? Bool ?? false
         customEnv = config["custom_env"] as? String ?? ""
     }
@@ -501,6 +525,7 @@ struct GameLaunchSheet: View {
                     backend: selectedBackend,
                     retinaMode: retinaMode,
                     metalHud: metalHud,
+                    gameMode: gameMode,
                     esync: sync.esync,
                     msync: sync.msync,
                     customEnv: env,
@@ -517,6 +542,7 @@ struct GameLaunchSheet: View {
                     installDir: game.installDir,
                     retinaMode: retinaMode,
                     metalHud: metalHud,
+                    gameMode: gameMode,
                     esync: sync.esync,
                     msync: sync.msync,
                     gameName: game.name,
