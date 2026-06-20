@@ -206,6 +206,58 @@ DEFAULT_GPTK_DIR = Path.home() / "gptk"
 GPTK3_ROOT = Path.home() / "gptk3" / "Game Porting Toolkit.app"
 D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
 
+# Unified engine: one wine renders Steam CEF via DXMT and routes games-from-Steam
+# to a chosen backend (MNC_GAME_BACKEND) via the loader. Steam exes are pinned to
+# DXMT by the loader no matter what MNC_GAME_BACKEND is. WINE_UNIFIED_DIR holds the
+# bundled build (build64 layout: loader/wine + dlls + server). DEV path is a fallback.
+WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
+WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
+UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk")
+
+# The d3d DLL slots the unified loader routes to. Steam exes and the dxmt backend
+# use the canonical names (canonical d3d11/dxgi/d3d10core ARE DXMT). The d3dmetal
+# backend routes to *_d3dm and dxvk to *_dxvk. All of these must physically exist
+# in a prefix system32 or the loader has nothing to route to. We bundle the set
+# and stage it into every prefix on launch.
+UNIFIED_D3D_DIR = WINE_UNIFIED_DIR / "mnc-d3d"
+UNIFIED_D3D_DEV = Path("/Volumes/ASAFE/steam-clean2/drive_c/windows/system32")
+UNIFIED_D3D_DLLS = (
+    # canonical = DXMT (Steam always; dxmt game backend)
+    "d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll",
+    "d3d12.dll", "d3d12core.dll", "winemetal.dll",
+    # D3DMetal stubs (d3dmetal game backend -> libd3dshared)
+    "d3d11_d3dm.dll", "dxgi_d3dm.dll", "d3d10core_d3dm.dll", "d3d10_d3dm.dll", "d3d12_d3dm.dll",
+    # DXVK (dxvk game backend)
+    "d3d11_dxvk.dll", "d3d10core_dxvk.dll", "dxgi_dxvk.dll",
+)
+
+# Game-side MediaFoundation video bridge. A homebrew-GStreamer winegstreamer variant
+# so games decode H264 intro videos while Steam stays off GStreamer. Its PE exports
+# wineg_game so the loader pairs it with dlls/wineg_game (its own unix half on the
+# Cellar gst core) not Steam packaged-core slot which would dual-load GStreamer and
+# abort. We stage the PE into system32 then re-point these wg_* CLSIDs at it.
+UNIFIED_MF_BRIDGE = "winegstreamer_game.dll"
+UNIFIED_MF_CLSIDS = (
+    "{1F1E273D-12C0-4B3A-8E9B-1933C2498AEA}",  # wg_h264_decoder
+    "{1F302877-AAAB-40A3-B9E0-9F48DAF35BC8}",  # wg_mp3_sink_factory
+    "{272BFBFB-50D0-4078-B600-1E959C301337}",  # wg_avi_splitter
+    "{317DF618-5E5A-468A-9F15-D827A9A08162}",  # Generic Decodebin Byte Stream Handler
+    "{3F839EC7-5EA6-49E1-80C2-1EA300F8B0E0}",  # wg_wave_parser
+    "{5B4D4E54-0620-4CF9-94AE-7823965C28B6}",  # wg_wma_decoder
+    "{5D5407D9-C6CA-4770-A7CC-27C0CB8A7627}",  # wg_mpeg4_sink_factory
+    "{5ED2E5F6-BF3E-4180-83A4-4847CC5B4EA3}",  # wg_mpeg_video_decoder
+    "{62EE5DDB-4F52-48E2-8928-787B0253A0BC}",  # wg_wmv_decoder
+    "{6C34DE69-4670-46CD-8CB4-1F2FA1DFFB65}",  # wg_h264_encoder
+    "{84CD8E3E-B221-434A-8882-9D6C8DF490E1}",  # wg_mp3_decoder
+    "{92F35E78-15A5-486B-888E-575F99651CE2}",  # wg_resampler
+    "{A8EDBF98-2442-42C5-85A1-AB05A580DF53}",  # wg_mpeg1_splitter
+    "{C9F285F8-4380-4121-971F-49A95316C27B}",  # wg_mpeg_audio_decoder
+    "{D527607F-89CB-4E94-9571-BCFE62175613}",  # wg_video_processor
+    "{E7889A8A-2083-4844-8370-5EE349B14503}",  # wg_* transform
+    "{F47E2DA5-E370-47B7-903A-078DDD45A5CC}",  # wg_* transform
+    "{F9D8D64E-A144-47DC-8EE0-F53498372C29}",  # wg_* transform
+)
+
 DXVK_DLLS = ("d3d11.dll", "d3d10core.dll")
 GPTK_REQUIRED_DLLS = ("atidxx64.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll", "nvapi64.dll", "nvngx.dll")
 
@@ -443,9 +495,11 @@ def _find_wine_for_bottle(wine_binary_pref: str = "auto") -> Optional[str]:
     return _find_wine()
 
 def _find_wine() -> Optional[str]:
+    ubt = _unified_build_dir()
     candidates = [
         _find_wine_stable(),
         _find_wine_staging(),
+        str(ubt / "wine") if ubt else None,
         str(PORTABLE_DIR / "bin" / "wine64"),
         str(PORTABLE_DIR / "bin" / "wine"),
         shutil.which("wine64"),
@@ -587,7 +641,8 @@ def _dxvk_available() -> bool:
     return all((DEFAULT_DXVK_INSTALL / "bin" / dll).exists() for dll in DXVK_DLLS)
 
 def _mesa_available() -> bool:
-    return (DEFAULT_MESA_DIR / "opengl32.dll").exists()
+    # Mesa was removed; the unified engine covers DXMT/DXVK/D3DMetal.
+    return False
 
 def _vkd3d_available() -> bool:
     # DLLs live in x86/ subfolder (same layout as DXVK)
@@ -730,6 +785,9 @@ def _d3dmetal3_available() -> bool:
     Requires: GPTK DLLs in x86_64-windows/, and D3DMetal native runtime
     (D3DMetal.framework + libd3dshared.dylib) in the native dir.
     """
+    # The unified wine now provides D3DMetal via the loader (MNC_GAME_BACKEND).
+    if _unified_available():
+        return True
     # The no-shim wine-11-d3dmetal app is fully self-contained (bundles
     # libd3dshared.dylib + D3DMetal.framework), so its presence IS availability.
     if _wine_d3dmetal_installed():
@@ -2062,6 +2120,304 @@ def _ensure_steam_sdl_resolvable(prefix: str) -> None:
         log(f"steam SDL sync failed: {exc}")
 
 
+def _unified_build_dir() -> Optional[Path]:
+    """Locate the bundled unified wine build (build64 layout)."""
+    for d in (WINE_UNIFIED_DIR, WINE_UNIFIED_DEV):
+        if (d / "loader" / "wine").exists():
+            return d
+    return None
+
+
+def _unified_available() -> bool:
+    return _unified_build_dir() is not None
+
+
+def _unified_d3d_dir() -> Optional[Path]:
+    """Locate the bundled d3d DLL pack the unified loader routes to."""
+    for d in (UNIFIED_D3D_DIR, UNIFIED_D3D_DEV):
+        if (d / "d3d11.dll").exists():
+            return d
+    return None
+
+
+def _d3dmetal_native_dir() -> Path:
+    """Where libd3dshared.dylib + D3DMetal.framework live for the d3dmetal backend
+    (bundled pack first, then the dev D3DMetalTesting tree)."""
+    for d in (UNIFIED_D3D_DIR, D3DMETAL_NATIVE_DIR):
+        if (d / "libd3dshared.dylib").exists():
+            return d
+    return D3DMETAL_NATIVE_DIR
+
+
+def _stage_unified_dlls(prefix: str) -> None:
+    """Copy the unified d3d DLL slots into a prefix system32 so the loader has
+    real targets to route to (canonical=DXMT plus *_d3dm and *_dxvk). Idempotent:
+    only copies when the dest is missing or a different size."""
+    src_dir = _unified_d3d_dir()
+    if src_dir is None:
+        log("unified: d3d DLL pack not found; backend routing may fail (run install_wine_unified)")
+        return
+    sys32 = Path(prefix) / "drive_c" / "windows" / "system32"
+    if not sys32.is_dir():
+        return
+    staged = 0
+    for dll in UNIFIED_D3D_DLLS:
+        src = src_dir / dll
+        if not src.exists():
+            continue
+        dst = sys32 / dll
+        try:
+            if not dst.exists() or src.stat().st_size != dst.stat().st_size:
+                shutil.copy2(str(src), str(dst))
+                staged += 1
+        except Exception as exc:
+            log(f"unified: stage {dll} failed: {exc}")
+    if staged:
+        log(f"unified: staged {staged} d3d DLL(s) -> system32 from {src_dir}")
+
+
+def _stage_unified_mf(prefix: str) -> None:
+    """Stage the game-side winegstreamer video bridge into a prefix and re-point the
+    wg_* MF CLSIDs at it so game intro videos decode. Idempotent: the DLL copy is
+    size-checked and the registry import runs once guarded by a sentinel."""
+    src_dir = _unified_d3d_dir()
+    if src_dir is None:
+        return
+    src = src_dir / UNIFIED_MF_BRIDGE
+    if not src.exists():
+        return
+    sys32 = Path(prefix) / "drive_c" / "windows" / "system32"
+    if not sys32.is_dir():
+        return
+    dst = sys32 / UNIFIED_MF_BRIDGE
+    try:
+        if not dst.exists() or src.stat().st_size != dst.stat().st_size:
+            shutil.copy2(str(src), str(dst))
+            log(f"unified: staged {UNIFIED_MF_BRIDGE} -> system32")
+    except Exception as exc:
+        log(f"unified: stage {UNIFIED_MF_BRIDGE} failed: {exc}")
+        return
+    # re-point the wg_* CLSIDs once; the sentinel is the bridge name in system.reg
+    sysreg = Path(prefix) / "system.reg"
+    try:
+        if sysreg.exists() and UNIFIED_MF_BRIDGE in sysreg.read_text(errors="ignore"):
+            return
+    except Exception:
+        pass
+    bt = _unified_build_dir()
+    if bt is None:
+        return
+    # REGEDIT4 wants doubled backslashes in the value path
+    dll_in_reg = "C:\\windows\\system32\\winegstreamer_game.dll".replace("\\", "\\\\")
+    blocks = ["REGEDIT4", ""]
+    for guid in UNIFIED_MF_CLSIDS:
+        blocks.append(f"[HKEY_LOCAL_MACHINE\\Software\\Classes\\CLSID\\{guid}\\InprocServer32]")
+        blocks.append(f'@="{dll_in_reg}"')
+        blocks.append('"ThreadingModel"="Both"')
+        blocks.append("")
+    reg_path = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".reg", delete=False) as fh:
+            fh.write("\n".join(blocks))
+            reg_path = fh.name
+        env = _unified_env(prefix, "d3dmetal", for_steam=True)
+        env["WINEPREFIX"] = str(prefix)
+        env["WINEDEBUG"] = "-all"
+        wine = str(bt / "wine")
+        wineserver = str(bt / "server" / "wineserver")
+        subprocess.run(["/usr/bin/arch", "-x86_64", wine, "reg", "import", reg_path],
+                       env=env, timeout=60,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # wait for the transient server to flush the hive to disk then exit so the
+        # re-point survives the steam path wineserver -k that follows
+        subprocess.run(["/usr/bin/arch", "-x86_64", wineserver, "-w"],
+                       env=env, timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log(f"unified: re-pointed {len(UNIFIED_MF_CLSIDS)} MF CLSIDs at {UNIFIED_MF_BRIDGE}")
+    except Exception as exc:
+        log(f"unified: MF CLSID import failed: {exc}")
+    finally:
+        if reg_path:
+            try:
+                os.unlink(reg_path)
+            except Exception:
+                pass
+
+
+def _unified_engine_active(bottle_cfg: Dict[str, Any]) -> bool:
+    """Unified engine is the default; opt out with engine="classic". Falls back to
+    the classic per-game flow when the unified wine isn't installed."""
+    return bottle_cfg.get("engine", "unified") != "classic" and _unified_available()
+
+
+def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
+    """Map the app's backend id onto the loader's three game backends."""
+    b = (backend or bottle_cfg.get("default_backend") or "d3dmetal").lower()
+    if b in ("dxmt", "dxmt_openxr"):
+        return "dxmt"
+    if b in ("dxvk", "vkd3d", "vkd3d-proton"):
+        return "dxvk"
+    return "d3dmetal"
+
+
+def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
+                 for_steam: bool = False, gst_debug: str = "") -> Dict[str, str]:
+    """Env for the unified wine. Steam exes always render via DXMT (loader gate);
+    non-steam games follow MNC_GAME_BACKEND. GStreamer (MF/H.264 video) is wired for
+    GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none."""
+    env = dict(os.environ)
+    for var in ("GTK_PATH", "GTK_EXE_PREFIX", "GTK_DATA_PREFIX", "GDK_PIXBUF_MODULEDIR",
+                "GDK_PIXBUF_MODULE_FILE", "GTK_IM_MODULE_FILE", "XDG_DATA_DIRS"):
+        env.pop(var, None)
+    nd = _d3dmetal_native_dir()
+    libd3d = str(nd / "libd3dshared.dylib")
+    # winegstreamer_game.so links the x86_64 homebrew gstreamer by absolute path so its
+    # plugins MUST come from that SAME homebrew instance or the registry rejects them
+    gst_lib = "/usr/local/opt/gstreamer/lib"
+    gst = gst_lib + "/gstreamer-1.0"
+    dyld = ":".join([str(nd), gst_lib, "/usr/local/lib", "/usr/local/opt/freetype/lib",
+                     "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib",
+                     "/usr/local/opt/sdl2/lib", "/usr/local/opt/glib/lib",
+                     "/usr/local/opt/gettext/lib", "/usr/lib"])
+    env.update({
+        "WINEPREFIX": str(prefix),
+        "WINEMSYNC": "1",
+        "WINEDEBUG": "-all",
+        "WINEDBG": "-all",
+        "ROSETTA_ADVERTISE_AVX": "1",
+        "CX_APPLEGPT_LIBD3DSHARED_PATH": libd3d,
+        "CX_APPLEGPTK_LIBD3DSHARED_PATH": libd3d,
+        "FONTCONFIG_PATH": "/usr/local/opt/fontconfig/etc/fonts",
+        "DYLD_FALLBACK_LIBRARY_PATH": dyld,
+        "WINEDLLOVERRIDES": "winemenubuilder.exe=d;mscoree=;mshtml=;nvapi,nvapi64=",
+        "MNC_STEAM_DXMT": "1",
+        "MNC_GAME_BACKEND": game_backend,
+        # GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
+        # this is the exact load-bearing set from the proven steam-unified-run.sh
+        "MNC_WEBHELPER_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
+            "--ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds --disable-software-rasterizer "
+            "--disable-gpu-watchdog --disable-gpu-process-crash-limit --gpu-no-context-lost "
+            "--disable-gpu-process-for-dx12-info-collection --no-delay-for-dx12-vulkan-info-collection "
+            "--gpu-vendor-id=0x1002 --gpu-device-id=0x67df --gpu-driver-version=20.45.0 "
+            "--gpu-sub-system-id=0 --gpu-revision=0"),
+    })
+    for var in ("GTK_PATH", "WINEPATH", "VKD3D_PROTON_PATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
+        env.pop(var, None)
+    if metal_hud:
+        env["MTL_HUD_ENABLED"] = "1"
+    # GStreamer is GAMES ONLY. Steam must never touch it (its CEF crashes) so strip
+    # any inherited plugin path. For games force software H.264 (avdec_h264) and disable
+    # VideoToolbox vtdec which crashes the decode under Rosetta x86_64.
+    if for_steam:
+        for var in ("GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH"):
+            env.pop(var, None)
+    else:
+        env["GST_PLUGIN_SYSTEM_PATH_1_0"] = gst
+        env["GST_PLUGIN_PATH"] = gst
+        env["GST_PLUGIN_FEATURE_RANK"] = "vtdec:NONE,vtdec_hw:NONE,avdec_h264:MAX,openh264dec:SECONDARY"
+        if gst_debug:
+            env["GST_DEBUG"] = gst_debug
+            env["GST_DEBUG_NO_COLOR"] = "1"
+            env["GST_DEBUG_FILE"] = str(LOG_DIR / "gstreamer.log")
+    return env
+
+
+def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
+    """Launch Steam through the unified wine so its CEF renders via DXMT."""
+    global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
+    bt = _unified_build_dir()
+    steam_dir = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
+    steam_exe = steam_dir / "steam.exe"
+    if not steam_exe.exists():
+        raise FileNotFoundError(f"Steam is not installed in this prefix.\nExpected: {steam_exe}")
+    _stage_unified_dlls(str(prefix))
+    _stage_unified_mf(str(prefix))
+    game_backend = _unified_game_backend(bottle_cfg, params.get("backend", ""))
+    env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True)
+    wine = str(bt / "wine")
+    wineserver = str(bt / "server" / "wineserver")
+    silent = bool(params.get("silent", False))
+    steam_args = STEAM_SILENT_ARGS if silent else "-tcp"
+    log_path = str(LOG_DIR / "Steam-wine.log")
+    # match the proven steam-unified-run.sh: kill the server then wipe the CEF caches
+    # (incl userdata GPUCache) so Steam comes up clean on the spoofed GPU + DXMT
+    cmd = (
+        f"{shlex.quote(wineserver)} -k 2>/dev/null; sleep 1\n"
+        f"cd {shlex.quote(str(steam_dir))} || exit 1\n"
+        f"rm -f .crash 2>/dev/null\n"
+        f"rm -rf appcache config/htmlcache 2>/dev/null\n"
+        f"rm -f logs/* dumps/*.dmp 2>/dev/null\n"
+        f"find userdata -type d -name GPUCache -prune -exec rm -rf {{}} + 2>/dev/null\n"
+        f"/usr/bin/arch -x86_64 {shlex.quote(wine)} steam.exe {steam_args} > {shlex.quote(log_path)} 2>&1"
+    )
+    log(f"Launching Steam (unified/DXMT, backend={game_backend}, silent={silent})")
+    proc = subprocess.Popen(["bash", "-lc", cmd], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    _steam_process = proc
+    _steam_started_silent = silent
+    _steam_prefix = str(prefix)
+    _steam_started_ts = time.time()
+    if silent:
+        _ensure_steam_idle_watchdog()
+    if params.get("wait_ready"):
+        ready, status = _wait_steam_ready(prefix, cap_s=int(params.get("ready_cap_s", 240)))
+        return {"pid": proc.pid, "log_path": log_path, "already_running": False,
+                "ready": ready, "status": status, "engine": "unified"}
+    return {"pid": proc.pid, "log_path": log_path, "already_running": False, "engine": "unified"}
+
+
+def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str, Any],
+                         params: Dict[str, Any]) -> Any:
+    """Launch a game through the unified wine; the loader routes its d3d to the
+    chosen backend while Steam stays on DXMT."""
+    bt = _unified_build_dir()
+    exe_path = Path(exe)
+    _stage_unified_dlls(str(prefix))
+    _stage_unified_mf(str(prefix))
+    _ensure_steam_sdl_resolvable(str(prefix))
+    backend = _unified_game_backend(bottle_cfg, params.get("backend", ""))
+    metal_hud = params.get("metal_hud", bottle_cfg.get("metal_hud", False))
+    debug = bool(params.get("debug", bottle_cfg.get("debug", False)))
+    steam_mode = params.get("steam_mode", "silent")
+    is_steam_bottle = bottle_cfg.get("launcher_type", "steam") == "steam"
+    if steam_mode != "none" and is_steam_bottle:
+        try:
+            _launch_steam_unified(prefix, bottle_cfg,
+                                  {"silent": (steam_mode == "silent"), "wait_ready": True,
+                                   "backend": params.get("backend", "")})
+        except Exception as exc:
+            log(f"unified: steam auto-launch failed: {exc} (continuing)")
+    env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"))
+    exe_dir = str(exe_path.parent)
+    steam_appid = str(params.get("steam_appid", "")).strip()
+    if not steam_appid.isdigit():
+        steam_appid = _derive_steam_appid(exe_dir) or ""
+    if steam_appid.isdigit():
+        try:
+            (Path(exe_dir) / "steam_appid.txt").write_text(steam_appid)
+        except Exception:
+            pass
+        env["SteamAppId"] = steam_appid
+        env["SteamGameId"] = steam_appid
+    wine = str(bt / "loader" / "wine")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", exe_path.stem)
+    log_path = str(LOG_DIR / f"{safe_name}-wine.log")
+    quoted_args = (" " + args) if args else ""
+    cmd = (
+        f"cd {shlex.quote(exe_dir)} || exit 1\n"
+        f"/usr/bin/arch -x86_64 {shlex.quote(wine)} {shlex.quote(str(exe_path))}{quoted_args} "
+        f"> {shlex.quote(log_path)} 2>&1"
+    )
+    log(f"Launching game (unified, backend={backend}): {exe_path.name}")
+    proc = subprocess.Popen(["bash", "-lc", cmd], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    _launched_games[(str(prefix), str(exe))] = proc.pid
+    _running_games[proc.pid] = proc
+    return {"pid": proc.pid, "log_path": log_path, "backend": backend, "engine": "unified"}
+
+
 def cmd_launch_game(params: Dict[str, Any]) -> Any:
     prefix = params.get("prefix")
     exe = params.get("exe")
@@ -2124,6 +2480,9 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     exe_path = Path(exe)
     if not exe_path.exists():
         raise FileNotFoundError(f"Executable not found: {exe}")
+
+    if _unified_engine_active(bottle_cfg):
+        return _launch_game_unified(prefix, exe, args, bottle_cfg, params)
 
     if not backend or backend == BACKEND_AUTO:
         backend = _resolve_auto_backend(exe)
@@ -2350,6 +2709,10 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     # Check if Steam is already running
     if _steam_process is not None and _steam_process.poll() is None:
         return {"already_running": True, "pid": _steam_process.pid}
+
+    _ucfg = _load_bottles().get(_resolve_key(prefix), {})
+    if _unified_engine_active(_ucfg):
+        return _launch_steam_unified(prefix, _ucfg, params)
 
     # Steam runs on Wine Stable. A prior DXMT game replaces Wine Stable's shared
     # lib d3d11/dxgi/d3d10core (and drops winemetal.dll); if left in place, Steam
@@ -3202,11 +3565,8 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
     """Return available graphics backends and which is auto-selected."""
     all_backends = [
         {"id": BACKEND_AUTO, "label": "Auto (recommended)", "available": True},
-        {"id": BACKEND_WINE, "label": "Wine builtin (no DXVK/Mesa)", "available": True},
+        {"id": BACKEND_WINE, "label": "Wine builtin", "available": True},
         {"id": BACKEND_DXVK, "label": "DXVK (D3D11→Vulkan)", "available": _dxvk_available()},
-        {"id": BACKEND_MESA_LLVMPIPE, "label": "Mesa llvmpipe (CPU, safe)", "available": _mesa_available()},
-        {"id": BACKEND_MESA_ZINK, "label": "Mesa zink (GPU, Vulkan)", "available": _mesa_available()},
-        {"id": BACKEND_MESA_SWR, "label": "Mesa swr (CPU rasterizer)", "available": _mesa_available()},
         {"id": BACKEND_VKD3D, "label": "VKD3D-Proton (D3D12)", "available": _vkd3d_available()},
         {"id": BACKEND_DXMT, "label": "DXMT (experimental)", "available": _dxmt_available()},
         {"id": BACKEND_DXMT_OPENXR, "label": "DXMT + OpenXR (VR, monofunc fork)", "available": _dxmt_openxr_available()},
@@ -3424,7 +3784,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
     wine_version = _get_wine_version()
     return {
         "has_tools": has_tools,
-        "has_wine": has_wine_stable or has_wine_staging or has_wine_devel,
+        "has_wine": has_wine_stable or has_wine_staging or has_wine_devel or _unified_available(),
         "has_wine_stable": has_wine_stable,
         "has_wine_staging": has_wine_staging,
         "has_wine_devel": has_wine_devel,
@@ -3436,6 +3796,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_gptk_dlls": _gptk_dlls_available(),
         "has_d3dmetal3": _d3dmetal3_available(),
         "has_wine_d3dmetal": _wine_d3dmetal_installed(),
+        "has_wine_unified": _unified_available(),
         "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
         "has_rpc_bridge": _rpc_bridge_available(),
@@ -3467,17 +3828,16 @@ def cmd_detect_wine(params: Dict[str, Any]) -> Any:
             "version": _get_wine_version(path) if path else None,
         })
 
-    # Wine D3DMetal is a self-contained .app launched via `open -n`; report it
-    # so the UI can show it's present, even though it isn't a wine_binary pref.
-    d3dmetal_launcher = PORTABLE_DIR / "Wine D3DMetal.app" / "Contents" / "MacOS" / "wine"
-    d3dmetal_installed = _wine_d3dmetal_installed()
+    # The unified wine is the default engine (Steam via DXMT + games on the chosen
+    # backend). It isn't a wine_binary pref so report it as an informational extra.
+    ubt = _unified_build_dir()
     variants.append({
-        "id": "d3dmetal",
-        "label": "Wine D3DMetal",
+        "id": "unified",
+        "label": "Wine Unified",
         "selectable": False,
-        "installed": d3dmetal_installed,
-        "path": str(d3dmetal_launcher) if d3dmetal_installed else "",
-        "version": None,
+        "installed": ubt is not None,
+        "path": str(ubt / "wine") if ubt else "",
+        "version": _get_wine_version(str(ubt / "wine")) if ubt else None,
     })
 
     # What "Auto" actually resolves to right now, so the UI can say e.g.
@@ -4780,7 +5140,9 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
         return f"{verb} {name}"
 
     def _run() -> None:
-        env = {**os.environ, "MNC_SUDOLESS": "1"}
+        # installer.sh lives in Resources; point its bundled-pack lookups there.
+        env = {**os.environ, "MNC_SUDOLESS": "1",
+               "RESOURCES_DIR": str(Path(installer_path).parent)}
         for action in actions:
             friendly = _friendly_action(action)
             job["current"] = friendly

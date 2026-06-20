@@ -130,6 +130,7 @@ struct ComponentsStatus: Codable {
     let hasGptkDlls: Bool
     let hasD3dMetal3: Bool
     let hasWineD3DMetal: Bool
+    let hasWineUnified: Bool
     let hasVkd3d: Bool
     let hasWineOpenXR: Bool
     let hasMonadoRuntime: Bool
@@ -149,6 +150,7 @@ struct ComponentsStatus: Codable {
         case hasGptkDlls = "has_gptk_dlls"
         case hasD3dMetal3 = "has_d3dmetal3"
         case hasWineD3DMetal = "has_wine_d3dmetal"
+        case hasWineUnified = "has_wine_unified"
         case hasVkd3d = "has_vkd3d"
         case hasWineOpenXR = "has_wineopenxr"
         case hasMonadoRuntime = "has_monado_runtime"
@@ -172,6 +174,7 @@ struct ComponentsStatus: Codable {
         hasGptkDlls       = try c.decode(Bool.self, forKey: .hasGptkDlls)
         hasD3dMetal3      = try c.decode(Bool.self, forKey: .hasD3dMetal3)
         hasWineD3DMetal   = try c.decodeIfPresent(Bool.self, forKey: .hasWineD3DMetal) ?? false
+        hasWineUnified    = try c.decodeIfPresent(Bool.self, forKey: .hasWineUnified) ?? false
         hasVkd3d          = try c.decode(Bool.self, forKey: .hasVkd3d)
         hasWineOpenXR     = try c.decodeIfPresent(Bool.self, forKey: .hasWineOpenXR) ?? false
         hasMonadoRuntime  = try c.decodeIfPresent(Bool.self, forKey: .hasMonadoRuntime) ?? false

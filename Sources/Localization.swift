@@ -438,6 +438,8 @@ enum Localization {
         "Wine (Staging)": "Wine（Staging）",
         "Wine (Translation Engine)": "Wine（转换引擎）",
         "Wine D3DMetal (shimless, ~888 MB)": "Wine D3DMetal（免 shim，约 888 MB）",
+        "Wine Unified (Steam + games engine)": "Wine 统一引擎（Steam + 游戏）",
+        "One patched Wine 11.0 that renders Steam via DXMT and routes games to the chosen backend (D3DMetal/DXMT/DXVK). This is the default engine. Bundled with the app; installs into deps.": "一个修补过的 Wine 11.0 通过 DXMT 渲染 Steam 并把游戏路由到所选后端（D3DMetal/DXMT/DXVK）。这是默认引擎。随应用打包安装到 deps。",
         "Wine Devel (SDL3/OpenGL, ~310 MB)": "Wine Devel（SDL3/OpenGL，约 310 MB）",
         "Wine Logs": "Wine 日志",
         "Winecfg": "Winecfg",

@@ -2079,14 +2079,130 @@ quick_setup() {
   ensure_rosetta
   install_portable_tools
   install_portable_wine
+  install_wine_unified
   install_dxmt
-  install_mesa
 }
 
 if [ "${MNC_SUDOLESS:-0}" != "1" ] && [ "$ACTION" != "init_prefix" ] && [ "$ACTION" != "quick_setup" ]; then
   prime_sudo
   start_sudo_keepalive
 fi
+
+locate_wine_unified_bundle() {
+  # mirror locate_wine_d3dmetal_bundle for the unified wine zip
+  script_path="$0"
+  case "$script_path" in /*) ;; *) script_path="$PWD/$script_path" ;; esac
+  script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd)" || script_dir=""
+  candidates="
+${WINE_UNIFIED_BUNDLE_PATH:-}
+${RESOURCES_DIR:-}/wine-unified-bundle.zip
+${script_dir}/wine-unified-bundle.zip
+${script_dir}/../Resources/wine-unified-bundle.zip
+${script_dir}/../../Resources/wine-unified-bundle.zip
+$HOME/macndcheese/wine-unified-bundle.zip
+$HOME/Library/Application Support/MacNCheese/wine-unified-bundle.zip
+"
+  while IFS= read -r c; do
+    [ -z "$c" ] && continue
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done <<EOF
+$candidates
+EOF
+  for root in /Applications "$HOME/Applications" "$HOME/Downloads"; do
+    [ -d "$root" ] || continue
+    found="$(find "$root" -maxdepth 5 -name 'wine-unified-bundle.zip' -type f 2>/dev/null | head -n1)"
+    [ -n "$found" ] && [ -f "$found" ] && { printf '%s' "$found"; return 0; }
+  done
+  return 1
+}
+
+install_wine_unified() {
+  # install the unified wine (build64 layout) into deps
+  # prefers the bundled zip so a packaged app installs offline
+  # dev fallback rsyncs from WINE_UNIFIED_SRC=/path/to/build64
+  echo "Step: Installing unified wine..."
+  mkdir -p "$PORTABLE_DIR"
+  local dst bundle src
+  dst="${PORTABLE_DIR}/wine-unified"
+
+  bundle="$(locate_wine_unified_bundle || true)"
+  if [ -n "$bundle" ]; then
+    echo "Using unified wine bundle: $bundle"
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -q "$bundle" -d "$dst" || { echo "Failed to unzip unified wine bundle"; exit 1; }
+    elif [ -x "$SEVENZ_BIN" ]; then
+      "$SEVENZ_BIN" x -y -o"$dst" "$bundle" >/dev/null || { echo "Failed to extract unified wine bundle"; exit 1; }
+    else
+      echo "Neither unzip nor 7z available to extract the bundle"; exit 1
+    fi
+    find "$dst" -name 'wine' -type f -exec chmod +x {} \; 2>/dev/null || true
+    xattr -dr com.apple.quarantine "$dst" 2>/dev/null || true
+    stage_unified_d3d_pack "$dst"
+    echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
+    return 0
+  fi
+
+  src="${WINE_UNIFIED_SRC:-/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64}"
+  if [ ! -x "$src/loader/wine" ]; then
+    echo "install_wine_unified: no bundle found and no build at $src (set WINE_UNIFIED_SRC)" >&2
+    exit 1
+  fi
+  echo "Bundling unified wine: $src -> $dst"
+  mkdir -p "$dst"
+  rsync -a --delete "$src/" "$dst/"
+  stage_unified_d3d_pack "$dst"
+  echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
+}
+
+stage_unified_d3d_pack() {
+  # copy the d3d DLL pack the unified loader routes to into deps/wine-unified/mnc-d3d
+  # source order: env, Resources next to us, the dev steam prefix system32
+  local dst d3dsrc c
+  dst="$1"
+  d3dsrc=""
+  for c in \
+    "${MNC_UNIFIED_DLL_DIR:-}" \
+    "${RESOURCES_DIR:-}/mnc-d3d" \
+    "$HOME/macndcheese/mnc-d3d" \
+    "/Volumes/ASAFE/steam-clean2/drive_c/windows/system32"; do
+    [ -n "$c" ] && [ -f "$c/d3d11.dll" ] && { d3dsrc="$c"; break; }
+  done
+  if [ -z "$d3dsrc" ]; then
+    echo "stage_unified_d3d_pack: WARNING no d3d DLL pack found (set MNC_UNIFIED_DLL_DIR)"
+    return 0
+  fi
+  mkdir -p "$dst/mnc-d3d"
+  # winegstreamer_game.dll is the game-side MF video bridge staged + re-pointed at launch
+  for f in d3d11.dll dxgi.dll d3d10core.dll d3d10.dll d3d10_1.dll d3d12.dll d3d12core.dll \
+           winemetal.dll d3d11_d3dm.dll dxgi_d3dm.dll d3d10core_d3dm.dll d3d10_d3dm.dll \
+           d3d12_d3dm.dll d3d11_dxvk.dll d3d10core_dxvk.dll dxgi_dxvk.dll winegstreamer_game.dll; do
+    [ -f "$d3dsrc/$f" ] && cp -f "$d3dsrc/$f" "$dst/mnc-d3d/$f"
+  done
+  echo "stage_unified_d3d_pack: staged d3d DLL pack from $d3dsrc"
+
+  # the d3dmetal stubs link @rpath/libd3dshared.dylib so the native runtime ships too
+  local nd
+  nd=""
+  for c in "$d3dsrc" "${MNC_D3DMETAL_NATIVE_DIR:-}" "$HOME/D3DMetalTesting/lib/external"; do
+    [ -n "$c" ] && [ -f "$c/libd3dshared.dylib" ] && { nd="$c"; break; }
+  done
+  if [ -n "$nd" ]; then
+    cp -f "$nd/libd3dshared.dylib" "$dst/mnc-d3d/" 2>/dev/null || true
+    [ -d "$nd/D3DMetal.framework" ] && cp -R "$nd/D3DMetal.framework" "$dst/mnc-d3d/" 2>/dev/null || true
+    echo "stage_unified_d3d_pack: staged d3dmetal native runtime from $nd"
+  else
+    echo "stage_unified_d3d_pack: WARNING no libd3dshared.dylib found (d3dmetal backend needs it)"
+  fi
+}
+
+uninstall_wine_unified() {
+  echo "Step: Uninstalling unified wine..."
+  rm -rf "$PORTABLE_DIR/wine-unified"
+  echo "Unified wine removed."
+}
+
 case "$ACTION" in
   install_tools)
     install_tools
@@ -2097,17 +2213,17 @@ case "$ACTION" in
   install_wine_staging)
     install_portable_wine_staging
     ;;
-  install_wine_d3dmetal)
-    install_wine_d3dmetal
+  install_wine_unified)
+    install_wine_unified
+    ;;
+  uninstall_wine_unified)
+    uninstall_wine_unified
     ;;
   uninstall_wine)
     uninstall_wine
     ;;
   uninstall_wine_staging)
     uninstall_wine_staging
-    ;;
-  uninstall_wine_d3dmetal)
-    uninstall_wine_d3dmetal
     ;;
   install_wine_devel)
     install_wine_devel
@@ -2134,9 +2250,6 @@ case "$ACTION" in
   build_dxvk32)
     install_tools
     build_dxvk32
-    ;;
-  install_mesa)
-    install_mesa
     ;;
   install_dxmt|install_d3dmetal|install_d3dmetal3)
     install_dxmt

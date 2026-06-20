@@ -139,6 +139,8 @@ struct BottleSettingsTab: View {
     @State private var iconPath = ""
     @State private var wineBinary = "auto"
     @State private var metalHud = false
+    @State private var unifiedEngine = true
+    @State private var globalBackend = "d3dmetal3"
     @State private var isInitializing = false
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
@@ -207,6 +209,26 @@ struct BottleSettingsTab: View {
                             .font(.body)
                     }
                     .onChange(of: metalHud) { saveBottleConfig() }
+
+                    // Unified Steam engine: one wine renders Steam via DXMT and
+                    // routes games to the global backend below. Steam stays DXMT.
+                    Toggle(isOn: $unifiedEngine) {
+                        Text(L("Unified Steam engine (Steam always DXMT)"))
+                            .font(.body)
+                    }
+                    .onChange(of: unifiedEngine) { saveBottleConfig() }
+
+                    if unifiedEngine {
+                        SettingsRow(label: L("Global game backend")) {
+                            Picker("", selection: $globalBackend) {
+                                Text("D3DMetal").tag("d3dmetal3")
+                                Text("DXMT").tag("dxmt")
+                                Text("DXVK").tag("dxvk")
+                            }
+                            .pickerStyle(.segmented)
+                            .onChange(of: globalBackend) { saveBottleConfig() }
+                        }
+                    }
 
                     Divider()
 
@@ -338,6 +360,8 @@ struct BottleSettingsTab: View {
             Task {
                 if let config = await backend.getBottleConfig(path: bottle.path) {
                     metalHud = config["metal_hud"] as? Bool ?? false
+                    unifiedEngine = (config["engine"] as? String ?? "unified") != "classic"
+                    globalBackend = config["default_backend"] as? String ?? "d3dmetal3"
                 }
             }
         }
@@ -346,13 +370,16 @@ struct BottleSettingsTab: View {
     private func saveBottleConfig() {
         guard let prefix = backend.activePrefix else { return }
         Task {
-            await backend.setBottleConfig(path: prefix, values: [
+            var vals: [String: Any] = [
                 "name": bottleName,
                 "launcher_exe": launcherExe,
                 "icon_path": iconPath,
                 "wine_binary": wineBinary,
                 "metal_hud": metalHud,
-            ])
+                "engine": unifiedEngine ? "unified" : "classic",
+            ]
+            if unifiedEngine { vals["default_backend"] = globalBackend }
+            await backend.setBottleConfig(path: prefix, values: vals)
         }
     }
 
@@ -428,7 +455,6 @@ struct PathsSettingsTab: View {
                 PathRow(label: L("DXVK install (64-bit)"), path: $dxvkInstall, isDir: true)
                 PathRow(label: L("DXVK install (32-bit)"), path: $dxvkInstall32, isDir: true)
                 PathRow(label: L("SteamSetup.exe"), path: $steamSetup, isDir: false)
-                PathRow(label: L("Mesa x64 dir"), path: $mesaDir, isDir: true)
                 PathRow(label: L("DXMT dir"), path: $dxmtDir, isDir: true)
                 PathRow(label: L("VKD3D-Proton dir"), path: $vkd3dDir, isDir: true)
                 PathRow(label: L("GPTK dir"), path: $gptkDir, isDir: true)
@@ -484,13 +510,12 @@ struct SetupSettingsTab: View {
     @State private var wantTools = false
     @State private var wantWineStable = false
     @State private var wantWineStaging = false
-    @State private var wantWineD3DMetal = false
+    @State private var wantWineUnified = false
     @State private var wantWineDevel = false
     @State private var wantDxvk = false
     @State private var wantVkd3d = false
     @State private var wantGptkDlls = false
     @State private var wantDxmt = false
-    @State private var wantMesa = false
     @State private var wantWineOpenXR = false
     @State private var wantDxmtOpenXR = false
     @State private var wantMonadoRuntime = false
@@ -499,13 +524,12 @@ struct SetupSettingsTab: View {
     @State private var hadTools = false
     @State private var hadWineStable = false
     @State private var hadWineStaging = false
-    @State private var hadWineD3DMetal = false
+    @State private var hadWineUnified = false
     @State private var hadWineDevel = false
     @State private var hadDxvk = false
     @State private var hadVkd3d = false
     @State private var hadGptkDlls = false
     @State private var hadDxmt = false
-    @State private var hadMesa = false
     @State private var hadWineOpenXR = false
     @State private var hadDxmtOpenXR = false
     @State private var hadMonadoRuntime = false
@@ -532,24 +556,24 @@ struct SetupSettingsTab: View {
                 GroupBox(L("Quick Setup")) {
                     HStack(spacing: 12) {
                         Button(L("Minimal")) {
-                            wantTools = true; wantWineStable = true
-                            wantDxvk = true; wantMesa = true
+                            wantTools = true; wantWineStable = true; wantWineUnified = true
+                            wantDxvk = true
                         }
                         .buttonStyle(.bordered)
-                        .help(L("Select: Tools, Wine Stable, DXVK, Mesa"))
+                        .help(L("Select: Tools, Wine Stable, Wine Unified, DXVK"))
                         .disabled(isRunning)
                         Button(L("Everything")) {
                             wantTools = true; wantWineStable = true; wantWineStaging = true
-                            wantDxvk = true; wantVkd3d = true
-                            wantGptkDlls = true; wantDxmt = true; wantMesa = true
+                            wantWineUnified = true; wantDxvk = true; wantVkd3d = true
+                            wantGptkDlls = true; wantDxmt = true
                         }
                         .buttonStyle(.bordered)
                         .help(L("Select all components"))
                         .disabled(isRunning)
                         Button(L("None")) {
                             wantTools = false; wantWineStable = false; wantWineStaging = false
-                            wantDxvk = false; wantVkd3d = false
-                            wantGptkDlls = false; wantDxmt = false; wantMesa = false
+                            wantWineUnified = false; wantDxvk = false; wantVkd3d = false
+                            wantGptkDlls = false; wantDxmt = false
                         }
                         .buttonStyle(.bordered)
                         .disabled(isRunning)
@@ -593,12 +617,10 @@ struct SetupSettingsTab: View {
                             .disabled(isRunning)
                         ComponentToggleRow(L("VKD3D-Proton"), isOn: $wantVkd3d, installed: hadVkd3d)
                             .disabled(isRunning)
-                        ComponentToggleRow(L("Wine D3DMetal (shimless, ~888 MB)"),
-                                          isOn: $wantWineD3DMetal, installed: hadWineD3DMetal)
+                        ComponentToggleRow(L("Wine Unified (Steam + games engine)"),
+                                          isOn: $wantWineUnified, installed: hadWineUnified)
                             .disabled(isRunning)
-                            .help(L("No-shim patched Wine 11.0 + Apple D3DMetal. Removes the gs.base swap so D3D11/12 games talk to Apple's D3DMetal framework with no DYLD shim — powers the D3DMetal launch engine. Bundled with the app; unzips on install."))
-                        ComponentToggleRow(L("Mesa"), isOn: $wantMesa, installed: hadMesa)
-                            .disabled(isRunning)
+                            .help(L("One patched Wine 11.0 that renders Steam via DXMT and routes games to the chosen backend (D3DMetal/DXMT/DXVK). This is the default engine. Bundled with the app; installs into deps."))
                     }
                     .padding(8)
                 }
@@ -700,7 +722,7 @@ struct SetupSettingsTab: View {
                 hadTools = status.hasTools;             wantTools = status.hasTools
                 hadWineStable = status.hasWineStable;   wantWineStable = status.hasWineStable
                 hadWineStaging = status.hasWineStaging; wantWineStaging = status.hasWineStaging
-                hadWineD3DMetal = status.hasWineD3DMetal; wantWineD3DMetal = status.hasWineD3DMetal
+                hadWineUnified = status.hasWineUnified; wantWineUnified = status.hasWineUnified
                 hadWineDevel = status.hasWineDevel;     wantWineDevel = status.hasWineDevel
                 hadDxvk = status.hasDxvk64;             wantDxvk = status.hasDxvk64
                 hadVkd3d = status.hasVkd3d;             wantVkd3d = status.hasVkd3d
@@ -709,7 +731,6 @@ struct SetupSettingsTab: View {
                 hadWineOpenXR = status.hasWineOpenXR;   wantWineOpenXR = status.hasWineOpenXR
                 hadDxmtOpenXR = status.hasDxmtOpenXR;   wantDxmtOpenXR = status.hasDxmtOpenXR
                 hadMonadoRuntime = status.hasMonadoRuntime; wantMonadoRuntime = status.hasMonadoRuntime
-                hadMesa = status.hasMesa;               wantMesa = status.hasMesa
             }
             isLoadingStatus = false
 
@@ -743,15 +764,14 @@ struct SetupSettingsTab: View {
         plan(wantTools,       hadTools,       install: "install_tools",        uninstall: "uninstall_tools")
         plan(wantWineStable,  hadWineStable,  install: "install_wine",         uninstall: "uninstall_wine")
         plan(wantWineStaging, hadWineStaging, install: "install_wine_staging", uninstall: "uninstall_wine_staging")
-        plan(wantWineD3DMetal, hadWineD3DMetal,
-             install: "install_wine_d3dmetal", uninstall: "uninstall_wine_d3dmetal")
+        plan(wantWineUnified, hadWineUnified,
+             install: "install_wine_unified", uninstall: "uninstall_wine_unified")
         plan(wantWineDevel, hadWineDevel,
              install: "install_wine_devel", uninstall: "uninstall_wine_devel")
         plan(wantDxvk,        hadDxvk,        install: "install_dxvk",         uninstall: "uninstall_dxvk")
         plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
         plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
         plan(wantDxmt,        hadDxmt,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
-        plan(wantMesa,        hadMesa,        install: "install_mesa",         uninstall: "uninstall_mesa")
         plan(wantWineOpenXR,  hadWineOpenXR,  install: "install_wineopenxr",   uninstall: "uninstall_wineopenxr")
         plan(wantDxmtOpenXR,  hadDxmtOpenXR,  install: "install_dxmt_openxr",  uninstall: "uninstall_dxmt_openxr")
         plan(wantMonadoRuntime, hadMonadoRuntime, install: "install_monado_runtime", uninstall: "uninstall_monado_runtime")

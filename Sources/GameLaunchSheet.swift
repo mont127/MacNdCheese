@@ -195,7 +195,7 @@ struct GameLaunchSheet: View {
                 }
             } else {
                 let mainIds: [String] = ["auto", "wine_devel", "dxmt", "dxmt_openxr", "d3dmetal3", "dxvk", "vkd3d-proton"]
-                let experimentalIds: [String] = ["wine", "mesa:llvmpipe", "mesa:zink", "mesa:swr", "gptk", "gptk_full"]
+                let experimentalIds: [String] = ["wine", "gptk", "gptk_full"]
                 let mainBackends = availableBackends.filter { mainIds.contains($0.backendId) }
                     .sorted { mainIds.firstIndex(of: $0.backendId) ?? 99 < mainIds.firstIndex(of: $1.backendId) ?? 99 }
                 let experimentalBackends = availableBackends.filter { experimentalIds.contains($0.backendId) }
@@ -560,9 +560,6 @@ struct GameLaunchSheet: View {
         case "dxvk":          return L("DXVK (Best Compatibility)")
         case "vkd3d-proton":  return L("VKD3D-Proton (D3D12)")
         case "wine":          return L("Wine Builtin")
-        case "mesa:llvmpipe": return L("Mesa llvmpipe (CPU)")
-        case "mesa:zink":     return L("Mesa Zink (Vulkan)")
-        case "mesa:swr":      return L("Mesa SWR (CPU/AVX)")
         case "gptk":          return L("GPTK (D3DMetal, copy DLLs)")
         case "gptk_full":     return L("GPTK Full (Apple Toolkit)")
         default:              return b.label

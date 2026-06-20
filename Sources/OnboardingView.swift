@@ -48,11 +48,11 @@ struct OnboardingView: View {
     /// never auto-appears again. ContentView reads it to decide whether to show.
     static let completeKey = "mnc_onboarding_complete"
 
-    // Essentials = the minimum needed to actually run a game. Wine D3DMetal is
-    // part of the baseline (the high-performance launch engine).
+    // Essentials = the minimum needed to actually run a game. The unified wine is
+    // the baseline engine (Steam via DXMT plus games via the chosen backend).
     private var essentialsInstalled: Bool {
         guard let s = status else { return false }
-        return s.hasTools && s.hasWineStable && s.hasWineD3DMetal && s.hasDxvk64 && s.hasMesa
+        return s.hasTools && s.hasWineStable && s.hasWineUnified && s.hasDxvk64
     }
 
     var body: some View {
@@ -130,13 +130,13 @@ struct OnboardingView: View {
                                      detail: L("Runs Windows apps and games."),
                                      installed: status?.hasWineStable ?? false)
                 OnboardingFeatureRow(icon: "bolt.fill", tint: .orange,
-                                     title: L("Wine D3DMetal"),
-                                     detail: L("Apple's high-performance Direct3D engine."),
-                                     installed: status?.hasWineD3DMetal ?? false)
+                                     title: L("Wine Unified"),
+                                     detail: L("Steam via DXMT plus games on D3DMetal, DXMT or DXVK."),
+                                     installed: status?.hasWineUnified ?? false)
                 OnboardingFeatureRow(icon: "cpu.fill", tint: .blue,
-                                     title: L("Graphics (DXVK + Mesa)"),
+                                     title: L("Graphics (DXVK)"),
                                      detail: L("DirectX-to-Vulkan translation for 3D games."),
-                                     installed: (status?.hasDxvk64 ?? false) && (status?.hasMesa ?? false))
+                                     installed: status?.hasDxvk64 ?? false)
                 OnboardingFeatureRow(icon: "hammer.fill", tint: .gray,
                                      title: L("Tools"),
                                      detail: L("git, 7-Zip and wget used during setup."),
@@ -397,7 +397,7 @@ struct OnboardingView: View {
         let s = status
         add(s?.hasTools ?? false, "install_tools")
         add(s?.hasWineStable ?? false, "install_wine")
-        add(s?.hasWineD3DMetal ?? false, "install_wine_d3dmetal")
+        add(s?.hasWineUnified ?? false, "install_wine_unified")
         if installEverything {
             add(s?.hasWineStaging ?? false, "install_wine_staging")
         }
@@ -406,7 +406,6 @@ struct OnboardingView: View {
             add(s?.hasVkd3d ?? false, "install_vkd3d")
             add(s?.hasDxmt ?? false, "install_dxmt")
         }
-        add(s?.hasMesa ?? false, "install_mesa")
         return actions
     }
 
