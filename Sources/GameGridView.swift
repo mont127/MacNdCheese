@@ -580,4 +580,3 @@ struct AppCardView: View {
         }
     }
 }
-}

@@ -260,13 +260,17 @@ struct GameLaunchSheet: View {
     private var gameModeToggle: some View {
         VStack(alignment: .leading, spacing: 2) {
             Toggle(isOn: $gameMode) {
-                Text("Game Mode")
+                Text(L("Game Mode"))
                     .font(.caption)
                     .fontWeight(.semibold)
             }
-            Text("Forces macOS Game Mode on while the game runs (prioritizes CPU/GPU and reduces input latency). macOS can't auto-detect Wine games as games, so we enable it for you.")
+            Text(L("Forces macOS Game Mode on while the game runs (prioritizes CPU/GPU and reduces input latency). macOS can't auto-detect Wine games as games, so we enable it for you."))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var advancedDebugToggle: some View {
         VStack(alignment: .leading, spacing: 2) {
             Toggle(isOn: $advancedDebug) {

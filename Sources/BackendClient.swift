@@ -170,7 +170,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false) async {
+    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, gameMode: Bool = true, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false) async {
         do {
             let screenInfo = NSScreen.screens.map { s in
                 "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"

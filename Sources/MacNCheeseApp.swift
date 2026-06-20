@@ -46,6 +46,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         PendingOpen.shared.enqueue(urls)
         NotificationCenter.default.post(name: .openWindowsExecutable, object: nil)
+    }
+
     // ── Quit-time Wine cleanup (field report: MiKo/Hafliss) ─────────────
     // Quitting the launcher used to leave Wine processes running invisibly in
     // the background. On quit, if MacNCheese's Wine is still alive, honor the

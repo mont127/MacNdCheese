@@ -98,6 +98,7 @@
                 <string>com.microsoft.windows-installer</string>
             </array>
         </dict>
+    </array>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
     <key>LSApplicationCategoryType</key>

@@ -2984,7 +2984,6 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     )
 
     _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
-    _running_games[proc.pid] = proc
     _launched_games[_dup_key] = proc.pid
     log(f"Game launched with PID {proc.pid}, backend={backend}, log at {log_path}")
 
