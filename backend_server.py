@@ -1866,7 +1866,9 @@ def cmd_list_bottles(params: Dict[str, Any]) -> Any:
         if key in seen:
             continue
         seen.add(key)
-        bottle = bottles.get(key, {})
+        # bottles.json is keyed by the path as the user entered it (which may be
+        # a symlink), so look up by the resolved key first, then the raw path.
+        bottle = bottles.get(key) or bottles.get(raw_path, {})
         name = bottle.get("name", Path(raw_path).name)
         if not name:
             name = Path(raw_path).name or raw_path
@@ -1884,19 +1886,22 @@ def cmd_list_bottles(params: Dict[str, Any]) -> Any:
         })
 
     # Include bottles that may not be in the prefixes list
-    for key, bottle in bottles.items():
-        if not key or not key.strip():
+    for raw_key, bottle in bottles.items():
+        if not raw_key or not raw_key.strip():
             continue  # skip ghost entries
+        # Normalize through the same resolver as the prefixes loop so a bottle
+        # reachable via a symlink isn't emitted twice (once resolved, once raw).
+        key = _resolve_key(raw_key)
         if key == bottles_base_str:
             continue
         if key in seen:
             continue
         seen.add(key)
-        name = bottle.get("name", Path(key).name)
+        name = bottle.get("name", Path(raw_key).name)
         if not name:
-            name = Path(key).name or key
+            name = Path(raw_key).name or raw_key
         result.append({
-            "path": key,
+            "path": raw_key,
             "name": name,
             "icon_path": bottle.get("icon_path", ""),
             "launcher_exe": bottle.get("launcher_exe", ""),

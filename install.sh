@@ -45,7 +45,7 @@ iconutil -c icns "$ICONSET" -o "$ICNS"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/MacNCheese" "$APP/Contents/MacOS/MacNCheese"
-cp "$ICNS" "$APP/Contents/Resources/icon.icns"
+cp "$ICNS" "$APP/Contents/Resources/MacNCheese.icns"
 cp backend_server.py installer.sh Epic.svg "$APP/Contents/Resources/"
 chmod +x "$APP/Contents/Resources/installer.sh"
 # Bundle Apple's gamepolicyctl so the backend can force macOS Game Mode on for
