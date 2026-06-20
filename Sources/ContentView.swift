@@ -85,7 +85,7 @@ struct ContentView: View {
             EpicLandingView(searchText: $searchText)
                 .id(backend.activePrefix)
                 .transition(.opacity)
-        } else if backend.games.isEmpty {
+        } else if backend.games.isEmpty && backend.apps.isEmpty {
             if activeBottle?.isSteamBottle ?? true {
                 SteamLandingView()
                     .transition(.opacity)
@@ -120,6 +120,7 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
         .animation(.easeInOut(duration: 0.22), value: showStore)
         .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
+        .animation(.easeInOut(duration: 0.22), value: backend.apps.isEmpty)
         .background(Color(.windowBackgroundColor))
         .navigationTitle(detailTitle)
         .navigationSubtitle(detailSubtitle)
@@ -141,39 +142,6 @@ struct ContentView: View {
         NavigationSplitView {
             SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
         } detail: {
-            ZStack {
-                Color.clear
-
-                if showStore {
-                    StoreView()
-                        .transition(.opacity)
-                } else if backend.activePrefix == nil {
-                    NoPrefixView(showCreateBottle: $showCreateBottle)
-                        .transition(.opacity)
-                } else if activeBottle?.isEpicBottle == true {
-                    EpicLandingView(searchText: $searchText)
-                        .id(backend.activePrefix)
-                        .transition(.opacity)
-                } else if backend.games.isEmpty && backend.apps.isEmpty {
-                    if activeBottle?.isSteamBottle ?? true {
-                        SteamLandingView()
-                            .transition(.opacity)
-                    } else {
-                        EmptyBottleLandingView()
-                            .transition(.opacity)
-                    }
-                } else {
-                    GameGridView(games: filteredGames, searchText: $searchText)
-                        .transition(.opacity)
-                }
-            }
-            .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
-            .animation(.easeInOut(duration: 0.22), value: showStore)
-            .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
-            .animation(.easeInOut(duration: 0.22), value: backend.apps.isEmpty)
-            .background(Color(.windowBackgroundColor))
-            .navigationTitle(detailTitle)
-            .navigationSubtitle(detailSubtitle)
             detailPane
         }
         .onChange(of: backend.activePrefix) { _, _ in showStore = false; detailGame = nil }
