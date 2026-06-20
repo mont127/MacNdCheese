@@ -67,6 +67,30 @@ struct Game: Identifiable, Codable, Hashable {
     }
 }
 
+/// A Windows application discovered inside a bottle (Start Menu shortcut or
+/// Program Files executable). Distinct from `Game` so it never disturbs the
+/// games grid or ordering logic.
+struct WineApp: Identifiable, Codable, Hashable {
+    var id: String { exe }
+    let name: String
+    let exe: String
+    var args: String
+    var iconBase64: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, exe, args
+        case iconBase64 = "icon"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        exe = try c.decode(String.self, forKey: .exe)
+        args = try c.decodeIfPresent(String.self, forKey: .args) ?? ""
+        iconBase64 = try c.decodeIfPresent(String.self, forKey: .iconBase64)
+    }
+}
+
 struct BackendStatus: Codable {
     let wineFound: Bool
     let winePath: String?

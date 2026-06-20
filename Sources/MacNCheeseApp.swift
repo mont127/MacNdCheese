@@ -3,6 +3,27 @@ import AppKit
 
 extension Notification.Name {
     static let createNewBottle = Notification.Name("MacNCheese.createNewBottle")
+    /// Posted when Finder hands the app one or more .exe/.msi files to open.
+    static let openWindowsExecutable = Notification.Name("MacNCheese.openWindowsExecutable")
+}
+
+/// Holds executables handed to the app via Finder until ContentView is ready to
+/// present the bottle picker. Needed because `application(_:open:)` can fire on a
+/// cold launch before the SwiftUI view hierarchy (and BackendClient) exist.
+final class PendingOpen {
+    static let shared = PendingOpen()
+    private(set) var urls: [URL] = []
+
+    func enqueue(_ newURLs: [URL]) {
+        let exts: Set<String> = ["exe", "msi"]
+        urls.append(contentsOf: newURLs.filter { exts.contains($0.pathExtension.lowercased()) })
+    }
+
+    func drain() -> [URL] {
+        let out = urls
+        urls = []
+        return out
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -13,6 +34,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        PendingOpen.shared.enqueue(urls)
+        NotificationCenter.default.post(name: .openWindowsExecutable, object: nil)
     }
 }
 

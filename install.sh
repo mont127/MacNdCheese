@@ -24,7 +24,21 @@ cp "$BIN/MacNCheese" "$APP/Contents/MacOS/MacNCheese"
 cp "$ICNS" "$APP/Contents/Resources/icon.icns"
 cp backend_server.py installer.sh Epic.svg "$APP/Contents/Resources/"
 chmod +x "$APP/Contents/Resources/installer.sh"
+# Bundle Apple's gamepolicyctl so the backend can force macOS Game Mode on for
+# Wine games without needing Xcode (it keeps its Apple signature; see buildapp.sh).
+if [ -f vendor/gamepolicyctl ]; then
+    cp vendor/gamepolicyctl "$APP/Contents/Resources/gamepolicyctl"
+    chmod +x "$APP/Contents/Resources/gamepolicyctl"
+fi
 cp Sources/Info.plist "$APP/Contents/Info.plist"
 xattr -cr "$APP"
 codesign --force --deep --sign - "$APP"
+# gamepolicyctl needs Apple-private entitlements to reach gamepolicyd; if --deep
+# clobbered its signature, restore the pristine copy and reseal without --deep.
+GP_RES="$APP/Contents/Resources/gamepolicyctl"
+if [ -f "$GP_RES" ] && ! codesign -dvv "$GP_RES" 2>&1 | grep -q "Authority=Apple"; then
+    cp vendor/gamepolicyctl "$GP_RES"
+    chmod +x "$GP_RES"
+    codesign --force --sign - "$APP"
+fi
 echo "Done: $APP"

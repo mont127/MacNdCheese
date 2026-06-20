@@ -204,6 +204,19 @@ SKIP_EXE_TOKENS = (
     "helper", "bootstrap", "diagnostics", "dxwebsetup",
 )
 
+# Program Files subdirectories that ship with Wine itself (not user-installed
+# applications). Used to filter the Applications list. Compared lowercased.
+WINE_DEFAULT_DIRS = {
+    "common files", "internet explorer", "windows media player",
+    "windows nt", "windows defender", "windows mail",
+    "windows photo viewer", "windows sidebar", "windows security",
+    "microsoft.net", "msbuild", "reference assemblies",
+    "uninstall information", "application verifier", "windows kits",
+    "windowspowershell", "windows multimedia platform",
+    "windows portable devices", "modifiablewindowsapps",
+    "installshield installation information", "desktop",
+}
+
 PREFIX_DLL_VERIFY_FILES = (
     "ntdll.dll",
     "kernel32.dll",
@@ -507,7 +520,7 @@ def _wine_env(prefix: str) -> Dict[str, str]:
 def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
     """Apply RetinaMode, Resolution and LogPixels via `wine regedit file.reg`."""
     retina_val = "y" if retina_mode else "n"
-    dpi_hex = "dc" if retina_mode else "60"  # 220=0xdc, 96=0x60
+    dpi_hex = "c0" if retina_mode else "60"  # 192=0xc0, 96=0x60
     # "Resolution"="auto" forces Wine to recalculate screen size on next launch,
     # preventing the top-left-corner artifact when switching retina mode.
     reg_content = (
@@ -532,7 +545,7 @@ def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
             env=env, timeout=300,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        log(f"Applied regedit: RetinaMode={retina_val}, Resolution=auto, LogPixels=000000{dpi_hex}")
+        log(f"Applied regedit: RetinaMode={retina_val}, Resolution=auto, LogPixels=000000{dpi_hex} ({int(dpi_hex, 16)} DPI)")
     except Exception as exc:
         log(f"Warning: regedit failed: {exc}")
 
@@ -1423,6 +1436,113 @@ def _detect_all_exes(game_dir: Path) -> List[str]:
 _running_games: Dict[int, subprocess.Popen] = {}
 
 # ---------------------------------------------------------------------------
+# macOS Game Mode control
+#
+# A game launched through Wine renders into a Cocoa fullscreen window owned by
+# the wine process, not by MacNCheese, and that process's main bundle is not a
+# games-category .app — so macOS never auto-activates Game Mode for it, even
+# though MacNCheese itself opts in. We instead force the *system* Game Mode
+# policy on (Apple's `gamepolicyctl game-mode set on`) for the lifetime of a
+# launched game and restore "auto" once the last game exits. The binary is
+# bundled in the app's Resources (it only links OS frameworks); we fall back to
+# Xcode's copy when running from a source checkout.
+# ---------------------------------------------------------------------------
+
+_GAMEPOLICYCTL_XCODE = "/Applications/Xcode.app/Contents/Developer/usr/bin/gamepolicyctl"
+_GP_UNRESOLVED = object()
+_game_mode_lock = threading.Lock()
+_game_mode_refcount = 0
+_game_mode_path_cache: Any = _GP_UNRESOLVED
+
+
+def _gamepolicyctl_path() -> Optional[str]:
+    """Locate the gamepolicyctl binary: bundled copy first, Xcode fallback."""
+    global _game_mode_path_cache
+    if _game_mode_path_cache is not _GP_UNRESOLVED:
+        return _game_mode_path_cache
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "gamepolicyctl"),
+        _GAMEPOLICYCTL_XCODE,
+    ]
+    found = next(
+        (p for p in candidates if os.path.isfile(p) and os.access(p, os.X_OK)), None
+    )
+    if found is None:
+        log("Game Mode: gamepolicyctl not found; Game Mode will not be forced")
+    _game_mode_path_cache = found
+    return found
+
+
+def _gamepolicyctl_set(policy: str) -> None:
+    """Run `gamepolicyctl game-mode set <policy>` (auto|on|off). No-op if missing."""
+    gp = _gamepolicyctl_path()
+    if not gp:
+        return
+    try:
+        subprocess.run(
+            [gp, "game-mode", "set", policy],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except Exception as exc:
+        log(f"gamepolicyctl set {policy} failed: {exc}")
+
+
+def _game_mode_acquire() -> None:
+    """Force Game Mode on for a launched game (reference-counted)."""
+    global _game_mode_refcount
+    with _game_mode_lock:
+        _game_mode_refcount += 1
+        first = _game_mode_refcount == 1
+    if first:
+        log("Game Mode: forcing ON")
+        _gamepolicyctl_set("on")
+
+
+def _game_mode_release() -> None:
+    """Release a game's hold; restore automatic policy when none remain."""
+    global _game_mode_refcount
+    with _game_mode_lock:
+        if _game_mode_refcount > 0:
+            _game_mode_refcount -= 1
+        last = _game_mode_refcount == 0
+    if last:
+        log("Game Mode: restoring AUTO")
+        _gamepolicyctl_set("auto")
+
+
+def _game_mode_reset() -> None:
+    """Hard-reset the policy to automatic (startup belt + crash safety net)."""
+    global _game_mode_refcount
+    with _game_mode_lock:
+        _game_mode_refcount = 0
+    _gamepolicyctl_set("auto")
+
+
+def _register_running_game(
+    proc: subprocess.Popen, enable_game_mode: bool = False
+) -> None:
+    """Track a launched process and, for real games, hold Game Mode until it exits."""
+    _running_games[proc.pid] = proc
+    if not enable_game_mode:
+        return
+    _game_mode_acquire()
+
+    def _watch() -> None:
+        try:
+            proc.wait()
+        except Exception:
+            pass
+        finally:
+            _game_mode_release()
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
+atexit.register(_game_mode_reset)
+
+# ---------------------------------------------------------------------------
 # Command implementations
 # ---------------------------------------------------------------------------
 
@@ -1583,6 +1703,216 @@ def cmd_scan_games(params: Dict[str, Any]) -> Any:
             deduped.append(g)
     deduped.sort(key=lambda g: g["name"].lower())
     return deduped
+
+
+# ---------------------------------------------------------------------------
+# Installed Windows applications (Start Menu shortcuts + Program Files)
+# ---------------------------------------------------------------------------
+
+def _parse_lnk(path: Path) -> Optional[Dict[str, str]]:
+    """Parse a Windows Shell Link (.lnk) file with the stdlib only.
+
+    Returns {"target": <windows path>, "args": <str>} or None. We read the
+    LocalBasePath from the LinkInfo structure for the target, and the
+    COMMAND_LINE_ARGUMENTS string from StringData for the arguments.
+    """
+    try:
+        data = path.read_bytes()
+    except Exception:
+        return None
+    if len(data) < 0x4C:
+        return None
+    if struct.unpack_from("<I", data, 0)[0] != 0x4C:  # HeaderSize
+        return None
+
+    link_flags = struct.unpack_from("<I", data, 20)[0]
+    HAS_LINK_TARGET_IDLIST = 0x00000001
+    HAS_LINK_INFO          = 0x00000002
+    HAS_NAME               = 0x00000004
+    HAS_RELATIVE_PATH      = 0x00000008
+    HAS_WORKING_DIR        = 0x00000010
+    HAS_ARGUMENTS          = 0x00000020
+    HAS_ICON_LOCATION      = 0x00000040
+    IS_UNICODE             = 0x00000080
+
+    offset = 0x4C
+    if link_flags & HAS_LINK_TARGET_IDLIST:
+        if offset + 2 > len(data):
+            return None
+        offset += 2 + struct.unpack_from("<H", data, offset)[0]
+
+    target: Optional[str] = None
+    if link_flags & HAS_LINK_INFO:
+        li_start = offset
+        if li_start + 20 > len(data):
+            return None
+        li_size = struct.unpack_from("<I", data, li_start)[0]
+        li_flags = struct.unpack_from("<I", data, li_start + 8)[0]
+        local_base_path_offset = struct.unpack_from("<I", data, li_start + 16)[0]
+        VOLUMEID_AND_LOCAL_BASE_PATH = 0x00000001
+        if (li_flags & VOLUMEID_AND_LOCAL_BASE_PATH) and local_base_path_offset:
+            base_off = li_start + local_base_path_offset
+            end = data.find(b"\x00", base_off)
+            if end != -1:
+                target = data[base_off:end].decode("cp1252", errors="replace")
+        offset = li_start + li_size  # advance past LinkInfo to StringData
+
+    args = ""
+
+    def _read_string(off: int) -> Tuple[Optional[str], int]:
+        if off + 2 > len(data):
+            return None, off
+        count = struct.unpack_from("<H", data, off)[0]
+        off += 2
+        if link_flags & IS_UNICODE:
+            nbytes = count * 2
+            text = data[off:off + nbytes].decode("utf-16-le", errors="replace")
+        else:
+            nbytes = count
+            text = data[off:off + nbytes].decode("cp1252", errors="replace")
+        return text, off + nbytes
+
+    for flag in (HAS_NAME, HAS_RELATIVE_PATH, HAS_WORKING_DIR, HAS_ARGUMENTS, HAS_ICON_LOCATION):
+        if link_flags & flag:
+            text, offset = _read_string(offset)
+            if text is None:
+                break
+            if flag == HAS_ARGUMENTS:
+                # Drop NUL padding / non-printable noise from the raw string.
+                args = "".join(ch for ch in text if ch.isprintable()).strip()
+
+    if not target:
+        return None
+    return {"target": target, "args": args}
+
+
+def _win_path_to_host(prefix: Path, win_path: str) -> Optional[Path]:
+    """Map a Windows path (C:\\Foo\\bar.exe) to its host path inside the prefix."""
+    if not win_path or len(win_path) < 3 or win_path[1] != ":":
+        return None
+    if win_path[0].lower() != "c":  # we only manage the C: drive
+        return None
+    rest = win_path[3:].replace("\\", "/")
+    return prefix / "drive_c" / rest
+
+
+def cmd_scan_apps(params: Dict[str, Any]) -> Any:
+    """Return installed Windows applications in a bottle.
+
+    Primary source is Start Menu .lnk shortcuts; if a bottle has none, we fall
+    back to scanning each Program Files subfolder for its main executable.
+    Steam/Epic games and Windows system tools are excluded (games are already
+    shown by scan_games).
+    """
+    prefix_str = params.get("prefix")
+    if not prefix_str:
+        raise ValueError("Missing 'prefix' parameter")
+    prefix = Path(prefix_str).expanduser().resolve()
+    drive_c = prefix / "drive_c"
+    if not drive_c.exists():
+        return []
+
+    excluded_roots = [
+        (drive_c / "windows"),
+        (drive_c / "Program Files (x86)" / "Steam"),
+        (drive_c / "Program Files" / "Epic Games"),
+    ]
+
+    drive_c_resolved = drive_c.resolve()
+
+    def _excluded(exe_path: Path) -> bool:
+        try:
+            rp = exe_path.resolve()
+        except Exception:
+            rp = exe_path
+        for base in excluded_roots:
+            try:
+                rp.relative_to(base.resolve())
+                return True
+            except Exception:
+                continue
+        # Skip Wine's own bundled Program Files programs.
+        try:
+            parts = rp.relative_to(drive_c_resolved).parts
+        except Exception:
+            return False
+        if len(parts) >= 2 and parts[0].lower() in ("program files", "program files (x86)"):
+            return parts[1].lower() in WINE_DEFAULT_DIRS
+        return False
+
+    found: Dict[str, Dict[str, str]] = {}  # keyed by resolved exe path
+
+    # 1. Start Menu .lnk shortcuts (system-wide + per user)
+    start_menu_roots = [
+        drive_c / "ProgramData" / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+    ]
+    users_dir = drive_c / "users"
+    if users_dir.exists():
+        for user in users_dir.iterdir():
+            sm = user / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+            if sm.exists():
+                start_menu_roots.append(sm)
+
+    for sm_root in start_menu_roots:
+        if not sm_root.exists():
+            continue
+        try:
+            lnks = list(sm_root.glob("**/*.lnk"))
+        except Exception:
+            lnks = []
+        for lnk in lnks:
+            info = _parse_lnk(lnk)
+            if not info or not info["target"].lower().endswith(".exe"):
+                continue
+            host = _win_path_to_host(prefix, info["target"])
+            if not host or not host.exists():
+                continue
+            if _is_probably_not_game(host) or _excluded(host):
+                continue
+            key = str(host)
+            if key not in found:
+                found[key] = {"name": lnk.stem, "exe": key, "args": info.get("args", "")}
+
+    # 2. Fallback: one app per Program Files subfolder when no shortcuts exist
+    if not found:
+        for pf in (drive_c / "Program Files", drive_c / "Program Files (x86)"):
+            if not pf.exists():
+                continue
+            try:
+                children = [c for c in pf.iterdir() if c.is_dir()]
+            except Exception:
+                children = []
+            for child in children:
+                if child.name.lower() in WINE_DEFAULT_DIRS:
+                    continue
+                exe = _detect_exe(child, child.name, child.name)
+                if not exe:
+                    continue
+                exe_path = Path(exe)
+                if _excluded(exe_path):
+                    continue
+                key = str(exe_path)
+                if key not in found:
+                    found[key] = {"name": child.name, "exe": key, "args": ""}
+
+    apps: List[Dict[str, Any]] = []
+    for entry in found.values():
+        icon_b64 = None
+        try:
+            ico_bytes = _pe_extract_ico(entry["exe"])
+            if ico_bytes:
+                icon_b64 = base64.b64encode(ico_bytes).decode()
+        except Exception as exc:
+            log(f"scan_apps: failed to extract icon for {entry['exe']}: {exc}")
+        apps.append({
+            "name": entry["name"],
+            "exe": entry["exe"],
+            "args": entry.get("args", ""),
+            "icon": icon_b64,
+            "icon_format": "ico" if icon_b64 else "",
+        })
+    apps.sort(key=lambda a: a["name"].lower())
+    return apps
 
 
 def cmd_get_steam_description(params: Dict[str, Any]) -> Any:
@@ -2141,7 +2471,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
         start_new_session=True,
     )
 
-    _running_games[proc.pid] = proc
+    _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
     log(f"Game launched with PID {proc.pid}, backend={backend}, log at {log_path}")
 
     # MacNCheese-level Discord presence ("Playing MacNCheese" + this game).
@@ -2754,7 +3084,11 @@ def cmd_run_exe(params: Dict[str, Any]) -> Any:
         raise FileNotFoundError("Wine not found")
     env = _wine_env(prefix)
     arg_parts = shlex.split(args) if args else []
-    cmd_list = [wine, str(exe_path)] + arg_parts
+    if exe_path.suffix.lower() == ".msi":
+        # Windows Installer packages are run through msiexec.
+        cmd_list = [wine, "msiexec", "/i", str(exe_path)] + arg_parts
+    else:
+        cmd_list = [wine, str(exe_path)] + arg_parts
     log(f"run_exe: {cmd_list}")
     proc = subprocess.Popen(
         cmd_list, env=env,
@@ -2763,6 +3097,67 @@ def cmd_run_exe(params: Dict[str, Any]) -> Any:
     )
     _running_games[proc.pid] = proc
     return {"pid": proc.pid}
+
+
+def cmd_uninstall_app(params: Dict[str, Any]) -> Any:
+    """Uninstall a Windows application from a bottle.
+
+    Prefers the app's own uninstaller (``unins000.exe`` / ``uninstall.exe`` and
+    friends) found next to the executable. If none exists, falls back to Wine's
+    Add/Remove Programs control panel so the user can pick the entry manually.
+    """
+    prefix = params.get("prefix")
+    exe = params.get("exe")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+    if not exe:
+        raise ValueError("Missing 'exe' parameter")
+    wine = _find_wine()
+    if not wine:
+        raise FileNotFoundError("Wine not found")
+    env = _wine_env(prefix)
+
+    exe_path = Path(exe)
+    app_dir = exe_path.parent
+
+    # Look for a dedicated uninstaller next to the app, then one level up.
+    uninstaller: Optional[Path] = None
+    search_dirs = [app_dir]
+    if app_dir.parent != app_dir:
+        search_dirs.append(app_dir.parent)
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        try:
+            children = sorted(d.iterdir(), key=lambda c: c.name.lower())
+        except Exception:
+            continue
+        for child in children:
+            if not child.is_file():
+                continue
+            low = child.name.lower()
+            if low.endswith(".exe") and (low.startswith("unins") or "uninstall" in low):
+                uninstaller = child
+                break
+        if uninstaller:
+            break
+
+    if uninstaller:
+        cmd_list = [wine, str(uninstaller)]
+        method = "uninstaller"
+    else:
+        # No bundled uninstaller — open Wine's Add/Remove Programs dialog.
+        cmd_list = [wine, "uninstaller"]
+        method = "control_panel"
+
+    log(f"uninstall_app ({method}): {cmd_list}")
+    proc = subprocess.Popen(
+        cmd_list, env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    _running_games[proc.pid] = proc
+    return {"pid": proc.pid, "method": method}
 
 
 def cmd_open_prefix_folder(params: Dict[str, Any]) -> Any:
@@ -4880,6 +5275,8 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         stderr=subprocess.DEVNULL,
     )
 
+    _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
+
     # MacNCheese-level Discord presence for Epic launches. Prefer the real
     # title passed from the UI; fall back to the Epic app_name (codename).
     try:
@@ -5000,6 +5397,7 @@ def cmd_legendary_resume_install(params: Dict[str, Any]) -> Any:
 COMMANDS: Dict[str, Any] = {
     "list_bottles": cmd_list_bottles,
     "scan_games": cmd_scan_games,
+    "scan_apps": cmd_scan_apps,
     "get_steam_description": cmd_get_steam_description,
     "launch_game": cmd_launch_game,
     "launch_steam": cmd_launch_steam,
@@ -5013,6 +5411,7 @@ COMMANDS: Dict[str, Any] = {
     "clean_prefix": cmd_clean_prefix,
     "open_winecfg": cmd_open_winecfg,
     "run_exe": cmd_run_exe,
+    "uninstall_app": cmd_uninstall_app,
     "open_prefix_folder": cmd_open_prefix_folder,
     "get_status": cmd_get_status,
     "add_manual_game": cmd_add_manual_game,
@@ -5074,6 +5473,10 @@ def main() -> None:
     log(f"BOTTLES_BASE = {BOTTLES_BASE}")
     log(f"DEFAULT_PREFIX = {DEFAULT_PREFIX}")
 
+    # Restore automatic Game Mode policy in case a previous run crashed while
+    # it had Game Mode forced on.
+    _game_mode_reset()
+
     try:
         for line in sys.stdin:
             line = line.strip()
@@ -5108,6 +5511,7 @@ def main() -> None:
                 _respond(req_id, False, error=str(exc))
     finally:
         _terminate_legendary_installs()
+        _game_mode_reset()
 
 
 if __name__ == "__main__":

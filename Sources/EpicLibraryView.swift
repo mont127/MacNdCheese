@@ -91,6 +91,11 @@ struct EpicLibraryView: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 24)
             }
+
+            if !backend.apps.isEmpty {
+                AppsSectionView(apps: backend.apps)
+                    .padding(.bottom, 24)
+            }
         }
         .contentMargins(.top, 20, for: .scrollContent)
         .scrollClipDisabled()
