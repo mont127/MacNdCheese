@@ -5,10 +5,13 @@ struct GameGridView: View {
     @EnvironmentObject var backend: BackendClient
     let games: [Game]
     @Binding var searchText: String
+    /// Open the in-pane game detail page (replaces the old modal launch sheet).
+    var onOpenDetail: (Game) -> Void = { _ in }
 
     @State private var gameOrder: [String] = []
     @State private var draggingAppid: String? = nil
     @State private var dropTargetAppid: String? = nil
+    @State private var isRefreshing = false
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -50,6 +53,7 @@ struct GameGridView: View {
                 ForEach(displayedGames) { game in
                     GameCardView(
                         game: game,
+                        onOpen: { onOpenDetail(game) },
                         onMoveToFront: { moveToFront(game.appid) },
                         onMoveToBack: { moveToBack(game.appid) }
                     )
@@ -57,7 +61,7 @@ struct GameGridView: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 14)
                             .stroke(
-                                dropTargetAppid == game.appid ? Color.accentColor : Color.clear,
+                                dropTargetAppid == game.appid ? Color.brand : Color.clear,
                                 lineWidth: 2
                             )
                     )
@@ -129,11 +133,46 @@ struct GameGridView: View {
                         HStack(spacing: 6) {
                             Image(systemName: backend.steamRunning ? "stop.fill" : "play.fill")
                                 .font(.caption)
-                            Text(backend.steamRunning ? "Close \(launcherName)" : "Open \(launcherName)")
+                            Text(backend.steamRunning ? String(format: L("Close %@"), launcherName) : String(format: L("Open %@"), launcherName))
                         }
                     }
                     .buttonStyle(.bordered)
-                    .tint(backend.steamRunning ? .red : Color.accentColor)
+                    .tint(backend.steamRunning ? .red : Color.brand)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                // Re-scan the bottle for games (new Steam installs, manually
+                // copied games, etc.) without restarting the app.
+                Button {
+                    guard let prefix = backend.activePrefix, !isRefreshing else { return }
+                    isRefreshing = true
+                    Task {
+                        await backend.scanGames(prefix: prefix)
+                        isRefreshing = false
+                    }
+                } label: {
+                    if isRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label(L("Refresh"), systemImage: "arrow.clockwise")
+                    }
+                }
+                .help(L("Re-scan the bottle for games."))
+            }
+            ToolbarItem(placement: .primaryAction) {
+                // Non-Steam bottles: keep Add Game / Run Installer reachable even
+                // after games exist (the empty-state buttons disappear once the
+                // grid shows), so users can add multiple apps to the container.
+                if let bottle = activeBottle, !bottle.isSteamBottle {
+                    HStack(spacing: 8) {
+                        Button { runInstaller() } label: {
+                            Label(L("Run Installer"), systemImage: "shippingbox")
+                        }
+                        Button { addManualGame() } label: {
+                            Label(L("Add Game"), systemImage: "plus")
+                        }
+                    }
+                    .labelStyle(.titleAndIcon)
                 }
             }
         }
@@ -143,6 +182,26 @@ struct GameGridView: View {
             let known = Set(gameOrder)
             let newIds = games.map { $0.appid }.filter { !known.contains($0) }
             gameOrder = gameOrder.filter { id in games.contains { $0.appid == id } } + newIds
+        }
+    }
+
+    private func runInstaller() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.exe]
+        panel.canChooseFiles = true
+        if panel.runModal() == .OK, let url = panel.url, let prefix = backend.activePrefix {
+            Task { await backend.launchGame(prefix: prefix, exe: url.path) }
+        }
+    }
+
+    private func addManualGame() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.exe]
+        panel.canChooseFiles = true
+        panel.title = L("Select Game EXE")
+        if panel.runModal() == .OK, let url = panel.url, let prefix = backend.activePrefix {
+            let name = url.deletingPathExtension().lastPathComponent
+            Task { await backend.addManualGame(prefix: prefix, name: name, exe: url.path) }
         }
     }
 
@@ -211,10 +270,10 @@ struct LaunchingOverlay: View {
 struct GameCardView: View {
     @EnvironmentObject var backend: BackendClient
     let game: Game
+    var onOpen: () -> Void = {}
     var onMoveToFront: (() -> Void)? = nil
     var onMoveToBack: (() -> Void)? = nil
     @State private var isHovering = false
-    @State private var showLaunchOptions = false
     @State private var coverImage: NSImage?
     @State private var isLaunching = false
 
@@ -223,7 +282,7 @@ struct GameCardView: View {
             // Cover image area
             ZStack(alignment: .topTrailing) {
                 Button {
-                    directLaunch()
+                    onOpen()
                 } label: {
                     ZStack {
                         RoundedRectangle(cornerRadius: 12)
@@ -246,8 +305,11 @@ struct GameCardView: View {
                             LaunchingOverlay(cornerRadius: 12)
                                 .frame(height: 220)
                         } else if isHovering {
+                            // No redundant play button: the whole tile (and the
+                            // gear) opens the game page, where the real Launch +
+                            // options live. Just a subtle hover scrim here.
                             RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.primary.opacity(0.3))
+                                .fill(Color.black.opacity(0.28))
                                 .frame(height: 220)
                         }
 
@@ -257,7 +319,7 @@ struct GameCardView: View {
                                     .controlSize(.large)
                                     .tint(.white)
                                 if isHovering {
-                                    Text("Launching…")
+                                    Text(L("Launching…"))
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(.white.opacity(0.9))
                                         .transition(.opacity)
@@ -269,11 +331,11 @@ struct GameCardView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Launch \(game.name)")
+                .accessibilityLabel(String(format: L("Launch %@"), game.name))
 
                 if isHovering {
                     Button {
-                        showLaunchOptions = true
+                        onOpen()
                     } label: {
                         Image(systemName: "gearshape.fill")
                             .font(.system(size: 14, weight: .semibold))
@@ -284,7 +346,7 @@ struct GameCardView: View {
                     .buttonStyle(.plain)
                     .padding(8)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
-                    .accessibilityLabel("Launch options for \(game.name)")
+                    .accessibilityLabel(String(format: L("Launch options for %@"), game.name))
                 }
             }
             .frame(height: 220)
@@ -303,36 +365,45 @@ struct GameCardView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isHovering ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08),
+                    isHovering ? Color.brand.opacity(0.65) : Color.primary.opacity(0.08),
                     lineWidth: 1
                 )
         )
         .scaleEffect(isHovering ? 1.02 : 1.0)
-        .shadow(color: isHovering ? Color.accentColor.opacity(0.2) : .clear, radius: 12)
+        .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
+        .shadow(color: isHovering ? Color.brand.opacity(0.35) : .clear, radius: 16)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in isHovering = hovering }
         .onAppear { loadCover() }
         .contextMenu {
-            Button("Launch") { directLaunch() }
-            Button("Launch Options…") { showLaunchOptions = true }
+            Button(L("Launch")) { directLaunch() }
+            Button(L("Launch Options…")) { onOpen() }
             if let exe = game.exe {
-                Button("Show in Finder") {
+                Button(L("Show in Finder")) {
                     NSWorkspace.shared.selectFile(exe, inFileViewerRootedAtPath: "")
                 }
             }
             if onMoveToFront != nil || onMoveToBack != nil {
                 Divider()
                 if let move = onMoveToFront {
-                    Button("Move to Front") { move() }
+                    Button(L("Move to Front")) { move() }
                 }
                 if let move = onMoveToBack {
-                    Button("Move to Back") { move() }
+                    Button(L("Move to Back")) { move() }
                 }
             }
+            // Manually-added (non-Steam) games can be removed from the library
+            // list. This only forgets the entry — the files on disk are untouched.
+            if game.isManual {
+                Divider()
+                Button(L("Remove from Library"), role: .destructive) { removeFromLibrary() }
+            }
         }
-        .sheet(isPresented: $showLaunchOptions) {
-            GameLaunchSheet(game: game, coverImage: coverImage)
-        }
+    }
+
+    private func removeFromLibrary() {
+        guard let prefix = backend.activePrefix, let exe = game.exe else { return }
+        Task { await backend.removeManualGame(prefix: prefix, exe: exe) }
     }
 
     private func directLaunch() {
@@ -508,4 +579,5 @@ struct AppCardView: View {
             }
         }
     }
+}
 }

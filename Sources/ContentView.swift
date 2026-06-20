@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var backend: BackendClient
     @EnvironmentObject var announcements: AnnouncementChecker
+    @EnvironmentObject var updateChecker: UpdateChecker
+    @EnvironmentObject var loc: LocalizationManager
     @Environment(\.openSettings) private var openSettings
     @State private var searchText = ""
     @State private var showCreateBottle = false
@@ -13,6 +15,8 @@ struct ContentView: View {
     @State private var showKillConfirmation = false
     @State private var openQueue: [URL] = []
     @State private var currentOpenRequest: OpenExeRequest?
+    @State private var showOnboarding = false
+    @State private var detailGame: Game?
 
     @ViewBuilder private var killWineserverButton: some View {
         Button {
@@ -20,26 +24,26 @@ struct ContentView: View {
         } label: {
             Image(systemName: "stop.circle").foregroundStyle(.red)
         }
-        .help("Kill Wineserver")
+        .help(L("Kill Wineserver"))
         .disabled(backend.activePrefix == nil)
     }
 
     @ViewBuilder private var settingsButtons: some View {
                 Button { openSettings() } label: { Image(systemName: "gear") }
-            .help("Settings")
-            .accessibilityLabel("Settings")
+            .help(L("Settings"))
+            .accessibilityLabel(L("Settings"))
         if announcements.hasNewAnnouncement {
             Button { showAnnouncement = true } label: {
                 Image(systemName: "bell.badge.fill").symbolRenderingMode(.multicolor)
             }
-            .help("New Announcement")
-            .accessibilityLabel("New Announcement")
+            .help(L("New Announcement"))
+            .accessibilityLabel(L("New Announcement"))
         }
         if activeBottle?.isEpicBottle == true && backend.epicAuthenticated {
             Button { showEpicStore = true } label: {
-                Label("Open Store", systemImage: "cart")
+                Label(L("Open Store"), systemImage: "cart")
             }
-            .help("Open Epic Games Store")
+            .help(L("Open Epic Games Store"))
         }
     }
 
@@ -54,14 +58,71 @@ struct ContentView: View {
     }
 
     private var detailTitle: String {
-        if showStore { return "Store" }
+        if showStore { return L("Store") }
         if let bottle = activeBottle { return bottle.name }
         return "MacNCheese"
     }
 
     private var detailSubtitle: String {
         if showStore || backend.activePrefix == nil { return "" }
-        return "Library"
+        return L("Library")
+    }
+
+    private func openDetail(_ game: Game?) {
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            detailGame = game
+        }
+    }
+
+    @ViewBuilder private var detailContent: some View {
+        if showStore {
+            StoreView(searchText: searchText)
+                .transition(.opacity)
+        } else if backend.activePrefix == nil {
+            NoPrefixView(showCreateBottle: $showCreateBottle)
+                .transition(.opacity)
+        } else if activeBottle?.isEpicBottle == true {
+            EpicLandingView(searchText: $searchText)
+                .id(backend.activePrefix)
+                .transition(.opacity)
+        } else if backend.games.isEmpty {
+            if activeBottle?.isSteamBottle ?? true {
+                SteamLandingView()
+                    .transition(.opacity)
+            } else {
+                EmptyBottleLandingView()
+                    .transition(.opacity)
+            }
+        } else {
+            GameGridView(
+                games: filteredGames,
+                searchText: $searchText,
+                onOpenDetail: { openDetail($0) }
+            )
+            .transition(.opacity)
+        }
+    }
+
+    private var detailPane: some View {
+        ZStack {
+            Color.clear
+            detailContent
+
+            // In-pane game detail / launch page. Sits on top of the grid (which
+            // stays mounted, so the toolbar is preserved) and animates in/out.
+            // The sidebar is the other split column, untouched.
+            if let game = detailGame {
+                GameDetailView(game: game, onClose: { openDetail(nil) })
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                    .zIndex(3)
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
+        .animation(.easeInOut(duration: 0.22), value: showStore)
+        .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
+        .background(Color(.windowBackgroundColor))
+        .navigationTitle(detailTitle)
+        .navigationSubtitle(detailSubtitle)
     }
 
     /// Pull any executables Finder handed us into the local queue and present
@@ -113,10 +174,12 @@ struct ContentView: View {
             .background(Color(.windowBackgroundColor))
             .navigationTitle(detailTitle)
             .navigationSubtitle(detailSubtitle)
+            detailPane
         }
-        .onChange(of: backend.activePrefix) { _, _ in showStore = false }
+        .onChange(of: backend.activePrefix) { _, _ in showStore = false; detailGame = nil }
         .navigationSplitViewStyle(.balanced)
-        .searchable(text: $searchText, placement: .toolbar, prompt: "Search games")
+        .tint(.brand)   // brand accent for sidebar selection + prominent buttons
+        .searchable(text: $searchText, placement: .toolbar, prompt: showStore ? L("Search showcase") : L("Search games"))
         .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
             showCreateBottle = true
         }
@@ -142,6 +205,19 @@ struct ContentView: View {
             if isStore { /* no-op */ }
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                // Inside the Store there was no way back except the sidebar —
+                // give it an explicit "Return to Library" button.
+                if showStore {
+                    Button {
+                        showStore = false
+                    } label: {
+                        Label(L("Return to Library"), systemImage: "chevron.left")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .help(L("Return to Library"))
+                }
+            }
             ToolbarItem(placement: .destructiveAction) {
                 killWineserverButton
             }
@@ -149,19 +225,94 @@ struct ContentView: View {
                 settingsButtons
             }
         }
-        .alert("Kill Wineserver?", isPresented: $showKillConfirmation) {
-            Button("Kill", role: .destructive) {
+        .alert(L("Kill Wineserver?"), isPresented: $showKillConfirmation) {
+            Button(L("Kill"), role: .destructive) {
                 guard let prefix = backend.activePrefix else { return }
                 Task { await backend.killWineserver(prefix: prefix) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(L("Cancel"), role: .cancel) {}
         } message: {
-            Text("This will forcefully terminate all Wine processes in the current bottle. Any unsaved game progress will be lost.")
+            Text(L("This will forcefully terminate all Wine processes in the current bottle. Any unsaved game progress will be lost."))
         }
+        .safeAreaInset(edge: .top) {
+            AppUpdateBanner()
+        }
+        // Re-render the entire main UI when the language changes (Settings is a
+        // separate scene, so its window is unaffected). Switching is live.
+        .id(loc.language)
+        // First-launch language popup (also reachable later via Settings → Language).
+        .sheet(isPresented: $loc.needsChoice) {
+            LanguagePickerSheet()
+        }
+        // First-run onboarding installer — shown automatically after the language
+        // is chosen, so a new user gets a working Wine + graphics stack without
+        // ever opening Settings. Lives in its own modifier to keep this body's
+        // type-checking light.
+        .modifier(OnboardingPresenter(show: $showOnboarding))
     }
 }
 
 
+
+/// Owns first-run onboarding presentation so ContentView's already-large body
+/// stays light to type-check. Shows OnboardingView once the language is chosen
+/// and the backend reports Wine is missing; existing installs are marked
+/// complete silently so an upgrader is never nagged. Any dismissal (button,
+/// Escape, click-out) marks it complete so it won't reappear.
+private struct OnboardingPresenter: ViewModifier {
+    @EnvironmentObject var backend: BackendClient
+    @EnvironmentObject var loc: LocalizationManager
+    @AppStorage(OnboardingView.completeKey) private var onboardingComplete = false
+    @Binding var show: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $show, onDismiss: {
+                onboardingComplete = true
+                MacNCheeseSupport.markInitialized()
+            }) {
+                OnboardingView()
+            }
+            .onAppear { evaluate() }
+            .onChange(of: backend.isConnected) { _, connected in
+                if connected { evaluate() }
+            }
+            .onChange(of: loc.needsChoice) { _, needs in
+                if !needs { evaluate() }
+            }
+    }
+
+    private func evaluate() {
+        guard !show, !loc.needsChoice else { return }
+
+        // First launch is keyed on MacNCheese's Application Support folder, not
+        // just a UserDefaults flag. If the user deleted it (a clean reset) or
+        // this is a genuine first run, re-onboard even if a stale "complete"
+        // flag survived in UserDefaults.
+        if !MacNCheeseSupport.exists {
+            onboardingComplete = false
+            // Defer a tick so we don't present while the language sheet (bound to
+            // the same view) is still dismissing.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                if !MacNCheeseSupport.exists { show = true }
+            }
+            return
+        }
+
+        // Folder exists: respect the completed/skipped flag, but if onboarding
+        // was never finished and Wine still isn't installed, offer it.
+        guard !onboardingComplete else { return }
+        Task {
+            // nil = backend not ready yet; a later isConnected change retries.
+            guard let status = await backend.getComponentsStatus() else { return }
+            if status.hasWine {
+                onboardingComplete = true
+            } else {
+                show = true
+            }
+        }
+    }
+}
 
 struct SteamLandingView: View {
     @EnvironmentObject var backend: BackendClient
@@ -183,7 +334,7 @@ struct SteamLandingView: View {
 
             Image(systemName: "gamecontroller.fill")
                 .font(.system(size: 80))
-                .foregroundStyle(Color.accentColor.opacity(0.8))
+                .foregroundStyle(Color.brand.opacity(0.8))
                 .padding(.bottom, 8)
 
             Text(customExeName?.uppercased() ?? "STEAM")
@@ -191,7 +342,7 @@ struct SteamLandingView: View {
                 .tracking(4)
                 .foregroundStyle(.primary)
 
-            Text(customExeName != nil ? "Launch to browse your games." : "Launch Steam to browse and install games.")
+            Text(customExeName != nil ? L("Launch to browse your games.") : L("Launch Steam to browse and install games."))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
@@ -220,20 +371,20 @@ struct SteamLandingView: View {
                     } else {
                         Image(systemName: backend.steamRunning ? "stop.fill" : "play.fill")
                     }
-                    Text(backend.steamRunning ? "Close \(customExeName ?? "Steam")" : "Launch")
+                    Text(backend.steamRunning ? String(format: L("Close %@"), customExeName ?? "Steam") : L("Launch"))
                         .fontWeight(.bold)
                 }
                 .frame(width: 160, height: 44)
             }
             .buttonStyle(.borderedProminent)
-            .tint(backend.steamRunning ? .red : Color.accentColor)
+            .tint(backend.steamRunning ? .red : Color.brand)
             .controlSize(.large)
             .disabled(backend.activePrefix == nil || isLaunching)
 
             Spacer().frame(height: 32)
 
             HStack(spacing: 12) {
-                Button("Run Installer") {
+                Button(L("Run Installer")) {
                     let panel = NSOpenPanel()
                     panel.allowedContentTypes = [.exe]
                     panel.canChooseFiles = true
@@ -246,7 +397,7 @@ struct SteamLandingView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Button("Add Game") {
+                Button(L("Add Game")) {
                     addManualGame()
                 }
                 .buttonStyle(.bordered)
@@ -261,7 +412,7 @@ struct SteamLandingView: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.exe]
         panel.canChooseFiles = true
-        panel.title = "Select Game EXE"
+        panel.title = L("Select Game EXE")
         if panel.runModal() == .OK, let url = panel.url,
            let prefix = backend.activePrefix {
             let name = url.deletingPathExtension().lastPathComponent
@@ -279,13 +430,13 @@ struct NoPrefixView: View {
         VStack(spacing: 12) {
             Image(systemName: "plus.circle")
                 .font(.system(size: 56))
-                .foregroundStyle(Color.accentColor.opacity(0.8))
-            Text("No bottle selected")
+                .foregroundStyle(Color.brand.opacity(0.8))
+            Text(L("No bottle selected"))
                 .font(.title)
                 .fontWeight(.bold)
-            Text("Create a bottle to get started.")
+            Text(L("Create a bottle to get started."))
                 .foregroundStyle(.secondary)
-            Button("Create Bottle") {
+            Button(L("Create Bottle")) {
                 showCreateBottle = true
             }
             .buttonStyle(.borderedProminent)
@@ -319,12 +470,12 @@ struct EmptyBottleLandingView: View {
             Spacer()
             Image(systemName: "wineglass")
                 .font(.system(size: 72))
-                .foregroundStyle(Color.accentColor.opacity(0.8))
+                .foregroundStyle(Color.brand.opacity(0.8))
                 .padding(.bottom, 12)
-            Text("No Games")
+            Text(L("No Games"))
                 .font(.title)
                 .fontWeight(.bold)
-            Text("Add a game or run an installer to get started.")
+            Text(L("Add a game or run an installer to get started."))
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
             Spacer().frame(height: 28)
@@ -346,19 +497,19 @@ struct EmptyBottleLandingView: View {
                         } else {
                             Image(systemName: backend.steamRunning ? "stop.fill" : "play.fill")
                         }
-                        Text(backend.steamRunning ? "Close \(launcherName)" : "Launch \(launcherName)")
+                        Text(backend.steamRunning ? String(format: L("Close %@"), launcherName) : String(format: L("Launch %@"), launcherName))
                             .fontWeight(.bold)
                     }
                     .frame(minWidth: 160)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(backend.steamRunning ? .red : Color.accentColor)
+                .tint(backend.steamRunning ? .red : Color.brand)
                 .controlSize(.large)
                 .disabled(isLaunching)
                 Spacer().frame(height: 20)
             }
             HStack(spacing: 12) {
-                Button("Run Installer") {
+                Button(L("Run Installer")) {
                     let panel = NSOpenPanel()
                     panel.allowedContentTypes = [.exe]
                     panel.canChooseFiles = true
@@ -370,7 +521,7 @@ struct EmptyBottleLandingView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
-                Button("Add Game") {
+                Button(L("Add Game")) {
                     addManualGame()
                 }
                 .buttonStyle(.bordered)
@@ -379,14 +530,14 @@ struct EmptyBottleLandingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .alert("Compatibility List Update", isPresented: $showCompatibilityListNotice) {
-            Button("Launch") {
+        .alert(L("Compatibility List Update"), isPresented: $showCompatibilityListNotice) {
+            Button(L("Launch")) {
                 guard let prefix = backend.activePrefix else { return }
                 launchLauncher(prefix: prefix)
             }
-            Button("Cancel", role: .cancel) {}
+            Button(L("Cancel"), role: .cancel) {}
         } message: {
-            Text("The compatibility list may have changed. Launch the launcher anyway?")
+            Text(L("The compatibility list may have changed. Launch the launcher anyway?"))
         }
     }
 
@@ -402,7 +553,7 @@ struct EmptyBottleLandingView: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.exe]
         panel.canChooseFiles = true
-        panel.title = "Select Game EXE"
+        panel.title = L("Select Game EXE")
         if panel.runModal() == .OK, let url = panel.url,
            let prefix = backend.activePrefix {
             let name = url.deletingPathExtension().lastPathComponent
@@ -436,7 +587,7 @@ struct ErrorBannerView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Dismiss")
+                .help(L("Dismiss"))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)

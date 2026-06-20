@@ -18,6 +18,7 @@ struct GameLaunchSheet: View {
     @State private var retinaMode: Bool = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
     @State private var metalHud: Bool = false
     @State private var gameMode: Bool = true
+    @State private var advancedDebug: Bool = false
     @State private var enableEsync: Bool = true
     @State private var enableMsync: Bool = true
     @State private var advertiseAVX: Bool = false
@@ -29,6 +30,12 @@ struct GameLaunchSheet: View {
     private var effectiveExe: String {
         if !selectedExe.isEmpty { return selectedExe }
         return game.exe ?? ""
+    }
+
+    /// Button label while a launch is in flight. With Steam enabled the backend
+    /// blocks until Steam is signed in, so reflect that wait.
+    private var launchingLabel: String {
+        steamMode == "none" ? L("Launching…") : L("Starting Steam…")
     }
 
     var body: some View {
@@ -48,6 +55,7 @@ struct GameLaunchSheet: View {
                         retinaSection
                         metalHudToggle
                         gameModeToggle
+                        advancedDebugToggle
                         environmentSection
                         synchronizationSection
                     }
@@ -101,7 +109,7 @@ struct GameLaunchSheet: View {
                 .font(.title2)
                 .fontWeight(.bold)
                 .lineLimit(2)
-            Text("App ID: \(game.appid)")
+            Text(String(format: L("App ID: %@"), game.appid))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -112,7 +120,7 @@ struct GameLaunchSheet: View {
     private var steamDescriptionSection: some View {
         if !game.isManual {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Steam Description")
+                Text(L("Steam Description"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fontWeight(.semibold)
@@ -120,7 +128,7 @@ struct GameLaunchSheet: View {
                 if loadingSteamDescription {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Loading from Steam...")
+                        Text(L("Loading from Steam..."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -138,7 +146,7 @@ struct GameLaunchSheet: View {
                     .padding(10)
                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
                 } else {
-                    Text("No Steam description available.")
+                    Text(L("No Steam description available."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
@@ -149,7 +157,7 @@ struct GameLaunchSheet: View {
 
     private var exeSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("EXE:")
+            Text(L("EXE:"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
@@ -157,18 +165,18 @@ struct GameLaunchSheet: View {
             if loadingExes {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("Scanning...").font(.caption).foregroundStyle(.secondary)
+                    Text(L("Scanning...")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Picker("", selection: $selectedExe) {
-                    Text("Auto-detect").tag("")
+                    Text(L("Auto-detect")).tag("")
                     ForEach(detectedExes, id: \.self) { exe in
                         Text(abbreviateExe(exe)).tag(exe)
                     }
                 }
                 .labelsHidden()
 
-                Button("Browse…") { browseExe() }
+                Button(L("Browse…")) { browseExe() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -177,7 +185,7 @@ struct GameLaunchSheet: View {
 
     private var graphicsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Graphics Engine:")
+            Text(L("Graphics Engine:"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
@@ -185,11 +193,11 @@ struct GameLaunchSheet: View {
             if loadingBackends {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("Detecting...").font(.caption).foregroundStyle(.secondary)
+                    Text(L("Detecting...")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                let mainIds: [String] = ["auto", "wine_d3dmetal", "wine_devel", "dxmt", "d3dmetal3", "dxvk", "vkd3d-proton"]
-                let experimentalIds: [String] = ["wine", "mesa:llvmpipe", "mesa:zink", "mesa:swr", "gptk", "gptk_full"]
+                let mainIds: [String] = ["auto", "wine_devel", "dxmt", "dxmt_openxr", "d3dmetal3", "dxvk", "vkd3d-proton"]
+                let experimentalIds: [String] = ["wine", "gptk", "gptk_full"]
                 let mainBackends = availableBackends.filter { mainIds.contains($0.backendId) }
                     .sorted { mainIds.firstIndex(of: $0.backendId) ?? 99 < mainIds.firstIndex(of: $1.backendId) ?? 99 }
                 let experimentalBackends = availableBackends.filter { experimentalIds.contains($0.backendId) }
@@ -201,7 +209,7 @@ struct GameLaunchSheet: View {
                     }
                     if !experimentalBackends.isEmpty {
                         Divider()
-                        Text("— Experimental —").tag("__sep__").disabled(true)
+                        Text(L("— Experimental —")).tag("__sep__").disabled(true)
                         ForEach(experimentalBackends) { b in
                             Text(engineLabel(b)).tag(b.backendId)
                         }
@@ -214,11 +222,11 @@ struct GameLaunchSheet: View {
 
     private var argsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Args:")
+            Text(L("Args:"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
-            TextField("Optional launch arguments…", text: $extraArgs)
+            TextField(L("Optional launch arguments…"), text: $extraArgs)
                 .textFieldStyle(.roundedBorder)
         }
     }
@@ -230,14 +238,11 @@ struct GameLaunchSheet: View {
     private var retinaSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle(isOn: $retinaMode) {
-                Text("Retina hi-res mode")
+                Text(L("Retina hi-res mode"))
                     .font(.caption)
                     .fontWeight(.semibold)
             }
-            .disabled(!hasRetinaScreen)
-            Text(hasRetinaScreen
-                ? "Default for retina-screen, disable it if you want better performance at the cost of clarity."
-                : "Not available — no retina screen detected.")
+            Text(L("Enable high resolution for retina screens. Game compatibility might be affected."))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -246,7 +251,7 @@ struct GameLaunchSheet: View {
 
     private var metalHudToggle: some View {
         Toggle(isOn: $metalHud) {
-            Text("Metal HUD")
+            Text(L("Metal HUD"))
                 .font(.caption)
                 .fontWeight(.semibold)
         }
@@ -262,22 +267,33 @@ struct GameLaunchSheet: View {
             Text("Forces macOS Game Mode on while the game runs (prioritizes CPU/GPU and reduces input latency). macOS can't auto-detect Wine games as games, so we enable it for you.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+    private var advancedDebugToggle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: $advancedDebug) {
+                Text(L("Advanced debug (verbose logs)"))
+                    .font(.caption)
+                    .fontWeight(.semibold)
+            }
+            Text(L("Runs with WINEDEBUG=+loaddll,+module,+seh instead of -all (shows DLL load failures, missing imports, crashes) and adds -log for Unreal games. Use this when a game won't start, then check the per-game log in ~/Library/Logs/MacNCheese."))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var environmentSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Environment Variables:")
+            Text(L("Environment Variables:"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
 
             Toggle(isOn: $advertiseAVX) {
-                Text("Advertise AVX2 / FMA / F16C")
+                Text(L("Advertise AVX2 / FMA / F16C"))
                     .font(.caption)
                     .fontWeight(.semibold)
             }
-            Text("Sets ROSETTA_ADVERTISE_AVX=1 so Rosetta exposes AVX2/FMA/F16C. Required by some AAA titles (e.g. God of War Ragnarök). Needs macOS 15+.")
+            Text(L("Sets ROSETTA_ADVERTISE_AVX=1 so Rosetta exposes AVX2/FMA/F16C. Required by some AAA titles (e.g. God of War Ragnarök). Needs macOS 15+."))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -297,7 +313,7 @@ struct GameLaunchSheet: View {
                     .background(.fill.tertiary)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            Text("KEY=value, one per line. Saved per game. Combined with the AVX toggle above.")
+            Text(L("KEY=value, one per line. Saved per game. Combined with the AVX toggle above."))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -305,24 +321,24 @@ struct GameLaunchSheet: View {
 
     private var synchronizationSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Synchronization:")
+            Text(L("Synchronization:"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
 
             Toggle(isOn: $enableEsync) {
-                Text("Enable ESync")
+                Text(L("Enable ESync"))
                     .font(.caption)
                     .fontWeight(.semibold)
             }
 
             Toggle(isOn: $enableMsync) {
-                Text("Enable MSync")
+                Text(L("Enable MSync"))
                     .font(.caption)
                     .fontWeight(.semibold)
             }
 
-            Text("MSync is macOS-specific and usually should not be combined with ESync.")
+            Text(L("MSync is macOS-specific and usually should not be combined with ESync."))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -333,14 +349,14 @@ struct GameLaunchSheet: View {
                 .padding(.top, 4)
 
             Picker("", selection: $steamMode) {
-                Text("Silent Steam").tag("silent")
-                Text("Open Steam").tag("open")
-                Text("No Steam").tag("none")
+                Text(L("Silent Steam")).tag("silent")
+                Text(L("Open Steam")).tag("open")
+                Text(L("No Steam")).tag("none")
             }
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            Text("Silent: background Steam (no window) — best for Steamworks games like cs2. Open: full Steam UI. No Steam: don't launch Steam — best for standalone UE5/Unity games where background Steam interferes.")
+            Text(L("Silent: background Steam (no window) — best for Steamworks games like cs2. Open: full Steam UI. No Steam: don't launch Steam — best for standalone UE5/Unity games where background Steam interferes."))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -348,8 +364,24 @@ struct GameLaunchSheet: View {
 
     private var buttonRow: some View {
         HStack {
-            Button("Cancel") { dismiss() }
+            Button(L("Cancel")) { dismiss() }
                 .keyboardShortcut(.cancelAction)
+
+            // Manually-added (non-Steam) games can be removed from the library
+            // here too (same action as the tile's right-click menu) — list entry
+            // only, the files on disk are untouched.
+            if game.isManual {
+                Button(role: .destructive) {
+                    guard let prefix = backend.activePrefix, let exe = game.exe else { return }
+                    Task {
+                        await backend.removeManualGame(prefix: prefix, exe: exe)
+                        dismiss()
+                    }
+                } label: {
+                    Label(L("Remove from Library"), systemImage: "trash")
+                }
+                .help(L("Removes the game from this list only — no files are deleted."))
+            }
 
             Spacer()
 
@@ -362,13 +394,15 @@ struct GameLaunchSheet: View {
                     } else {
                         Image(systemName: "play.fill")
                     }
-                    Text("Play")
+                    // While launching we may be blocking on Steam reaching
+                    // [Logged On] — say so instead of a bare spinner.
+                    Text(isLaunching ? launchingLabel : L("Play"))
                         .fontWeight(.bold)
                 }
-                .frame(minWidth: 100)
+                .frame(minWidth: 130)
             }
             .buttonStyle(.borderedProminent)
-            .tint(.cyan)
+            .tint(Color.brand)
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
             .disabled((game.epicAppName == nil && effectiveExe.isEmpty) || isLaunching)
@@ -386,6 +420,7 @@ struct GameLaunchSheet: View {
         if let r = cfg["retina_mode"] as? Bool { retinaMode = r }
         if let h = cfg["metal_hud"] as? Bool { metalHud = h }
         if let gm = cfg["game_mode"] as? Bool { gameMode = gm }
+        if let d = cfg["debug"] as? Bool { advancedDebug = d }
         if let e = cfg["esync"] as? Bool { enableEsync = e }
         if let m = cfg["msync"] as? Bool { enableMsync = m }
         if let env = cfg["custom_env"] as? String { customEnv = env }
@@ -403,6 +438,7 @@ struct GameLaunchSheet: View {
             "retina_mode": retinaMode,
             "metal_hud": metalHud,
             "game_mode": gameMode,
+            "debug": advancedDebug,
             "esync": sync.esync,
             "msync": sync.msync,
             "custom_env": customEnv,
@@ -488,7 +524,8 @@ struct GameLaunchSheet: View {
                     gameMode: gameMode,
                     esync: sync.esync,
                     msync: sync.msync,
-                    customEnv: env
+                    customEnv: env,
+                    debug: advancedDebug
                 )
             } else {
                 let exe = effectiveExe
@@ -507,7 +544,8 @@ struct GameLaunchSheet: View {
                     gameName: game.name,
                     steamAppId: game.appid,
                     steamMode: steamMode,
-                    customEnv: env
+                    customEnv: env,
+                    debug: advancedDebug
                 )
             }
             isLaunching = false
@@ -536,19 +574,16 @@ struct GameLaunchSheet: View {
 
     private func engineLabel(_ b: GraphicsBackend) -> String {
         switch b.backendId {
-        case "auto":          return "Auto (recommended)"
-        case "wine_d3dmetal": return "Wine D3DMetal (CS2 / Source 2 — auto-launches Steam)"
-        case "wine_devel":    return "Wine Devel (OpenGL games)"
-        case "dxmt":          return "DXMT (Balanced)"
-        case "d3dmetal3":     return "D3DMetal (Best Performance)"
-        case "dxvk":          return "DXVK (Best Compatibility)"
-        case "vkd3d-proton":  return "VKD3D-Proton (D3D12)"
-        case "wine":          return "Wine Builtin"
-        case "mesa:llvmpipe": return "Mesa llvmpipe (CPU)"
-        case "mesa:zink":     return "Mesa Zink (Vulkan)"
-        case "mesa:swr":      return "Mesa SWR (CPU/AVX)"
-        case "gptk":          return "GPTK (D3DMetal, copy DLLs)"
-        case "gptk_full":     return "GPTK Full (Apple Toolkit)"
+        case "auto":          return L("Auto (recommended)")
+        case "wine_devel":    return L("Wine Devel (OpenGL games)")
+        case "dxmt":          return L("DXMT (Balanced)")
+        case "dxmt_openxr":   return L("DXMT + OpenXR (VR, monofunc)")
+        case "d3dmetal3":     return L("D3DMetal (Best Performance)")
+        case "dxvk":          return L("DXVK (Best Compatibility)")
+        case "vkd3d-proton":  return L("VKD3D-Proton (D3D12)")
+        case "wine":          return L("Wine Builtin")
+        case "gptk":          return L("GPTK (D3DMetal, copy DLLs)")
+        case "gptk_full":     return L("GPTK Full (Apple Toolkit)")
         default:              return b.label
         }
     }

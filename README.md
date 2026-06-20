@@ -7,7 +7,7 @@
  The proton mac never had -no subscriptions, no paywalls, just games.
 
 ### A configurable runtime that can run steam games for free.
-MacNCheese is a simple app that lets you install and play Windows games on your Mac using Wine, with all the graphics stuff (DXVK, MoltenVK, Vulkan…) handled automatically so you don't have to touch the terminal.
+MacNCheese is a simple app that lets you install and play Windows games on your Mac using Wine, with all the graphics stuff (DXVK, MoltenVK,D3DMetal, DXMT…) handled automatically so you don't have to touch the terminal.
 
  **Need help?** Join the [Discord server](https://discord.gg/UPpVShYDaf)!
 
@@ -29,7 +29,7 @@ Go to [store.steampowered.com](https://store.steampowered.com/about/) and downlo
 3. Drag **MacNCheese** into your **Applications** folder
 4. Open the app from Applications
 
-### ⚠️ Mac says the app "can't be verified"?
+### Mac says the app "can't be verified"?
 That's just macOS being overprotective. Here's how to fix it:
 
 1. Go to **System Settings** → **Privacy & Security**
@@ -44,43 +44,43 @@ Once the app is open, go to settings setup and everything that there is select i
 ### Step 4 — Install Steam
 Click the **Install Steam** / **Run installer** button. The Steam installer will pop up — go through it like normal and log into your Steam account when it asks.
 
->  **To open Steam later**, go ti settings **Bottles* and scroll down you should see **Run installer**
+>  **To open Steam Setup / Start installation later**, go to settings **Bottles* and scroll down you should see **Run installer**
 
 ### Step 5 — Install & launch your game
 1. Open Steam (top of the app), find your game, and install it
 2. Come back to MacNCheese — your game should appear in the list
 3. Select it and hit **Launch**. Or you could **Launch from steam** to test our newest implementation **D3DMETAL**(Apples technology)
 
-> **Not sure which backend to pick?** Just leave it on **Auto** — it'll figure it out.
+> **Not sure which backend to pick?** Just leave it on **Auto** - it'll figure it out.
 
 ---
 
 ##  FAQ
 
-## Mewgenics runs.
-Wait like 30 seconds for startup make sure to launch with silent steam.
+## Does Mewgenics run on macndcheese?
+Wait like 30 seconds for startup make sure to launch with silent steam. Use the custom OpenGL wine backend and make sure to change the main wine with the custom OpenGL backend.
 
 
 
-### 🤔 What even is this?
+###  What even is this?
 MacNCheese is a free launcher that runs Windows games on macOS using Wine. It automatically sets up all the technical stuff (graphics translation layers, DLL overrides, etc.) so you don't have to.
 ### Is it free?
-100% free and open source, forever.
+100% free and open source.
 
 
 
 ### Is it a replacement for Whisky?
-No not at all its a one of its own architectures and is completely different steam launch you can call this "Proton that mac never had"
+No not at all its a one of its own architectures and is completely different steam launch you can call this "Proton that mac never had" 
 
 ### What kinds of games work best?
 - DirectX 11 games (most common)
 - Unity games
-- DirectX 12 games (with VKD3D-Proton)
-- DirectX 9 games (hit or miss)
+- DirectX 12 games (with D3DMetal)
+- DirectX 9 games (Most likely to run on DXMT but mostly no)
 - Games with kernel-level anti-cheat (EAC, BattlEye, Vanguard) — these will **not** work
 
 ### Why don't anti-cheat games work?
-Anti-cheat software like Easy Anti-Cheat and BattlEye require deep Windows system access that Wine can't provide. This is a Wine limitation, not a MacNCheese one.
+Anti-cheat software like Easy Anti-Cheat and BattlEye require deep Windows system access that wine can't provide. For few cases this is indeed a macndcheese issiue but games like marvel rivals do not work due to anticheat on every wine wrapper
 
 ### Does it work on Intel Macs?
 Officially, **no** — MacNCheese is built and tested for **Apple Silicon** (M1, M2, M3, M4…). Intel Macs are not the target. You *might* get it running from source (see below), but it's not supported.
@@ -91,10 +91,10 @@ Leave it on **Auto** and let the app decide. If you're curious:
 | Backend | Use it for |
 |---|---|
 | **DXVK** | Most DirectX 10/11 games |
-| **VKD3D-Proton** | DirectX 12 games |
+| **VKD3D-Proton** | DirectX 12 games | (STILL BEING WORKED ON AND WILL BE RENAMED TO MoltenVKD3D-proton (Aka MVKD3D-P)
 | **GPTK(Launching from steam)** | DirectX 11/12 games|
 | **DXMT** | Experimental DX11 via Metal (bleeding edge) |
-| **Mesa** | Fallback / debugging |
+| **Mesa** | Fallback / debugging | (Will no longer be supported)
 
 ### My game says "DirectX 11 not available"
 The graphics backend didn't load properly. Try:
@@ -120,13 +120,13 @@ Because setting this up manually is painful, repetitive, and full of obscure com
 
 **Run from source:**
 ```bash
-bash install.sh
+bash buildapp.sh
 ```
 
 **Manual full setup (the hard way):**
 
 <details>
-<summary>Click to expand — only if you enjoy suffering 😅</summary>
+<summary>Click to expand — only if you enjoy suffering 😅(DXVK NOT DXMT OUTDATED!!!!!!)</summary>
 
 ### 1. Install dependencies
 ```bash

@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum InstallerPathStore {
+enum InstallerPathStore {
     static let dxvkSrcKey = "installerPaths.dxvkSrc"
     static let dxvkInstallKey = "installerPaths.dxvkInstall"
     static let dxvkInstall32Key = "installerPaths.dxvkInstall32"
@@ -43,9 +43,22 @@ private enum InstallerPathStore {
         }
         return stored
     }
+
+    /// The Mesa Windows build the installer pulls when "Mesa" is selected.
+    static let mesaURL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
+
+    /// Locate the bundled installer.sh (next to the app Resources or the source
+    /// repo). Returns nil when neither exists. Shared by the Setup tab and the
+    /// first-run onboarding installer so both look in the same places.
+    static func installerScriptPath() -> String? {
+        let home = NSHomeDirectory()
+        let resourcePath = Bundle.main.resourcePath ?? Bundle.main.bundlePath
+        let candidates = [resourcePath + "/installer.sh", home + "/macndcheese/installer.sh"]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
 }
 
-private struct InstallerPaths {
+struct InstallerPaths {
     let dxvkSrc: String
     let dxvkInstall64: String
     let dxvkInstall32: String
@@ -58,6 +71,7 @@ private struct InstallerPaths {
 
 struct SettingsSheet: View {
     @EnvironmentObject var backend: BackendClient
+    @EnvironmentObject var loc: LocalizationManager
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab = "bottle"
 
@@ -65,7 +79,7 @@ struct SettingsSheet: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Settings")
+                Text(L("Settings"))
                     .font(.title2)
                     .fontWeight(.bold)
                 Spacer()
@@ -80,12 +94,12 @@ struct SettingsSheet: View {
 
             // Tab picker
             Picker("", selection: $selectedTab) {
-                Text("Bottle").tag("bottle")
-                Text("Paths").tag("paths")
-                Text("Setup").tag("setup")
-                Text("D3DMetal").tag("d3dmetal")
-                Text("Diagnose").tag("diagnose")
-                Text("Logs").tag("logs")
+                Text(L("Bottle")).tag("bottle")
+                Text(L("Paths")).tag("paths")
+                Text(L("Setup")).tag("setup")
+                Text(L("Diagnose")).tag("diagnose")
+                Text(L("Language")).tag("language")
+                Text(L("Logs")).tag("logs")
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
@@ -95,11 +109,11 @@ struct SettingsSheet: View {
             // Tab content
             Group {
                 switch selectedTab {
-                case "bottle": BottleSettingsTab()
+                case "bottle": BottleSettingsTab(selectedTab: $selectedTab)
                 case "paths": PathsSettingsTab()
                 case "setup": SetupSettingsTab()
-                case "d3dmetal": D3DMetalSettingsTab()
                 case "diagnose": DiagnoseSettingsTab()
+                case "language": LanguageSettingsTab()
                 case "logs": LogsSettingsTab()
                 default: EmptyView()
                 }
@@ -108,167 +122,31 @@ struct SettingsSheet: View {
         }
         .frame(width: 680, height: 620)
         .background(.ultraThinMaterial)
+        .tint(.brand)
     }
 }
 
-private struct D3DMetalKnob: Identifiable {
-    let id: String
-    let label: String
-    let help: String
-    let defaultValue: Bool
-    let danger: String?
-}
 
-private let d3dmetalKnobs: [D3DMetalKnob] = [
-    .init(id: "WINE_D3DMETAL_055D_CIRCUIT_BREAKER",
-          label: "Kernel-safety circuit breaker",
-          help: "MUST be ON. Without this, the shim leaks mach exception ports into the kernel data.kalloc.512 zone; after 5–15 min the Mac KERNEL PANICS.",
-          defaultValue: true,
-          danger: "Disabling can KERNEL PANIC your Mac"),
-    .init(id: "WINE_D3DMETAL_USE_PTHREAD_SHIM",
-          label: "pthread / mach-exc shim",
-          help: "Required for cs2 / Source 2. Auto-disabled for UE5 -Win64-Shipping.exe games (where it breaks Lyra-class titles).",
-          defaultValue: true, danger: nil),
-    .init(id: "WINE_D3DMETAL_USE_PTHREAD_SELF_INTERPOSE",
-          label: "pthread self-interpose",
-          help: "OFF for cs2 (shim's SIGSEGV handler kills wineboot/Steam). Rarely needs to be ON.",
-          defaultValue: false, danger: nil),
-    .init(id: "WINE_D3DMETAL_USE_IOKIT_OBSERVER",
-          label: "IOKit setQueue observer",
-          help: "Off — observer caused a vectored-handlers deadlock in cs2. Shim handles AGX nulls itself.",
-          defaultValue: false, danger: nil),
-    .init(id: "WINE_D3DMETAL_NO_PATCH058",
-          label: "Disable PATCH-058 (WEC wake synth)",
-          help: "PATCH-058 writes 1 to callback slots; cs2 then calls 1 as a function pointer and crashes. Keep disabled.",
-          defaultValue: true, danger: nil),
-    .init(id: "WINE_D3DMETAL_NO_PATCH044V2",
-          label: "Disable PATCH-044 v2 (bogus-stack abort)",
-          help: "Stops the early abort that nukes cs2 during init.",
-          defaultValue: true, danger: nil),
-    .init(id: "WINE_D3DMETAL_NO_PATCH051",
-          label: "Disable PATCH-051 (libd3dshared 16ms poll)",
-          help: "Without this, D3DMetalWineThread busy-loops at ~100 % CPU. Native blocking is more efficient.",
-          defaultValue: true, danger: nil),
-    .init(id: "WINE_D3DMETAL_FORCE_VISIBLE",
-          label: "Force visible windows",
-          help: "Make D3DMetal-spawned game windows visible (otherwise some are created with onscreen=0).",
-          defaultValue: true, danger: nil),
-    .init(id: "WINE_D3DMETAL_NULL_FP_SKIP",
-          label: "Skip handlers triggered by NULL FP",
-          help: "Skips fault handlers that fire constantly during cs2 init.",
-          defaultValue: true, danger: nil),
-    .init(id: "DONT_BREAK_ON_ASSERT",
-          label: "Suppress Steam client asserts",
-          help: "Stops tier0_s64.dll from breaking into the assert dialog (notably BMainLoop watchdog at >15 s IPC stall).",
-          defaultValue: true, danger: nil),
-    .init(id: "WINE_D3DMETAL_NO_STEAM_HACK",
-          label: "Disable Steam-specific HACK 24/25",
-          help: "Stops HACK 24/25 from perturbing Steam's argv when Steam launches in this prefix.",
-          defaultValue: true, danger: nil),
-    .init(id: "WINE_D3DMETAL_SKIP_WINEBOOT",
-          label: "Skip wineboot on launch",
-          help: "Assumes the prefix is initialized. Avoids the wineserver crash that happens when wineboot tries to take over an already-running wineserver in the same prefix.",
-          defaultValue: true, danger: nil),
-]
 
-struct D3DMetalSettingsTab: View {
-    @EnvironmentObject var backend: BackendClient
-    @State private var values: [String: Bool] = [:]
-    @State private var loaded = false
-    @State private var saving = false
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "cube.transparent")
-                        .font(.system(size: 26))
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Wine D3DMetal Knobs")
-                            .font(.title3).fontWeight(.semibold)
-                        Text("Per-launch env vars passed to the wine-d3dmetal backend. These defaults reflect the proven-good combo for cs2 + UE5. Touch only if you know what you're doing.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Button("Reset all to defaults") {
-                    for k in d3dmetalKnobs { values[k.id] = k.defaultValue }
-                    save()
-                }
-                .controlSize(.small)
-
-                Divider()
-
-                ForEach(d3dmetalKnobs) { knob in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Toggle(isOn: Binding(
-                            get: { values[knob.id] ?? knob.defaultValue },
-                            set: { newVal in
-                                values[knob.id] = newVal
-                                save()
-                            }
-                        )) {
-                            HStack {
-                                Text(knob.label).font(.callout).fontWeight(.medium)
-                                if let danger = knob.danger {
-                                    Text(danger)
-                                        .font(.caption2)
-                                        .foregroundStyle(.red)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(.red.opacity(0.12), in: .capsule)
-                                }
-                            }
-                        }
-                        .toggleStyle(.switch)
-                        Text(knob.help)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(knob.id)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.vertical, 4)
-                    Divider()
-                }
-            }
-            .padding(20)
-        }
-        .task {
-            if !loaded {
-                if let cfg = await backend.getD3DMetalSettings() {
-                    values = cfg
-                }
-                loaded = true
-            }
-        }
-    }
-
-    private func save() {
-        guard loaded else { return }
-        saving = true
-        Task {
-            await backend.setD3DMetalSettings(values)
-            saving = false
-        }
-    }
-}
 
 // MARK: - Bottle Tab
 
 struct BottleSettingsTab: View {
     @EnvironmentObject var backend: BackendClient
+    @Binding var selectedTab: String
     @State private var bottleName = ""
     @State private var launcherExe = ""
     @State private var iconPath = ""
     @State private var wineBinary = "auto"
     @State private var metalHud = false
+    @State private var unifiedEngine = true
+    @State private var globalBackend = "d3dmetal3"
     @State private var isInitializing = false
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
     @State private var isMoving = false
+    @State private var wineDetection: WineDetection?
+    @State private var isDetectingWine = false
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -280,7 +158,7 @@ struct BottleSettingsTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let bottle = activeBottle {
                     // Prefix path (read-only)
-                    SettingsRow(label: "Prefix path") {
+                    SettingsRow(label: L("Prefix path")) {
                         Text(bottle.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -288,60 +166,81 @@ struct BottleSettingsTab: View {
                     }
 
                     // Bottle name
-                    SettingsRow(label: "Bottle Name") {
-                        TextField("Display name", text: $bottleName)
+                    SettingsRow(label: L("Bottle Name")) {
+                        TextField(L("Display name"), text: $bottleName)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { saveBottleConfig() }
                     }
 
                     // Launcher exe
-                    SettingsRow(label: "Launcher exe") {
+                    SettingsRow(label: L("Launcher exe")) {
                         HStack {
-                            TextField("Leave empty for Steam (default)", text: $launcherExe)
+                            TextField(L("Leave empty for Steam (default)"), text: $launcherExe)
                                 .textFieldStyle(.roundedBorder)
                                 .onSubmit { saveBottleConfig() }
-                            Button("Browse") { browseLauncherExe() }
+                            Button(L("Browse")) { browseLauncherExe() }
                         }
                     }
 
                     // Custom icon
-                    SettingsRow(label: "Custom icon (PNG)") {
+                    SettingsRow(label: L("Custom icon (PNG)")) {
                         HStack {
-                            TextField("Leave empty for default", text: $iconPath)
+                            TextField(L("Leave empty for default"), text: $iconPath)
                                 .textFieldStyle(.roundedBorder)
                                 .onSubmit { saveBottleConfig() }
-                            Button("Browse") { browseIcon() }
+                            Button(L("Browse")) { browseIcon() }
                         }
                     }
 
-                    // Wine version
-                    SettingsRow(label: "Wine") {
-                        Picker("", selection: $wineBinary) {
-                            Text("Auto (prefer Stable)").tag("auto")
-                            Text("Stable").tag("stable")
-                            Text("Staging").tag("staging")
-                        }
-                        .labelsHidden()
-                    }
+                    // Wine version — detection-driven: reflects which Wine
+                    // builds are actually installed (with their real versions).
+                    WineSelector(
+                        selection: $wineBinary,
+                        detection: wineDetection,
+                        isLoading: isDetectingWine,
+                        onChange: { saveBottleConfig() },
+                        onInstall: { selectedTab = "setup" },
+                        onRefresh: { loadWineDetection() }
+                    )
 
                     // Metal HUD (global for this prefix)
                     Toggle(isOn: $metalHud) {
-                        Text("Metal HUD")
+                        Text(L("Metal HUD"))
                             .font(.body)
                     }
                     .onChange(of: metalHud) { saveBottleConfig() }
 
+                    // Unified Steam engine: one wine renders Steam via DXMT and
+                    // routes games to the global backend below. Steam stays DXMT.
+                    Toggle(isOn: $unifiedEngine) {
+                        Text(L("Unified Steam engine (Steam always DXMT)"))
+                            .font(.body)
+                    }
+                    .onChange(of: unifiedEngine) { saveBottleConfig() }
+
+                    if unifiedEngine {
+                        SettingsRow(label: L("Global game backend")) {
+                            Picker("", selection: $globalBackend) {
+                                Text("D3DMetal").tag("d3dmetal3")
+                                Text("DXMT").tag("dxmt")
+                                Text("DXVK").tag("dxvk")
+                            }
+                            .pickerStyle(.segmented)
+                            .onChange(of: globalBackend) { saveBottleConfig() }
+                        }
+                    }
+
                     Divider()
 
                     // Action buttons
-                    Text("Prefix Tools")
+                    Text(L("Prefix Tools"))
                         .font(.headline)
                         .padding(.top, 4)
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         ActionButton(
-                            title: "Initialize Prefix",
-                            subtitle: "Run wineboot to create drive_c",
+                            title: L("Initialize Prefix"),
+                            subtitle: L("Run wineboot to create drive_c"),
                             icon: "plus.circle",
                             isLoading: isInitializing
                         ) {
@@ -353,8 +252,8 @@ struct BottleSettingsTab: View {
                         }
 
                         ActionButton(
-                            title: "Clean Prefix",
-                            subtitle: "Run wineboot -u to update",
+                            title: L("Clean Prefix"),
+                            subtitle: L("Run wineboot -u to update"),
                             icon: "arrow.triangle.2.circlepath",
                             isLoading: isCleaning
                         ) {
@@ -366,8 +265,8 @@ struct BottleSettingsTab: View {
                         }
 
                         ActionButton(
-                            title: "Winecfg",
-                            subtitle: "Open Wine configuration",
+                            title: L("Winecfg"),
+                            subtitle: L("Open Wine configuration"),
                             icon: "slider.horizontal.3",
                             isLoading: isOpeningWinecfg
                         ) {
@@ -379,24 +278,24 @@ struct BottleSettingsTab: View {
                         }
 
                         ActionButton(
-                            title: "Open SteamSetup",
-                            subtitle: "Install or repair Steam",
+                            title: L("Open SteamSetup"),
+                            subtitle: L("Install or repair Steam"),
                             icon: "arrow.down.circle"
                         ) {
                             openSteamSetup(prefix: bottle.path)
                         }
 
                         ActionButton(
-                            title: "Open in Finder",
-                            subtitle: "Show prefix folder",
+                            title: L("Open in Finder"),
+                            subtitle: L("Show prefix folder"),
                             icon: "folder"
                         ) {
                             Task { await backend.openPrefixFolder(prefix: bottle.path) }
                         }
 
                         ActionButton(
-                            title: "Move Prefix",
-                            subtitle: "Move this bottle folder",
+                            title: L("Move Prefix"),
+                            subtitle: L("Move this bottle folder"),
                             icon: "folder.badge.gearshape",
                             isLoading: isMoving
                         ) {
@@ -404,8 +303,8 @@ struct BottleSettingsTab: View {
                         }
 
                         ActionButton(
-                            title: "Kill Wineserver",
-                            subtitle: "Force stop all Wine processes",
+                            title: L("Kill Wineserver"),
+                            subtitle: L("Force stop all Wine processes"),
                             icon: "xmark.octagon",
                             tint: .red
                         ) {
@@ -413,8 +312,8 @@ struct BottleSettingsTab: View {
                         }
 
                         ActionButton(
-                            title: "Delete Prefix",
-                            subtitle: "Permanently remove from disk",
+                            title: L("Delete Prefix"),
+                            subtitle: L("Permanently remove from disk"),
                             icon: "trash",
                             tint: .red
                         ) {
@@ -425,14 +324,14 @@ struct BottleSettingsTab: View {
                     // Save button
                     HStack {
                         Spacer()
-                        Button("Save Changes") { saveBottleConfig() }
+                        Button(L("Save Changes")) { saveBottleConfig() }
                             .buttonStyle(.borderedProminent)
-                            .tint(.cyan)
+                            .tint(Color.brand)
                     }
                     .padding(.top, 8)
 
                 } else {
-                    Text("Select a bottle in the sidebar to configure it.")
+                    Text(L("Select a bottle in the sidebar to configure it."))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 40)
@@ -440,8 +339,16 @@ struct BottleSettingsTab: View {
             }
             .padding(20)
         }
-        .onAppear { loadFields() }
+        .onAppear { loadFields(); loadWineDetection() }
         .onChange(of: backend.activePrefix) { loadFields() }
+    }
+
+    private func loadWineDetection() {
+        isDetectingWine = true
+        Task {
+            wineDetection = await backend.detectWine()
+            isDetectingWine = false
+        }
     }
 
     private func loadFields() {
@@ -453,6 +360,8 @@ struct BottleSettingsTab: View {
             Task {
                 if let config = await backend.getBottleConfig(path: bottle.path) {
                     metalHud = config["metal_hud"] as? Bool ?? false
+                    unifiedEngine = (config["engine"] as? String ?? "unified") != "classic"
+                    globalBackend = config["default_backend"] as? String ?? "d3dmetal3"
                 }
             }
         }
@@ -461,13 +370,16 @@ struct BottleSettingsTab: View {
     private func saveBottleConfig() {
         guard let prefix = backend.activePrefix else { return }
         Task {
-            await backend.setBottleConfig(path: prefix, values: [
+            var vals: [String: Any] = [
                 "name": bottleName,
                 "launcher_exe": launcherExe,
                 "icon_path": iconPath,
                 "wine_binary": wineBinary,
                 "metal_hud": metalHud,
-            ])
+                "engine": unifiedEngine ? "unified" : "classic",
+            ]
+            if unifiedEngine { vals["default_backend"] = globalBackend }
+            await backend.setBottleConfig(path: prefix, values: vals)
         }
     }
 
@@ -496,7 +408,7 @@ struct BottleSettingsTab: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.exe]
         panel.canChooseFiles = true
-        panel.title = "Select SteamSetup.exe"
+        panel.title = L("Select SteamSetup.exe")
         panel.nameFieldStringValue = "SteamSetup.exe"
         if panel.runModal() == .OK, let url = panel.url {
             Task {
@@ -508,8 +420,8 @@ struct BottleSettingsTab: View {
     private func movePrefix(path: String) {
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
-        panel.title = "Move Prefix"
-        panel.prompt = "Move"
+        panel.title = L("Move Prefix")
+        panel.prompt = L("Move")
         panel.nameFieldStringValue = URL(fileURLWithPath: path).lastPathComponent
         panel.directoryURL = URL(fileURLWithPath: path).deletingLastPathComponent()
         if panel.runModal() == .OK, let url = panel.url {
@@ -539,14 +451,13 @@ struct PathsSettingsTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                PathRow(label: "DXVK source", path: $dxvkSrc, isDir: true)
-                PathRow(label: "DXVK install (64-bit)", path: $dxvkInstall, isDir: true)
-                PathRow(label: "DXVK install (32-bit)", path: $dxvkInstall32, isDir: true)
-                PathRow(label: "SteamSetup.exe", path: $steamSetup, isDir: false)
-                PathRow(label: "Mesa x64 dir", path: $mesaDir, isDir: true)
-                PathRow(label: "DXMT dir", path: $dxmtDir, isDir: true)
-                PathRow(label: "VKD3D-Proton dir", path: $vkd3dDir, isDir: true)
-                PathRow(label: "GPTK dir", path: $gptkDir, isDir: true)
+                PathRow(label: L("DXVK source"), path: $dxvkSrc, isDir: true)
+                PathRow(label: L("DXVK install (64-bit)"), path: $dxvkInstall, isDir: true)
+                PathRow(label: L("DXVK install (32-bit)"), path: $dxvkInstall32, isDir: true)
+                PathRow(label: L("SteamSetup.exe"), path: $steamSetup, isDir: false)
+                PathRow(label: L("DXMT dir"), path: $dxmtDir, isDir: true)
+                PathRow(label: L("VKD3D-Proton dir"), path: $vkd3dDir, isDir: true)
+                PathRow(label: L("GPTK dir"), path: $gptkDir, isDir: true)
             }
             .padding(20)
         }
@@ -566,7 +477,7 @@ struct PathRow: View {
             HStack {
                 TextField(label, text: $path)
                     .textFieldStyle(.roundedBorder)
-                Button("Browse") {
+                Button(L("Browse")) {
                     if isDir {
                         let panel = NSOpenPanel()
                         panel.canChooseFiles = false
@@ -599,27 +510,29 @@ struct SetupSettingsTab: View {
     @State private var wantTools = false
     @State private var wantWineStable = false
     @State private var wantWineStaging = false
-    @State private var wantWineD3DMetal = false
+    @State private var wantWineUnified = false
     @State private var wantWineDevel = false
     @State private var wantDxvk = false
     @State private var wantVkd3d = false
     @State private var wantGptkDlls = false
     @State private var wantDxmt = false
-    @State private var wantMesa = false
     @State private var wantWineOpenXR = false
+    @State private var wantDxmtOpenXR = false
+    @State private var wantMonadoRuntime = false
 
     // Baseline installed state (used to detect installs vs uninstalls)
     @State private var hadTools = false
     @State private var hadWineStable = false
     @State private var hadWineStaging = false
-    @State private var hadWineD3DMetal = false
+    @State private var hadWineUnified = false
     @State private var hadWineDevel = false
     @State private var hadDxvk = false
     @State private var hadVkd3d = false
     @State private var hadGptkDlls = false
     @State private var hadDxmt = false
-    @State private var hadMesa = false
     @State private var hadWineOpenXR = false
+    @State private var hadDxmtOpenXR = false
+    @State private var hadMonadoRuntime = false
 
     // Update availability per component
     @State private var toolsHasUpdate = false
@@ -640,27 +553,27 @@ struct SetupSettingsTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GroupBox("Quick Setup") {
+                GroupBox(L("Quick Setup")) {
                     HStack(spacing: 12) {
-                        Button("Minimal") {
-                            wantTools = true; wantWineStable = true
-                            wantDxvk = true; wantMesa = true
+                        Button(L("Minimal")) {
+                            wantTools = true; wantWineStable = true; wantWineUnified = true
+                            wantDxvk = true
                         }
                         .buttonStyle(.bordered)
-                        .help("Select: Tools, Wine Stable, DXVK, Mesa")
+                        .help(L("Select: Tools, Wine Stable, Wine Unified, DXVK"))
                         .disabled(isRunning)
-                        Button("Everything") {
+                        Button(L("Everything")) {
                             wantTools = true; wantWineStable = true; wantWineStaging = true
-                            wantDxvk = true; wantVkd3d = true
-                            wantGptkDlls = true; wantDxmt = true; wantMesa = true
+                            wantWineUnified = true; wantDxvk = true; wantVkd3d = true
+                            wantGptkDlls = true; wantDxmt = true
                         }
                         .buttonStyle(.bordered)
-                        .help("Select all components")
+                        .help(L("Select all components"))
                         .disabled(isRunning)
-                        Button("None") {
+                        Button(L("None")) {
                             wantTools = false; wantWineStable = false; wantWineStaging = false
-                            wantDxvk = false; wantVkd3d = false
-                            wantGptkDlls = false; wantDxmt = false; wantMesa = false
+                            wantWineUnified = false; wantDxvk = false; wantVkd3d = false
+                            wantGptkDlls = false; wantDxmt = false
                         }
                         .buttonStyle(.bordered)
                         .disabled(isRunning)
@@ -668,62 +581,67 @@ struct SetupSettingsTab: View {
                     .padding(8)
                 }
 
-                GroupBox("Tools") {
+                GroupBox(L("Tools")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        ComponentToggleRow("Tools (git, 7z, wget)", isOn: $wantTools,
+                        ComponentToggleRow(L("Tools (git, 7z, wget)"), isOn: $wantTools,
                                           installed: hadTools, updateAvailable: toolsHasUpdate)
                             .disabled(isRunning)
                     }
                     .padding(8)
                 }
 
-                GroupBox("Wine (Translation Engine)") {
+                GroupBox(L("Wine (Translation Engine)")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        ComponentToggleRow("Wine (Stable)", isOn: $wantWineStable,
+                        ComponentToggleRow(L("Wine (Stable)"), isOn: $wantWineStable,
                                           installed: hadWineStable, updateAvailable: wineStableHasUpdate)
                             .disabled(isRunning)
-                        ComponentToggleRow(stagingLatestName.map { "Wine (Staging — \($0))" } ?? "Wine (Staging)",
+                        ComponentToggleRow(stagingLatestName.map { String(format: L("Wine (Staging — %@)"), $0) } ?? L("Wine (Staging)"),
                                           isOn: $wantWineStaging,
                                           installed: hadWineStaging, updateAvailable: wineStagingHasUpdate)
                             .disabled(isRunning)
-                        ComponentToggleRow("Wine D3DMetal (MNC HACK 22 v3, ~473 MB)",
-                                          isOn: $wantWineD3DMetal,
-                                          installed: hadWineD3DMetal)
-                            .disabled(isRunning)
-                            .help("Patched Wine 11.0 that removes the gs.base swap so D3D11/12 games can talk to Apple's D3DMetal framework. Bundled with the app — unzips on install.")
-                        ComponentToggleRow("Wine Devel (SDL3/OpenGL, ~310 MB)",
+                        ComponentToggleRow(L("Wine Devel (SDL3/OpenGL, ~310 MB)"),
                                           isOn: $wantWineDevel,
                                           installed: hadWineDevel)
                             .disabled(isRunning)
-                            .help("Standalone Wine Staging 11.8 with the OpenGL 3.2+ macdrv patch, for SDL3/OpenGL games (e.g. Mewgenics). Downloaded on install. Independent build.")
+                            .help(L("Standalone Wine Staging 11.8 with the OpenGL 3.2+ macdrv patch, for SDL3/OpenGL games (e.g. Mewgenics). Downloaded on install. Independent build."))
                     }
                     .padding(8)
                 }
 
-                GroupBox("Graphics") {
+                GroupBox(L("Graphics")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        ComponentToggleRow(dxmtLatestName.map { "DXMT (\($0))" } ?? "DXMT",
+                        ComponentToggleRow(dxmtLatestName.map { String(format: L("DXMT (%@)"), $0) } ?? L("DXMT"),
                                           isOn: $wantDxmt, installed: hadDxmt, updateAvailable: dxmtHasUpdate)
                             .disabled(isRunning)
-                        ComponentToggleRow("DXVK", isOn: $wantDxvk, installed: hadDxvk)
+                        ComponentToggleRow(L("DXVK"), isOn: $wantDxvk, installed: hadDxvk)
                             .disabled(isRunning)
-                        ComponentToggleRow("VKD3D-Proton", isOn: $wantVkd3d, installed: hadVkd3d)
+                        ComponentToggleRow(L("VKD3D-Proton"), isOn: $wantVkd3d, installed: hadVkd3d)
                             .disabled(isRunning)
-                        ComponentToggleRow("GPTK DLLs (D3DMetal)", isOn: $wantGptkDlls, installed: hadGptkDlls)
+                        ComponentToggleRow(L("Wine Unified (Steam + games engine)"),
+                                          isOn: $wantWineUnified, installed: hadWineUnified)
                             .disabled(isRunning)
-                        ComponentToggleRow("Mesa", isOn: $wantMesa, installed: hadMesa)
-                            .disabled(isRunning)
+                            .help(L("One patched Wine 11.0 that renders Steam via DXMT and routes games to the chosen backend (D3DMetal/DXMT/DXVK). This is the default engine. Bundled with the app; installs into deps."))
                     }
                     .padding(8)
                 }
 
-                GroupBox("VR") {
+                GroupBox(L("VR")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        ComponentToggleRow("wineopenxr (D3D11 OpenXR bridge, builds from source)",
+                        ComponentToggleRow(L("wineopenxr (D3D11 OpenXR bridge, builds from source)"),
                                           isOn: $wantWineOpenXR,
                                           installed: hadWineOpenXR)
                             .disabled(isRunning)
-                            .help("Clones monofunc/wineopenxr, builds it (needs cmake + mingw-w64), and registers it as the active OpenXR runtime so D3D11 OpenXR apps can talk to a native macOS OpenXR runtime via DXMT.")
+                            .help(L("Clones monofunc/wineopenxr, builds it (needs cmake + mingw-w64), and registers it as the active OpenXR runtime so D3D11 OpenXR apps can talk to a native macOS OpenXR runtime via DXMT."))
+                        ComponentToggleRow(L("DXMT + OpenXR fork (monofunc/dxmt, builds from source)"),
+                                          isOn: $wantDxmtOpenXR,
+                                          installed: hadDxmtOpenXR)
+                            .disabled(isRunning)
+                            .help(L("Builds monofunc/dxmt (feature/openxr) — DXMT's Metal D3D11/10 translation plus OpenXR passthrough — with meson + mingw-w64 + llvm@15. Installs it as the \"DXMT + OpenXR (VR)\" graphics backend and pulls in wineopenxr so D3D11 VR apps reach the native macOS OpenXR runtime. Set DXMT_OPENXR_URL to install a prebuilt build instead."))
+                        ComponentToggleRow(L("Monado OpenXR runtime (x86_64, builds from source)"),
+                                          isOn: $wantMonadoRuntime,
+                                          installed: hadMonadoRuntime)
+                            .disabled(isRunning)
+                            .help(L("Builds Monado as an x86_64 OpenXR runtime and registers it. The wineopenxr bridge forwards D3D11 OpenXR to this runtime, which is loaded into the x86_64 (Rosetta) Wine process — so it MUST be x86_64. Without this, an arm64 system Monado fails with 'incompatible architecture' and VR won't start. Builds with cmake + the x86_64 Homebrew Vulkan/MoltenVK deps (slow)."))
                     }
                     .padding(8)
                 }
@@ -740,13 +658,13 @@ struct SetupSettingsTab: View {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                             }
                             Text(isRunning
-                                 ? (installCurrentAction.isEmpty ? "Starting..." : installCurrentAction)
-                                 : (installFailed ? "Finished with errors" : "Done!"))
+                                 ? (installCurrentAction.isEmpty ? L("Starting...") : installCurrentAction)
+                                 : (installFailed ? L("Finished with errors") : L("Done!")))
                                 .font(.caption)
                                 .foregroundColor(isRunning ? .secondary : (installFailed ? .red : .green))
                             Spacer()
                             if installDone {
-                                Button("Dismiss") { clearInstallState() }
+                                Button(L("Dismiss")) { clearInstallState() }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                             }
@@ -773,13 +691,13 @@ struct SetupSettingsTab: View {
                 HStack {
                     if isLoadingStatus {
                         ProgressView().controlSize(.small)
-                        Text("Checking components...")
+                        Text(L("Checking components..."))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Update") { runUpdate() }
+                    Button(L("Update")) { runUpdate() }
                         .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
+                        .tint(Color.brand)
                         .disabled(isRunning || isLoadingStatus)
                 }
             }
@@ -804,14 +722,15 @@ struct SetupSettingsTab: View {
                 hadTools = status.hasTools;             wantTools = status.hasTools
                 hadWineStable = status.hasWineStable;   wantWineStable = status.hasWineStable
                 hadWineStaging = status.hasWineStaging; wantWineStaging = status.hasWineStaging
-                hadWineD3DMetal = status.hasWineD3DMetal; wantWineD3DMetal = status.hasWineD3DMetal
+                hadWineUnified = status.hasWineUnified; wantWineUnified = status.hasWineUnified
                 hadWineDevel = status.hasWineDevel;     wantWineDevel = status.hasWineDevel
                 hadDxvk = status.hasDxvk64;             wantDxvk = status.hasDxvk64
                 hadVkd3d = status.hasVkd3d;             wantVkd3d = status.hasVkd3d
                 hadGptkDlls = status.hasGptkDlls;       wantGptkDlls = status.hasGptkDlls
                 hadDxmt = status.hasDxmt;               wantDxmt = status.hasDxmt
                 hadWineOpenXR = status.hasWineOpenXR;   wantWineOpenXR = status.hasWineOpenXR
-                hadMesa = status.hasMesa;               wantMesa = status.hasMesa
+                hadDxmtOpenXR = status.hasDxmtOpenXR;   wantDxmtOpenXR = status.hasDxmtOpenXR
+                hadMonadoRuntime = status.hasMonadoRuntime; wantMonadoRuntime = status.hasMonadoRuntime
             }
             isLoadingStatus = false
 
@@ -827,16 +746,13 @@ struct SetupSettingsTab: View {
     }
 
     private func runUpdate() {
-        let home = NSHomeDirectory()
-        let resourcePath = Bundle.main.resourcePath ?? Bundle.main.bundlePath
-        let candidates = [resourcePath + "/installer.sh", home + "/macndcheese/installer.sh"]
-        guard let installerPath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        guard let installerPath = InstallerPathStore.installerScriptPath() else {
             return
         }
 
-        let prefix = backend.activePrefix ?? home + "/wined"
+        let prefix = backend.activePrefix ?? NSHomeDirectory() + "/wined"
         let pathSettings = InstallerPathStore.current()
-        let mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
+        let mesaUrl = InstallerPathStore.mesaURL
 
         // Plan actions: install if toggled on, uninstall if toggled off but was installed
         var uninstallActions: [String] = []
@@ -848,16 +764,17 @@ struct SetupSettingsTab: View {
         plan(wantTools,       hadTools,       install: "install_tools",        uninstall: "uninstall_tools")
         plan(wantWineStable,  hadWineStable,  install: "install_wine",         uninstall: "uninstall_wine")
         plan(wantWineStaging, hadWineStaging, install: "install_wine_staging", uninstall: "uninstall_wine_staging")
-        plan(wantWineD3DMetal, hadWineD3DMetal,
-             install: "install_wine_d3dmetal", uninstall: "uninstall_wine_d3dmetal")
+        plan(wantWineUnified, hadWineUnified,
+             install: "install_wine_unified", uninstall: "uninstall_wine_unified")
         plan(wantWineDevel, hadWineDevel,
              install: "install_wine_devel", uninstall: "uninstall_wine_devel")
         plan(wantDxvk,        hadDxvk,        install: "install_dxvk",         uninstall: "uninstall_dxvk")
         plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
         plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
         plan(wantDxmt,        hadDxmt,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
-        plan(wantMesa,        hadMesa,        install: "install_mesa",         uninstall: "uninstall_mesa")
         plan(wantWineOpenXR,  hadWineOpenXR,  install: "install_wineopenxr",   uninstall: "uninstall_wineopenxr")
+        plan(wantDxmtOpenXR,  hadDxmtOpenXR,  install: "install_dxmt_openxr",  uninstall: "uninstall_dxmt_openxr")
+        plan(wantMonadoRuntime, hadMonadoRuntime, install: "install_monado_runtime", uninstall: "uninstall_monado_runtime")
 
         let allActions = uninstallActions + installActions
         guard !allActions.isEmpty else { return }
@@ -887,6 +804,11 @@ struct SetupSettingsTab: View {
             while true {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard let progress = await backend.getInstallProgress(jobId: jobId, offset: installLogOffset) else {
+                    // Lost contact: end in a terminal state so the Update button
+                    // re-enables instead of staying stuck on a spinner.
+                    installDone = true
+                    installFailed = true
+                    isRunning = false
                     break
                 }
                 installLogLines.append(contentsOf: progress.lines)
@@ -923,14 +845,14 @@ struct ComponentToggleRow: View {
             Toggle(label, isOn: $isOn)
             Spacer()
             if updateAvailable {
-                Text("Update available")
+                Text(L("Update available"))
                     .font(.caption2)
                     .foregroundStyle(.yellow)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(.yellow.opacity(0.15), in: Capsule())
             } else if installed {
-                Text("Installed")
+                Text(L("Installed"))
                     .font(.caption2)
                     .foregroundStyle(.green)
                     .padding(.horizontal, 6)
@@ -956,13 +878,19 @@ struct DiagnoseSettingsTab: View {
     @State private var repairDone = false
     @State private var repairFailed = false
     @State private var isRepairing = false
+    // What happens to running Wine when the app quits: "ask" | "kill" | "leave".
+    // Also settable from the quit alert's "Remember my choice" checkbox.
+    @AppStorage("quit_wine_behavior") private var quitWineBehavior = "ask"
+    // Power saver: stop the background (silent) Steam a few minutes after the
+    // last game exits — its CEF stack burns CPU/battery while idle.
+    @AppStorage("auto_stop_steam") private var autoStopSteam = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Diagnose Cheese")
+                        Text(L("Diagnose Cheese"))
                             .font(.headline)
                         Text(activePrefixLabel)
                             .font(.caption)
@@ -976,17 +904,77 @@ struct DiagnoseSettingsTab: View {
                     Button {
                         runDiagnosis()
                     } label: {
-                        Label(isDiagnosing ? "Scanning" : "Run Diagnosis", systemImage: "stethoscope")
+                        Label(isDiagnosing ? L("Scanning") : L("Run Diagnosis"), systemImage: "stethoscope")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.cyan)
+                    .tint(Color.brand)
                     .disabled(isDiagnosing || isRepairing)
+                }
+
+                // One-click fix for the most common support case: Steam won't
+                // start. Re-downloads the latest MacNCheese Wine and re-runs
+                // wineboot on the active bottle (existing repair-job pipeline).
+                GroupBox {
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                            .font(.title2)
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("Steam not launching? Run this simple fix!"))
+                                .fontWeight(.semibold)
+                            Text(L("Downloads the latest MacNCheese Wine and re-runs wineboot on this bottle."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            pendingRepair = CheeseRepairAction(
+                                id: "steam_simple_fix",
+                                title: L("Steam not launching? Run this simple fix!"),
+                                details: L("Downloads the latest MacNCheese Wine and re-runs wineboot on this bottle."),
+                                destructive: false,
+                                recommended: true
+                            )
+                        } label: {
+                            Label(L("Run Fix"), systemImage: "bolt.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                        .disabled(isDiagnosing || isRepairing)
+                    }
+                    .padding(6)
+                }
+
+                GroupBox(L("On Quit")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: $quitWineBehavior) {
+                            Text(L("Ask every time")).tag("ask")
+                            Text(L("Quit all Wine processes")).tag("kill")
+                            Text(L("Leave Wine running")).tag("leave")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Text(L("What happens to running games and Wine when you close MacNCheese."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                }
+
+                GroupBox(L("Power")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(L("Stop background Steam when no game is running"), isOn: $autoStopSteam)
+                        Text(L("Background Steam keeps using CPU after games quit; this stops it after 5 idle minutes. Steam you opened yourself is never touched."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(6)
                 }
 
                 if isDiagnosing {
                     HStack {
                         ProgressView().controlSize(.small)
-                        Text("Scanning MacNCheese, Wine and the selected prefix...")
+                        Text(L("Scanning MacNCheese, Wine and the selected prefix..."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -996,7 +984,7 @@ struct DiagnoseSettingsTab: View {
                     DiagnosisSummaryView(diagnosis: diagnosis)
 
                     if !diagnosis.repairs.isEmpty {
-                        GroupBox("Suggested Repairs") {
+                        GroupBox(L("Suggested Repairs")) {
                             VStack(spacing: 10) {
                                 ForEach(diagnosis.repairs) { repair in
                                     RepairActionRow(repair: repair, disabled: isDiagnosing || isRepairing) {
@@ -1008,7 +996,7 @@ struct DiagnoseSettingsTab: View {
                         }
                     }
 
-                    GroupBox("Checks") {
+                    GroupBox(L("Checks")) {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(diagnosis.checks) { check in
                                 DiagnosticCheckRow(check: check)
@@ -1021,7 +1009,7 @@ struct DiagnoseSettingsTab: View {
                         Image(systemName: "stethoscope")
                             .font(.largeTitle)
                             .foregroundStyle(.secondary)
-                        Text("Run a diagnosis to scan for missing components, corrupted Wine files and prefix loader failures.")
+                        Text(L("Run a diagnosis to scan for missing components, corrupted Wine files and prefix loader failures."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -1053,7 +1041,7 @@ struct DiagnoseSettingsTab: View {
             }
         }
         .confirmationDialog(
-            "Run Repair?",
+            L("Run Repair?"),
             isPresented: Binding(
                 get: { pendingRepair != nil },
                 set: { if !$0 { pendingRepair = nil } }
@@ -1063,7 +1051,7 @@ struct DiagnoseSettingsTab: View {
             Button(repair.title, role: repair.destructive ? .destructive : nil) {
                 runRepair(repair)
             }
-            Button("Cancel", role: .cancel) {
+            Button(L("Cancel"), role: .cancel) {
                 pendingRepair = nil
             }
         } message: { repair in
@@ -1093,15 +1081,15 @@ struct DiagnoseSettingsTab: View {
                 }
 
                 Text(isRepairing
-                     ? (repairCurrentAction.isEmpty ? "Repair running..." : repairCurrentAction)
-                     : (repairFailed ? "Repair finished with errors" : "Repair complete"))
+                     ? (repairCurrentAction.isEmpty ? L("Repair running...") : repairCurrentAction)
+                     : (repairFailed ? L("Repair finished with errors") : L("Repair complete")))
                     .font(.caption)
                     .foregroundColor(repairStatusColor)
 
                 Spacer()
 
                 if repairDone {
-                    Button("Dismiss") { clearRepairState() }
+                    Button(L("Dismiss")) { clearRepairState() }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
@@ -1199,7 +1187,7 @@ struct DiagnosisSummaryView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(diagnosis.summary)
                     .fontWeight(.semibold)
-                Text("Generated \(diagnosis.generatedAt)")
+                Text(String(format: L("Generated %@"), diagnosis.generatedAt))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1275,7 +1263,7 @@ struct RepairActionRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: repair.destructive ? "exclamationmark.arrow.triangle.2.circlepath" : "wrench.and.screwdriver")
-                .foregroundStyle(repair.destructive ? .orange : .cyan)
+                .foregroundStyle(repair.destructive ? .orange : Color.brand)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1283,12 +1271,12 @@ struct RepairActionRow: View {
                     Text(repair.title)
                         .fontWeight(.medium)
                     if repair.recommended {
-                        Text("Recommended")
+                        Text(L("Recommended"))
                             .font(.caption2)
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(Color.brand)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(.cyan.opacity(0.14), in: Capsule())
+                            .background(Color.brand.opacity(0.14), in: Capsule())
                     }
                 }
                 Text(repair.details)
@@ -1299,7 +1287,7 @@ struct RepairActionRow: View {
 
             Spacer()
 
-            Button("Run") { action() }
+            Button(L("Run")) { action() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(disabled)
@@ -1320,16 +1308,16 @@ struct LogsSettingsTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Wine Logs")
+                Text(L("Wine Logs"))
                     .font(.headline)
 
                 Spacer()
 
-                Button("Refresh") { scanLogs(); loadSelectedLog() }
+                Button(L("Refresh")) { scanLogs(); loadSelectedLog() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
-                Button("Open Log Folder") {
+                Button(L("Open Log Folder")) {
                     NSWorkspace.shared.open(URL(fileURLWithPath: logDir))
                 }
                 .buttonStyle(.bordered)
@@ -1338,7 +1326,7 @@ struct LogsSettingsTab: View {
 
             // Log file picker
             if !logFiles.isEmpty {
-                Picker("Log file:", selection: Binding(
+                Picker(L("Log file:"), selection: Binding(
                     get: { selectedLog ?? "" },
                     set: { selectedLog = $0; loadSelectedLog() }
                 )) {
@@ -1352,7 +1340,7 @@ struct LogsSettingsTab: View {
             // Log content
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(logText.isEmpty ? "No log content. Launch a game first." : logText)
+                    Text(logText.isEmpty ? L("No log content. Launch a game first.") : logText)
                         .font(.system(.caption, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
@@ -1366,7 +1354,7 @@ struct LogsSettingsTab: View {
             }
 
             HStack {
-                Toggle("Auto-refresh", isOn: $autoRefresh)
+                Toggle(L("Auto-refresh"), isOn: $autoRefresh)
                     .toggleStyle(.checkbox)
                     .font(.caption)
 
@@ -1436,14 +1424,162 @@ struct LogsSettingsTab: View {
             // Show last 500 lines to keep it responsive
             let lines = content.components(separatedBy: "\n")
             if lines.count > 500 {
-                logText = "... (\(lines.count - 500) lines truncated) ...\n" +
+                logText = String(format: L("... (%@ lines truncated) ..."), String(lines.count - 500)) + "\n" +
                     lines.suffix(500).joined(separator: "\n")
             } else {
                 logText = content
             }
         } catch {
-            logText = "Failed to read log: \(error.localizedDescription)"
+            logText = String(format: L("Failed to read log: %@"), error.localizedDescription)
         }
+    }
+}
+
+// MARK: - Wine Selector
+
+/// Detection-driven Wine picker for the Bottle tab. Shows Automatic / Stable /
+/// Staging, each annotated with whether that build is actually installed and its
+/// real `wine --version`. Builds that aren't installed can't be selected and
+/// offer a shortcut to the Setup tab to install them.
+struct WineSelector: View {
+    @Binding var selection: String
+    let detection: WineDetection?
+    let isLoading: Bool
+    let onChange: () -> Void
+    let onInstall: () -> Void
+    let onRefresh: () -> Void
+
+    private var autoSubtitle: String {
+        guard let detection else { return L("Picks the best installed Wine.") }
+        if let id = detection.autoResolvedId,
+           let variant = detection.variant(id) {
+            let version = variant.version.map { " (\($0))" } ?? ""
+            return String(format: L("Using %@%@"), variant.label, version)
+        }
+        if let path = detection.autoResolvedPath, !path.isEmpty {
+            return detection.autoResolvedVersion.map { String(format: L("Using %@"), $0) }
+                ?? L("Using a detected Wine build.")
+        }
+        return L("No Wine installed yet — install one below.")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(L("Wine"))
+                    .font(.caption).fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                if isLoading { ProgressView().controlSize(.mini) }
+                Spacer()
+                Button { onRefresh() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .foregroundStyle(.secondary)
+                .help(L("Re-scan installed Wine"))
+                .disabled(isLoading)
+            }
+
+            VStack(spacing: 0) {
+                WineOptionRow(
+                    title: L("Automatic"),
+                    subtitle: autoSubtitle,
+                    installed: true,
+                    version: nil,
+                    selectable: true,
+                    isSelected: selection == "auto",
+                    onSelect: { choose("auto") },
+                    onInstall: nil
+                )
+                Divider().padding(.leading, 34)
+                variantRow("stable", L("Wine Stable"))
+                Divider().padding(.leading, 34)
+                variantRow("staging", L("Wine Staging"))
+                Divider().padding(.leading, 34)
+                variantRow("devel", L("Wine Devel"))
+            }
+            .background(.black.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.06)))
+        }
+    }
+
+    private func variantRow(_ id: String, _ title: String) -> some View {
+        let variant = detection?.variant(id)
+        let installed = variant?.installed ?? false
+        // A not-installed build still renders as selected if it's the saved
+        // preference, so the user can see (and fix) the mismatch.
+        let selectable = installed || selection == id
+        return WineOptionRow(
+            title: title,
+            subtitle: nil,
+            installed: installed,
+            version: variant?.version,
+            selectable: selectable,
+            isSelected: selection == id,
+            onSelect: { choose(id) },
+            onInstall: installed ? nil : onInstall
+        )
+    }
+
+    private func choose(_ id: String) {
+        guard selection != id else { return }
+        selection = id
+        onChange()
+    }
+}
+
+private struct WineOptionRow: View {
+    let title: String
+    let subtitle: String?
+    let installed: Bool
+    let version: String?
+    let selectable: Bool
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onInstall: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                .font(.system(size: 16))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).fontWeight(.medium)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let version, installed {
+                    Text(version)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            if let onInstall, !installed {
+                Text(L("Not installed"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Button(L("Install")) { onInstall() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            } else if installed {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .help(L("Installed"))
+            }
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
+        .onTapGesture { if selectable { onSelect() } }
+        .opacity(selectable ? 1 : 0.5)
     }
 }
 

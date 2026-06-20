@@ -38,7 +38,7 @@ struct EpicLibraryView: View {
                 VStack(spacing: 16) {
                     Spacer().frame(height: 60)
                     ProgressView().controlSize(.large)
-                    Text("Fetching your library…")
+                    Text(L("Fetching your library…"))
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
                     Spacer()
@@ -50,7 +50,7 @@ struct EpicLibraryView: View {
                     Image(systemName: "tray")
                         .font(.system(size: 48))
                         .foregroundStyle(.secondary)
-                    Text("No games found")
+                    Text(L("No games found"))
                         .font(.title3)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -64,7 +64,7 @@ struct EpicLibraryView: View {
                             .overlay(
                                 RoundedRectangle(cornerRadius: 14)
                                     .stroke(
-                                        dropTargetAppid == game.appid ? Color.accentColor : Color.clear,
+                                        dropTargetAppid == game.appid ? Color.brand : Color.clear,
                                         lineWidth: 2
                                     )
                             )
@@ -215,12 +215,12 @@ struct EpicGameCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isHovering ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08),
+                    isHovering ? Color.brand.opacity(0.5) : Color.primary.opacity(0.08),
                     lineWidth: 1
                 )
         )
         .scaleEffect(isHovering ? 1.02 : 1.0)
-        .shadow(color: isHovering ? Color.accentColor.opacity(0.2) : .clear, radius: 12)
+        .shadow(color: isHovering ? Color.brand.opacity(0.2) : .clear, radius: 12)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in isHovering = hovering }
         .onAppear { loadCover() }
@@ -277,7 +277,7 @@ struct EpicGameCard: View {
                 if game.updateAvailable && game.isInstalled && !installing && !isPaused {
                     VStack {
                         HStack {
-                            Text("UPDATE")
+                            Text(L("UPDATE"))
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 5)
@@ -295,7 +295,7 @@ struct EpicGameCard: View {
                     VStack(spacing: 6) {
                         ProgressView().controlSize(.large).tint(.white)
                         if isHovering {
-                            Text("Launching…")
+                            Text(L("Launching…"))
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.white.opacity(0.9))
                                 .transition(.opacity)
@@ -307,7 +307,7 @@ struct EpicGameCard: View {
                             .font(.system(size: 36))
                             .foregroundStyle(.white.opacity(0.9))
                             .shadow(radius: 4)
-                        Text("Update")
+                        Text(L("Update"))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.9))
                     }
@@ -317,7 +317,7 @@ struct EpicGameCard: View {
                             .font(.system(size: 36))
                             .foregroundStyle(.white.opacity(0.9))
                             .shadow(radius: 4)
-                        Text("\(Int(installProgress))% — Paused")
+                        Text(String(format: L("%@%% — Paused"), String(Int(installProgress))))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.9))
                     }
@@ -327,20 +327,20 @@ struct EpicGameCard: View {
                             .font(.system(size: 28))
                             .foregroundStyle(.white.opacity(0.9))
                             .shadow(radius: 4)
-                        Text("Queue #\(queuePosition)")
+                        Text(String(format: L("Queue #%@"), String(queuePosition)))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.9))
                     }
                 } else if installing {
                     VStack(spacing: 6) {
-                        Text("\(Int(installProgress))%")
+                        Text(String(format: L("%@%%"), String(Int(installProgress))))
                             .font(.system(.title2, design: .monospaced).weight(.bold))
                             .foregroundStyle(.white)
                             .shadow(radius: 4)
                             .contentTransition(.numericText())
                             .animation(.default, value: installProgress)
                         if isHovering {
-                            Text("Installing…")
+                            Text(L("Installing…"))
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.white.opacity(0.9))
                         }
@@ -352,7 +352,7 @@ struct EpicGameCard: View {
                             .foregroundStyle(.white.opacity(0.9))
                             .shadow(radius: 4)
                         if isHovering {
-                            Text("Download")
+                            Text(L("Download"))
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.white.opacity(0.9))
                         }
@@ -376,32 +376,32 @@ struct EpicGameCard: View {
         .buttonStyle(.plain)
         .padding(8)
         .transition(.opacity.combined(with: .scale(scale: 0.8)))
-        .accessibilityLabel("Launch options for \(game.name)")
+        .accessibilityLabel(String(format: L("Launch options for %@"), game.name))
     }
 
     @ViewBuilder
     private var contextMenuItems: some View {
         if game.isInstalled {
-            Button("Launch") { launch() }
+            Button(L("Launch")) { launch() }
             if game.updateAvailable && !installing && !isPaused {
-                Button("Update") { startInstall() }
+                Button(L("Update")) { startInstall() }
             }
-            Button("Launch Options…") { showLaunchOptions = true }
+            Button(L("Launch Options…")) { showLaunchOptions = true }
             if let exe = game.exe {
-                Button("Show in Finder") {
+                Button(L("Show in Finder")) {
                     NSWorkspace.shared.selectFile(exe, inFileViewerRootedAtPath: "")
                 }
             }
         } else if isPaused {
-            Button("Resume Download") { resumeInstall() }
-            Button("Cancel Download") { cancelInstall() }
+            Button(L("Resume Download")) { resumeInstall() }
+            Button(L("Cancel Download")) { cancelInstall() }
         } else if !installing {
-            Button("Download & Install") { startInstall() }
+            Button(L("Download & Install")) { startInstall() }
         } else if isQueued {
-            Button("Cancel Download") { cancelInstall() }
+            Button(L("Cancel Download")) { cancelInstall() }
         } else {
-            Button("Pause Download") { pauseInstall() }
-            Button("Cancel Download") { cancelInstall() }
+            Button(L("Pause Download")) { pauseInstall() }
+            Button(L("Cancel Download")) { cancelInstall() }
         }
     }
 

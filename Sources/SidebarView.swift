@@ -14,16 +14,16 @@ struct SidebarView: View {
                 if let path { backend.selectBottle(path) }
             }
         )) {
-            Section("Bottles") {
+            Section(L("Bottles")) {
                 ForEach(backend.bottles) { bottle in
                     BottleRow(bottle: bottle)
                         .tag(bottle.path)
                         .contextMenu {
-                            Button("Kill Wineserver") {
+                            Button(L("Kill Wineserver")) {
                                 confirmKill = bottle
                             }
                             Divider()
-                            Button("Delete Bottle", role: .destructive) {
+                            Button(L("Delete Bottle"), role: .destructive) {
                                 confirmDelete = bottle
                             }
                         }
@@ -42,7 +42,7 @@ struct SidebarView: View {
                 Button {
                     showStore = true
                 } label: {
-                    Label("Store", systemImage: "storefront")
+                    Label(L("Store"), systemImage: "storefront")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
@@ -51,7 +51,7 @@ struct SidebarView: View {
                 Button {
                     showCreateBottle = true
                 } label: {
-                    Label("New Bottle", systemImage: "plus")
+                    Label(L("New Bottle"), systemImage: "plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -59,12 +59,12 @@ struct SidebarView: View {
             }
             .padding()
         }
-        .alert("Kill Wineserver?", isPresented: Binding(
+        .alert(L("Kill Wineserver?"), isPresented: Binding(
             get: { confirmKill != nil },
             set: { if !$0 { confirmKill = nil } }
         )) {
-            Button("Cancel", role: .cancel) { confirmKill = nil }
-            Button("Kill", role: .destructive) {
+            Button(L("Cancel"), role: .cancel) { confirmKill = nil }
+            Button(L("Kill"), role: .destructive) {
                 if let bottle = confirmKill {
                     Task { await backend.killWineserver(prefix: bottle.path) }
                 }
@@ -72,15 +72,15 @@ struct SidebarView: View {
             }
         } message: {
             if let bottle = confirmKill {
-                Text("This will forcefully stop all Wine processes for \"\(bottle.name)\".")
+                Text(String(format: L("This will forcefully stop all Wine processes for \"%@\"."), bottle.name))
             }
         }
-        .alert("Delete Bottle?", isPresented: Binding(
+        .alert(L("Delete Bottle?"), isPresented: Binding(
             get: { confirmDelete != nil },
             set: { if !$0 { confirmDelete = nil } }
         )) {
-            Button("Cancel", role: .cancel) { confirmDelete = nil }
-            Button("Delete", role: .destructive) {
+            Button(L("Cancel"), role: .cancel) { confirmDelete = nil }
+            Button(L("Delete"), role: .destructive) {
                 if let bottle = confirmDelete {
                     Task { await backend.deleteBottle(path: bottle.path) }
                 }
@@ -88,7 +88,7 @@ struct SidebarView: View {
             }
         } message: {
             if let bottle = confirmDelete {
-                Text("This will permanently delete \"\(bottle.name)\" and all its contents.")
+                Text(String(format: L("This will permanently delete \"%@\" and all its contents."), bottle.name))
             }
         }
     }
@@ -123,7 +123,7 @@ struct BottleRow: View {
                     .foregroundStyle(.blue)
             } else {
                 Image(systemName: "wineglass")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Color.brand)
             }
         }
         .padding(.vertical, 2)

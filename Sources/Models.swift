@@ -145,16 +145,19 @@ struct ComponentsStatus: Codable {
     let hasWine: Bool
     let hasWineStable: Bool
     let hasWineStaging: Bool
-    let hasWineD3DMetal: Bool
     let hasWineDevel: Bool
     let hasMesa: Bool
     let hasDxvk64: Bool
     let hasDxvk32: Bool
     let hasDxmt: Bool
+    let hasDxmtOpenXR: Bool
     let hasGptkDlls: Bool
     let hasD3dMetal3: Bool
+    let hasWineD3DMetal: Bool
+    let hasWineUnified: Bool
     let hasVkd3d: Bool
     let hasWineOpenXR: Bool
+    let hasMonadoRuntime: Bool
     let wineVersion: String?
 
     enum CodingKeys: String, CodingKey {
@@ -162,39 +165,114 @@ struct ComponentsStatus: Codable {
         case hasWine = "has_wine"
         case hasWineStable = "has_wine_stable"
         case hasWineStaging = "has_wine_staging"
-        case hasWineD3DMetal = "has_wine_d3dmetal"
         case hasWineDevel = "has_wine_devel"
         case hasMesa = "has_mesa"
         case hasDxvk64 = "has_dxvk64"
         case hasDxvk32 = "has_dxvk32"
         case hasDxmt = "has_dxmt"
+        case hasDxmtOpenXR = "has_dxmt_openxr"
         case hasGptkDlls = "has_gptk_dlls"
         case hasD3dMetal3 = "has_d3dmetal3"
+        case hasWineD3DMetal = "has_wine_d3dmetal"
+        case hasWineUnified = "has_wine_unified"
         case hasVkd3d = "has_vkd3d"
         case hasWineOpenXR = "has_wineopenxr"
+        case hasMonadoRuntime = "has_monado_runtime"
         case wineVersion = "wine_version"
     }
 
     // Backwards-compat init for older backends that don't yet send
-    // has_wine_d3dmetal / has_wine_devel / has_wineopenxr. Treat as absent → false.
+    // has_wine_devel / has_wineopenxr. Treat as absent → false.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hasTools          = try c.decode(Bool.self, forKey: .hasTools)
         hasWine           = try c.decode(Bool.self, forKey: .hasWine)
         hasWineStable     = try c.decode(Bool.self, forKey: .hasWineStable)
         hasWineStaging    = try c.decode(Bool.self, forKey: .hasWineStaging)
-        hasWineD3DMetal   = try c.decodeIfPresent(Bool.self, forKey: .hasWineD3DMetal) ?? false
         hasWineDevel      = try c.decodeIfPresent(Bool.self, forKey: .hasWineDevel) ?? false
         hasMesa           = try c.decode(Bool.self, forKey: .hasMesa)
         hasDxvk64         = try c.decode(Bool.self, forKey: .hasDxvk64)
         hasDxvk32         = try c.decode(Bool.self, forKey: .hasDxvk32)
         hasDxmt           = try c.decode(Bool.self, forKey: .hasDxmt)
+        hasDxmtOpenXR     = try c.decodeIfPresent(Bool.self, forKey: .hasDxmtOpenXR) ?? false
         hasGptkDlls       = try c.decode(Bool.self, forKey: .hasGptkDlls)
         hasD3dMetal3      = try c.decode(Bool.self, forKey: .hasD3dMetal3)
+        hasWineD3DMetal   = try c.decodeIfPresent(Bool.self, forKey: .hasWineD3DMetal) ?? false
+        hasWineUnified    = try c.decodeIfPresent(Bool.self, forKey: .hasWineUnified) ?? false
         hasVkd3d          = try c.decode(Bool.self, forKey: .hasVkd3d)
         hasWineOpenXR     = try c.decodeIfPresent(Bool.self, forKey: .hasWineOpenXR) ?? false
+        hasMonadoRuntime  = try c.decodeIfPresent(Bool.self, forKey: .hasMonadoRuntime) ?? false
         wineVersion       = try c.decodeIfPresent(String.self, forKey: .wineVersion)
     }
+}
+
+/// Steam store media for a game: description + showcase screenshots, fetched
+/// from the Steam appdetails endpoint by the backend `get_steam_media` command.
+struct SteamMedia: Codable {
+    let appid: String
+    let description: String
+    let shortDescription: String
+    let headerImage: String
+    let screenshots: [String]   // full-size URLs
+    let thumbnails: [String]    // thumbnail URLs (parallel to screenshots)
+
+    enum CodingKeys: String, CodingKey {
+        case appid, description, screenshots, thumbnails
+        case shortDescription = "short_description"
+        case headerImage = "header_image"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        appid = try c.decodeIfPresent(String.self, forKey: .appid) ?? ""
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        shortDescription = try c.decodeIfPresent(String.self, forKey: .shortDescription) ?? ""
+        headerImage = try c.decodeIfPresent(String.self, forKey: .headerImage) ?? ""
+        screenshots = try c.decodeIfPresent([String].self, forKey: .screenshots) ?? []
+        thumbnails = try c.decodeIfPresent([String].self, forKey: .thumbnails) ?? []
+    }
+}
+
+/// One installed (or missing) Wine build on disk, as probed live by the backend
+/// `detect_wine` command. Powers the Bottle tab's detection-driven Wine selector.
+struct WineVariant: Identifiable, Codable, Hashable {
+    let id: String          // "stable" | "staging" | "devel" | "d3dmetal"
+    let label: String
+    let selectable: Bool    // true for the variants wine_binary actually honours
+    let installed: Bool
+    let path: String
+    let version: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, selectable, installed, path, version
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        selectable = try c.decodeIfPresent(Bool.self, forKey: .selectable) ?? true
+        installed = try c.decodeIfPresent(Bool.self, forKey: .installed) ?? false
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        version = try c.decodeIfPresent(String.self, forKey: .version)
+    }
+}
+
+struct WineDetection: Codable {
+    let variants: [WineVariant]
+    let autoResolvedId: String?
+    let autoResolvedPath: String?
+    let autoResolvedVersion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case variants
+        case autoResolvedId = "auto_resolved_id"
+        case autoResolvedPath = "auto_resolved_path"
+        case autoResolvedVersion = "auto_resolved_version"
+    }
+
+    /// Look up one detected variant by its id ("stable", "staging", …).
+    func variant(_ id: String) -> WineVariant? { variants.first { $0.id == id } }
 }
 
 struct InstallProgress: Codable {
