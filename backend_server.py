@@ -91,6 +91,29 @@ EPIC_AUTH_URL = (
     f"?redirectUrl={urllib.parse.quote(_EPIC_REDIRECT, safe='')}"
 )
 
+NILE_DIR = PORTABLE_DIR / "nile"
+NILE_BIN = NILE_DIR / "nile"
+
+
+def _nile_config_dir(prefix: str) -> Path:
+    """Returns the per-bottle Nile (Amazon Games) config directory."""
+    return Path(prefix).expanduser().resolve() / ".nile_config"
+
+
+def _nile_cmd(prefix: str) -> List[str]:
+    """Base nile command (config isolation is done via NILE_CONFIG_PATH env var)."""
+    return [str(NILE_BIN)]
+
+
+def _nile_env(prefix: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Returns an environment dict with NILE_CONFIG_PATH set to the per-bottle dir."""
+    env = (base if base is not None else os.environ).copy()
+    config_dir = _nile_config_dir(prefix)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    env["NILE_CONFIG_PATH"] = str(config_dir)
+    return env
+
+
 APPMANIFEST_RE = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
 _legendary_installing: bool = False
@@ -163,6 +186,9 @@ def _legendary_queue_worker() -> None:
                 return
             app_name, prefix = _legendary_download_queue.pop(0)
         _legendary_do_install(app_name, prefix)
+
+
+_nile_installing: bool = False
 
 
 BACKEND_AUTO = "auto"
@@ -3425,6 +3451,8 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
    
     if launcher_type == "epic":
         threading.Thread(target=_download_legendary_if_needed, daemon=True).start()
+    if launcher_type == "amazon":
+        threading.Thread(target=_download_nile_if_needed, daemon=True).start()
 
     return {"path": path_str}
 
@@ -5974,6 +6002,118 @@ def cmd_legendary_auth(params: Dict[str, Any]) -> Any:
         return {"ok": False, "display_name": "", "error": str(exc)}
 
 
+# ---------------------------------------------------------------------------
+# Nile / Amazon Games support
+# ---------------------------------------------------------------------------
+
+def _nile_installed() -> bool:
+    return NILE_BIN.exists()
+
+
+def _download_nile_if_needed() -> None:
+    global _nile_installing
+    if _nile_installed() or _nile_installing:
+        return
+    _nile_installing = True
+    try:
+        log("Downloading Nile (Amazon Games CLI)...")
+        # Use GitHub's latest-release redirect — no API call needed, avoids rate limits.
+        # Nile publishes the raw arm64 binary directly as a release asset (no zip).
+        url = "https://github.com/imLinguin/nile/releases/latest/download/nile_macOS_arm64"
+        NILE_DIR.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "MacNCheese/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            with open(NILE_BIN, "wb") as f:
+                f.write(resp.read())
+        os.chmod(str(NILE_BIN), 0o755)
+        subprocess.run(
+            ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(NILE_BIN)],
+            capture_output=True,
+        )
+        log("Nile installed successfully")
+    except Exception as exc:
+        log(f"Error downloading nile: {exc}")
+        try:
+            NILE_BIN.unlink(missing_ok=True)
+        except Exception:
+            pass
+    finally:
+        _nile_installing = False
+
+
+def cmd_nile_status(_params: Dict[str, Any]) -> Any:
+    return {"installed": _nile_installed(), "installing": _nile_installing}
+
+
+def cmd_nile_get_auth_params(_params: Dict[str, Any]) -> Any:
+    """Starts a Nile device-auth attempt: runs `nile auth --login --non-interactive`,
+    which prints a JSON blob with a fresh Amazon sign-in URL plus the PKCE
+    client_id / code_verifier / device serial the caller must echo back
+    verbatim to cmd_nile_auth once the sign-in redirect is captured."""
+    if not _nile_installed():
+        raise RuntimeError("Nile is not installed")
+    result = subprocess.run(
+        [str(NILE_BIN), "auth", "--login", "--non-interactive"],
+        capture_output=True, text=True, timeout=30,
+    )
+    data = json.loads(result.stdout.strip())
+    return {
+        "url": data["url"],
+        "client_id": data["client_id"],
+        "code_verifier": data["code_verifier"],
+        "serial": data["serial"],
+    }
+
+
+def cmd_nile_check_auth(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    if not prefix or not _nile_installed():
+        return {"authenticated": False, "display_name": ""}
+    try:
+        result = subprocess.run(
+            _nile_cmd(prefix) + ["auth", "--status"],
+            capture_output=True, text=True, timeout=30,
+            env=_nile_env(prefix),
+        )
+        data = json.loads(result.stdout.strip())
+        logged_in = bool(data.get("LoggedIn", False))
+        name = data.get("Username", "") if logged_in else ""
+        return {"authenticated": logged_in, "display_name": name}
+    except Exception:
+        return {"authenticated": False, "display_name": ""}
+
+
+def cmd_nile_auth(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    code = params.get("code", "").strip()
+    client_id = params.get("client_id", "").strip()
+    code_verifier = params.get("code_verifier", "").strip()
+    serial = params.get("serial", "").strip()
+    if not all([prefix, code, client_id, code_verifier, serial]):
+        raise ValueError("Missing required auth parameters")
+    if not _nile_installed():
+        raise RuntimeError("Nile is not installed")
+    try:
+        result = subprocess.run(
+            _nile_cmd(prefix) + [
+                "register", "--code", code, "--client-id", client_id,
+                "--code-verifier", code_verifier, "--serial", serial,
+            ],
+            capture_output=True, text=True, timeout=60,
+            env=_nile_env(prefix),
+        )
+        # `register` has no explicit success marker on stdout — verify via `auth --status`.
+        auth = cmd_nile_check_auth({"prefix": prefix})
+        if auth.get("authenticated"):
+            return {"ok": True, "display_name": auth.get("display_name", ""), "error": ""}
+        output = (result.stdout + result.stderr).strip()[:400]
+        return {"ok": False, "display_name": "", "error": output or "Registration failed"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "display_name": "", "error": "Authentication timed out"}
+    except Exception as exc:
+        return {"ok": False, "display_name": "", "error": str(exc)}
+
+
 def cmd_legendary_install_game(params: Dict[str, Any]) -> Any:
     global _legendary_queue_worker_running
     app_name = params.get("app_name", "").strip()
@@ -6537,6 +6677,10 @@ COMMANDS: Dict[str, Any] = {
     "legendary_launch_game": cmd_legendary_launch_game,
     "legendary_pause_install": cmd_legendary_pause_install,
     "legendary_resume_install": cmd_legendary_resume_install,
+    "nile_status": cmd_nile_status,
+    "nile_get_auth_params": cmd_nile_get_auth_params,
+    "nile_check_auth": cmd_nile_check_auth,
+    "nile_auth": cmd_nile_auth,
     "get_game_config": cmd_get_game_config,
     "set_game_config": cmd_set_game_config,
     "get_game_order": cmd_get_game_order,
@@ -6568,6 +6712,7 @@ _QUIET_POLL_CMDS = {
     "get_install_progress",
     "legendary_status",
     "epic_download_progress",
+    "nile_status",
 }
 
 def main() -> None:

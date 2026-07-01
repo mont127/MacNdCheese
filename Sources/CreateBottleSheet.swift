@@ -39,6 +39,7 @@ struct CreateBottleSheet: View {
                 Picker("", selection: $launcherType) {
                     Label("Steam", systemImage: "play.square.stack.fill").tag("steam")
                     Label { Text(L("Epic Games")) } icon: { EpicIcon(size: 16) }.tag("epic")
+                    Label { Text(L("Amazon Games")) } icon: { AmazonIcon(size: 16) }.tag("amazon")
                     Label(L("None (plain Wine)"), systemImage: "wineglass").tag("custom")
                 }
                 .pickerStyle(.segmented)
@@ -46,6 +47,8 @@ struct CreateBottleSheet: View {
                      ? L("Steam will be used to manage and launch games.")
                      : launcherType == "epic"
                      ? L("Epic Games library via Legendary. Connect your account after creation.")
+                     : launcherType == "amazon"
+                     ? L("Amazon Games library via Nile. Connect your account after creation.")
                      : L("No launcher – add games manually."))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -107,7 +110,7 @@ struct CreateBottleSheet: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 380, minHeight: 320)
+        .frame(minWidth: 440, minHeight: 320)
         .background(Color(.windowBackgroundColor))
     }
 }

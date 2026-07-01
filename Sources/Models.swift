@@ -6,7 +6,7 @@ struct Bottle: Identifiable, Codable, Hashable {
     var name: String
     var iconPath: String?
     var launcherExe: String?
-    var launcherType: String?   // "steam", "custom", "epic"; nil treated as "steam" for compat
+    var launcherType: String?   // "steam", "custom", "epic", "amazon"; nil treated as "steam" for compat
     var defaultBackend: String? // "auto", "dxvk", etc.
     var wineBinary: String?     // "auto", "stable", "staging"
 
@@ -18,6 +18,9 @@ struct Bottle: Identifiable, Codable, Hashable {
 
     /// True when this bottle uses Epic Games (Legendary) as its launcher.
     var isEpicBottle: Bool { launcherType == "epic" }
+
+    /// True when this bottle uses Amazon Games (Nile) as its launcher.
+    var isAmazonBottle: Bool { launcherType == "amazon" }
 
     enum CodingKeys: String, CodingKey {
         case path, name
