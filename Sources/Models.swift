@@ -94,6 +94,7 @@ struct Game: Identifiable, Codable, Hashable {
     var isInstalled: Bool
     var updateAvailable: Bool
     var epicAppName: String?
+    var amazonId: String?
 
     enum CodingKeys: String, CodingKey {
         case appid, name, exe
@@ -103,10 +104,11 @@ struct Game: Identifiable, Codable, Hashable {
         case isInstalled = "is_installed"
         case updateAvailable = "update_available"
         case epicAppName = "epic_app_name"
+        case amazonId = "amazon_id"
     }
 
     // Tolerant decoder: older backends omit is_installed / update_available /
-    // epic_app_name. Treat absent install state as installed, the rest as off.
+    // epic_app_name / amazon_id. Treat absent install state as installed, the rest as off.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         appid = try c.decode(String.self, forKey: .appid)
@@ -118,6 +120,7 @@ struct Game: Identifiable, Codable, Hashable {
         isInstalled = try c.decodeIfPresent(Bool.self, forKey: .isInstalled) ?? true
         updateAvailable = try c.decodeIfPresent(Bool.self, forKey: .updateAvailable) ?? false
         epicAppName = try c.decodeIfPresent(String.self, forKey: .epicAppName)
+        amazonId = try c.decodeIfPresent(String.self, forKey: .amazonId)
     }
 
     /// True unless this game's install folder is a real, known path that's
@@ -127,11 +130,11 @@ struct Game: Identifiable, Codable, Hashable {
     /// otherwise reachable. The backend's own is_installed/exe detection
     /// can't tell "never installed" apart from "currently unreachable" for
     /// this case, so this is a client-side check, same idea as
-    /// Bottle.isReachable. Epic games may legitimately have no installDir
-    /// yet (not downloaded) — that's not a missing-drive case, so it's
-    /// excluded here.
+    /// Bottle.isReachable. Epic/Amazon games may legitimately have no
+    /// installDir yet (not downloaded) — that's not a missing-drive case,
+    /// so they're excluded here.
     var isReachable: Bool {
-        guard epicAppName == nil, !installDir.isEmpty else { return true }
+        guard epicAppName == nil, amazonId == nil, !installDir.isEmpty else { return true }
         return driveIsKonnected(forPath: installDir)
     }
 }
@@ -445,5 +448,14 @@ struct EpicDownloadState {
     var queued: Bool
     var queuePosition: Int
     var paused: Bool = false   // from the PR; default keeps existing call sites valid
+    var prefix: String
+}
+
+/// Transient per-game Amazon (Nile) download/queue state. UI-only, not Codable.
+struct AmazonDownloadState {
+    var progress: Double
+    var queued: Bool
+    var queuePosition: Int
+    var paused: Bool = false
     var prefix: String
 }

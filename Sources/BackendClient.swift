@@ -357,6 +357,7 @@ final class BackendClient: ObservableObject {
     @Published var amazonDisplayName: String? = nil
     @Published var nileInstalled = false
     @Published var nileInstalling = false
+    @Published var amazonDownloads: [String: AmazonDownloadState] = [:]
 
     @Published var steamRunning = false
     /// True while a SteamSetup install is in progress -> ContentView shows the "Installing Steam…"
@@ -1099,6 +1100,65 @@ final class BackendClient: ObservableObject {
         do { _ = try await send(cmd: "legendary_resume_install", params: ["app_name": appName]) } catch {}
     }
 
+    func amazonInstallGame(prefix: String, amazonId: String) async -> Bool {
+        do {
+            _ = try await send(cmd: "nile_install_game", params: [
+                "prefix": prefix, "amazon_id": amazonId
+            ])
+            return true
+        } catch {
+            lastError = String(format: L("Failed to queue install: %@"), error.localizedDescription)
+            return false
+        }
+    }
+
+    func amazonInstallProgress(amazonId: String) async -> (progress: Double, done: Bool, error: String?)? {
+        do {
+            let result = try await send(cmd: "nile_install_progress", params: ["amazon_id": amazonId])
+            if let dict = result as? [String: Any] {
+                return (
+                    dict["progress"] as? Double ?? 0,
+                    dict["done"] as? Bool ?? false,
+                    dict["error"] as? String
+                )
+            }
+        } catch {}
+        return nil
+    }
+
+    func amazonCancelInstall(amazonId: String) async {
+        do {
+            _ = try await send(cmd: "nile_cancel_install", params: ["amazon_id": amazonId])
+        } catch {}
+    }
+
+    func refreshAmazonDownloads() async {
+        do {
+            let result = try await send(cmd: "nile_all_downloads", params: [:])
+            guard let dict = result as? [String: Any] else { return }
+            var downloads: [String: AmazonDownloadState] = [:]
+            for (amazonId, info) in dict {
+                guard let info = info as? [String: Any] else { continue }
+                downloads[amazonId] = AmazonDownloadState(
+                    progress: info["progress"] as? Double ?? 0,
+                    queued: info["queued"] as? Bool ?? false,
+                    queuePosition: info["queue_position"] as? Int ?? 0,
+                    paused: info["paused"] as? Bool ?? false,
+                    prefix: info["prefix"] as? String ?? ""
+                )
+            }
+            amazonDownloads = downloads
+        } catch {}
+    }
+
+    func amazonPauseInstall(amazonId: String) async {
+        do { _ = try await send(cmd: "nile_pause_install", params: ["amazon_id": amazonId]) } catch {}
+    }
+
+    func amazonResumeInstall(amazonId: String) async {
+        do { _ = try await send(cmd: "nile_resume_install", params: ["amazon_id": amazonId]) } catch {}
+    }
+
     func getGameOrder(prefix: String) async -> [String] {
         do {
             let result = try await send(cmd: "get_game_order", params: ["prefix": prefix])
@@ -1133,6 +1193,36 @@ final class BackendClient: ObservableObject {
             ])
         } catch {
             lastError = String(format: L("Failed to launch %@: %@"), appName, error.localizedDescription)
+        }
+    }
+
+    func amazonLaunchGame(
+        prefix: String,
+        amazonId: String,
+        backend: String = "auto",
+        retinaMode: Bool = false,
+        metalHud: Bool = false,
+        gameMode: Bool = true,
+        esync: Bool = true,
+        msync: Bool = true,
+        customEnv: String = "",
+        debug: Bool = false
+    ) async {
+        do {
+            _ = try await send(cmd: "nile_launch_game", params: [
+                "amazon_id": amazonId,
+                "prefix": prefix,
+                "backend": backend,
+                "retina_mode": retinaMode,
+                "metal_hud": metalHud,
+                "game_mode": gameMode,
+                "esync": esync,
+                "msync": msync,
+                "custom_env": customEnv,
+                "debug": debug,
+            ])
+        } catch {
+            lastError = String(format: L("Failed to launch %@: %@"), amazonId, error.localizedDescription)
         }
     }
 

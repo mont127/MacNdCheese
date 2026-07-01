@@ -219,6 +219,8 @@ MacNCheese wouldn't exist without these incredible open source projects:
 | [DXMT](https://github.com/3Shain/dxmt) | Translates DirectX 11 → Metal directly |
 | [Whisky](https://github.com/Whisky-App/Whisky) | The inspiration and predecessor |
 | [Wineopxr](https://github.com/monofunc/wineopenxr) | A backend for VR |
+| [Legendary](https://github.com/legendary-gl/legendary) | Epic Games CLI/launcher |
+| [Nile](https://github.com/imLinguin/nile) | Amazon Games CLI/launcher |
 
 And also These People:
 @gcenx https://github.com/Gcenx
