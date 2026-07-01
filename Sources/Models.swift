@@ -6,7 +6,7 @@ struct Bottle: Identifiable, Codable, Hashable {
     var name: String
     var iconPath: String?
     var launcherExe: String?
-    var launcherType: String?   // "steam", "custom", "epic"; nil treated as "steam" for compat
+    var launcherType: String?   // "steam", "custom", "epic", "amazon"; nil treated as "steam" for compat
     var defaultBackend: String? // "auto", "dxvk", etc.
     var wineBinary: String?     // "auto", "stable", "staging"
 
@@ -18,6 +18,9 @@ struct Bottle: Identifiable, Codable, Hashable {
 
     /// True when this bottle uses Epic Games (Legendary) as its launcher.
     var isEpicBottle: Bool { launcherType == "epic" }
+
+    /// True when this bottle uses Amazon Games (Nile) as its launcher.
+    var isAmazonBottle: Bool { launcherType == "amazon" }
 
     enum CodingKeys: String, CodingKey {
         case path, name
@@ -40,6 +43,7 @@ struct Game: Identifiable, Codable, Hashable {
     var isInstalled: Bool
     var updateAvailable: Bool
     var epicAppName: String?
+    var amazonId: String?
 
     enum CodingKeys: String, CodingKey {
         case appid, name, exe
@@ -49,10 +53,11 @@ struct Game: Identifiable, Codable, Hashable {
         case isInstalled = "is_installed"
         case updateAvailable = "update_available"
         case epicAppName = "epic_app_name"
+        case amazonId = "amazon_id"
     }
 
     // Tolerant decoder: older backends omit is_installed / update_available /
-    // epic_app_name. Treat absent install state as installed, the rest as off.
+    // epic_app_name / amazon_id. Treat absent install state as installed, the rest as off.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         appid = try c.decode(String.self, forKey: .appid)
@@ -64,6 +69,7 @@ struct Game: Identifiable, Codable, Hashable {
         isInstalled = try c.decodeIfPresent(Bool.self, forKey: .isInstalled) ?? true
         updateAvailable = try c.decodeIfPresent(Bool.self, forKey: .updateAvailable) ?? false
         epicAppName = try c.decodeIfPresent(String.self, forKey: .epicAppName)
+        amazonId = try c.decodeIfPresent(String.self, forKey: .amazonId)
     }
 }
 
@@ -358,5 +364,14 @@ struct EpicDownloadState {
     var queued: Bool
     var queuePosition: Int
     var paused: Bool = false   // from the PR; default keeps existing call sites valid
+    var prefix: String
+}
+
+/// Transient per-game Amazon (Nile) download/queue state. UI-only, not Codable.
+struct AmazonDownloadState {
+    var progress: Double
+    var queued: Bool
+    var queuePosition: Int
+    var paused: Bool = false
     var prefix: String
 }

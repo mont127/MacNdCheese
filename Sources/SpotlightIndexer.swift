@@ -9,9 +9,11 @@ import Foundation
 ///   • Epic/Legendary games: "epic:::\(epicAppName)"   — global, because
 ///     Legendary's game library is shared across all bottles; every Epic bottle
 ///     scan returns the same installed games, so we need one deduped entry.
+///   • Amazon/Nile games: "amazon:::\(amazonId)"        — global, same reasoning.
 enum SpotlightIndexer {
     static let steamDomainPrefix = "com.marcel.macncheese.steam."
     static let epicDomain        = "com.marcel.macncheese.epic"
+    static let amazonDomain      = "com.marcel.macncheese.amazon"
 
     static func domainForBottle(_ bottlePath: String) -> String {
         let safe = bottlePath
@@ -26,6 +28,7 @@ enum SpotlightIndexer {
         let bottleDomain = domainForBottle(bottlePath)
         var steamItems: [CSSearchableItem] = []
         var epicItems:  [CSSearchableItem] = []
+        var amazonItems: [CSSearchableItem] = []
 
         for game in games {
             let attrs = CSSearchableItemAttributeSet(contentType: .item)
@@ -37,6 +40,12 @@ enum SpotlightIndexer {
                 epicItems.append(CSSearchableItem(
                     uniqueIdentifier: "epic:::\(epicAppName)",
                     domainIdentifier: epicDomain,
+                    attributeSet: attrs
+                ))
+            } else if let amazonId = game.amazonId, !amazonId.isEmpty {
+                amazonItems.append(CSSearchableItem(
+                    uniqueIdentifier: "amazon:::\(amazonId)",
+                    domainIdentifier: amazonDomain,
                     attributeSet: attrs
                 ))
             } else {
@@ -64,6 +73,13 @@ enum SpotlightIndexer {
                 if let error { print("[Spotlight] Epic index error: \(error.localizedDescription)") }
             }
         }
+
+        // Amazon: same upsert reasoning as Epic.
+        if !amazonItems.isEmpty {
+            CSSearchableIndex.default().indexSearchableItems(amazonItems) { error in
+                if let error { print("[Spotlight] Amazon index error: \(error.localizedDescription)") }
+            }
+        }
     }
 
     /// Remove Spotlight entries when a bottle is deleted.
@@ -71,7 +87,7 @@ enum SpotlightIndexer {
         CSSearchableIndex.default().deleteSearchableItems(
             withDomainIdentifiers: [domainForBottle(bottlePath)]
         ) { _ in }
-        // Epic entries are global and shared — don't delete them when one bottle is removed.
+        // Epic/Amazon entries are global and shared — don't delete them when one bottle is removed.
     }
 
     static func deleteAll() {

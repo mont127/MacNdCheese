@@ -409,7 +409,7 @@ struct GameLaunchSheet: View {
             .tint(Color.brand)
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
-            .disabled((game.epicAppName == nil && effectiveExe.isEmpty) || isLaunching)
+            .disabled((game.epicAppName == nil && game.amazonId == nil && effectiveExe.isEmpty) || isLaunching)
         }
     }
 
@@ -522,6 +522,19 @@ struct GameLaunchSheet: View {
                 await backend.epicLaunchGame(
                     prefix: prefix,
                     appName: appName,
+                    backend: selectedBackend,
+                    retinaMode: retinaMode,
+                    metalHud: metalHud,
+                    gameMode: gameMode,
+                    esync: sync.esync,
+                    msync: sync.msync,
+                    customEnv: env,
+                    debug: advancedDebug
+                )
+            } else if let amazonId = game.amazonId {
+                await backend.amazonLaunchGame(
+                    prefix: prefix,
+                    amazonId: amazonId,
                     backend: selectedBackend,
                     retinaMode: retinaMode,
                     metalHud: metalHud,

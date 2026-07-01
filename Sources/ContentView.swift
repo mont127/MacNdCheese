@@ -85,6 +85,10 @@ struct ContentView: View {
             EpicLandingView(searchText: $searchText)
                 .id(backend.activePrefix)
                 .transition(.opacity)
+        } else if activeBottle?.isAmazonBottle == true {
+            AmazonLandingView(searchText: $searchText)
+                .id(backend.activePrefix)
+                .transition(.opacity)
         } else if backend.games.isEmpty && backend.apps.isEmpty {
             if activeBottle?.isSteamBottle ?? true {
                 SteamLandingView()

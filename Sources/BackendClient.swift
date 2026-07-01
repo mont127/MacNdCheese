@@ -160,10 +160,15 @@ final class BackendClient: ObservableObject {
         games = []  // clear immediately so stale games don't show for the new bottle
         apps = []
         let isEpic = bottles.first { $0.path == path }?.isEpicBottle ?? false
+        let isAmazon = bottles.first { $0.path == path }?.isAmazonBottle ?? false
         Task {
             if isEpic {
                 await legendaryStatus()
                 await epicCheckAuth()
+            }
+            if isAmazon {
+                await nileStatus()
+                await amazonCheckAuth()
             }
             await scanGames(prefix: path)
             await scanApps(prefix: path)
@@ -206,6 +211,12 @@ final class BackendClient: ObservableObject {
     @Published var legendaryInstalling = false
     @Published var epicDownloads: [String: EpicDownloadState] = [:]
     @Published var epicAuthURL: URL? = nil
+
+    @Published var amazonAuthenticated = false
+    @Published var amazonDisplayName: String? = nil
+    @Published var nileInstalled = false
+    @Published var nileInstalling = false
+    @Published var amazonDownloads: [String: AmazonDownloadState] = [:]
 
     @Published var steamRunning = false
     private var steamPollTask: Task<Void, Never>?
@@ -744,6 +755,69 @@ final class BackendClient: ObservableObject {
         return (false, "", "Unknown error")
     }
 
+    // MARK: - Amazon Games / Nile
+
+    func nileStatus() async {
+        do {
+            let result = try await send(cmd: "nile_status")
+            if let dict = result as? [String: Any] {
+                nileInstalled = dict["installed"] as? Bool ?? false
+                nileInstalling = dict["installing"] as? Bool ?? false
+            }
+        } catch {}
+    }
+
+    /// Starts a fresh Amazon sign-in attempt. Unlike Epic's `epicAuthURL`, this
+    /// is not cached — each attempt needs a new PKCE challenge from the backend,
+    /// so callers should invoke this every time the sign-in sheet is opened.
+    func nileGetAuthParams() async -> (url: URL?, clientId: String, codeVerifier: String, serial: String) {
+        do {
+            let result = try await send(cmd: "nile_get_auth_params")
+            if let dict = result as? [String: Any],
+               let urlStr = dict["url"] as? String,
+               let url = URL(string: urlStr) {
+                return (
+                    url,
+                    dict["client_id"] as? String ?? "",
+                    dict["code_verifier"] as? String ?? "",
+                    dict["serial"] as? String ?? ""
+                )
+            }
+        } catch {}
+        return (nil, "", "", "")
+    }
+
+    func amazonCheckAuth() async {
+        guard let prefix = activePrefix else { return }
+        do {
+            let result = try await send(cmd: "nile_check_auth", params: ["prefix": prefix])
+            if let dict = result as? [String: Any] {
+                amazonAuthenticated = dict["authenticated"] as? Bool ?? false
+                amazonDisplayName = dict["display_name"] as? String
+            }
+        } catch {}
+    }
+
+    func amazonAuth(code: String, clientId: String, codeVerifier: String, serial: String) async -> (ok: Bool, displayName: String, error: String) {
+        guard let prefix = activePrefix else { return (false, "", "No active bottle") }
+        do {
+            let result = try await send(cmd: "nile_auth", params: [
+                "code": code, "prefix": prefix, "client_id": clientId,
+                "code_verifier": codeVerifier, "serial": serial,
+            ])
+            if let dict = result as? [String: Any] {
+                return (
+                    dict["ok"] as? Bool ?? false,
+                    dict["display_name"] as? String ?? "",
+                    dict["error"] as? String ?? ""
+                )
+            }
+        } catch {
+            return (false, "", error.localizedDescription)
+        }
+        return (false, "", "Unknown error")
+    }
+
     func epicInstallGame(prefix: String, appName: String) async -> Bool {
         do {
             _ = try await send(cmd: "legendary_install_game", params: [
@@ -803,6 +877,65 @@ final class BackendClient: ObservableObject {
         do { _ = try await send(cmd: "legendary_resume_install", params: ["app_name": appName]) } catch {}
     }
 
+    func amazonInstallGame(prefix: String, amazonId: String) async -> Bool {
+        do {
+            _ = try await send(cmd: "nile_install_game", params: [
+                "prefix": prefix, "amazon_id": amazonId
+            ])
+            return true
+        } catch {
+            lastError = String(format: L("Failed to queue install: %@"), error.localizedDescription)
+            return false
+        }
+    }
+
+    func amazonInstallProgress(amazonId: String) async -> (progress: Double, done: Bool, error: String?)? {
+        do {
+            let result = try await send(cmd: "nile_install_progress", params: ["amazon_id": amazonId])
+            if let dict = result as? [String: Any] {
+                return (
+                    dict["progress"] as? Double ?? 0,
+                    dict["done"] as? Bool ?? false,
+                    dict["error"] as? String
+                )
+            }
+        } catch {}
+        return nil
+    }
+
+    func amazonCancelInstall(amazonId: String) async {
+        do {
+            _ = try await send(cmd: "nile_cancel_install", params: ["amazon_id": amazonId])
+        } catch {}
+    }
+
+    func refreshAmazonDownloads() async {
+        do {
+            let result = try await send(cmd: "nile_all_downloads", params: [:])
+            guard let dict = result as? [String: Any] else { return }
+            var downloads: [String: AmazonDownloadState] = [:]
+            for (amazonId, info) in dict {
+                guard let info = info as? [String: Any] else { continue }
+                downloads[amazonId] = AmazonDownloadState(
+                    progress: info["progress"] as? Double ?? 0,
+                    queued: info["queued"] as? Bool ?? false,
+                    queuePosition: info["queue_position"] as? Int ?? 0,
+                    paused: info["paused"] as? Bool ?? false,
+                    prefix: info["prefix"] as? String ?? ""
+                )
+            }
+            amazonDownloads = downloads
+        } catch {}
+    }
+
+    func amazonPauseInstall(amazonId: String) async {
+        do { _ = try await send(cmd: "nile_pause_install", params: ["amazon_id": amazonId]) } catch {}
+    }
+
+    func amazonResumeInstall(amazonId: String) async {
+        do { _ = try await send(cmd: "nile_resume_install", params: ["amazon_id": amazonId]) } catch {}
+    }
+
     func getGameOrder(prefix: String) async -> [String] {
         do {
             let result = try await send(cmd: "get_game_order", params: ["prefix": prefix])
@@ -837,6 +970,36 @@ final class BackendClient: ObservableObject {
             ])
         } catch {
             lastError = String(format: L("Failed to launch %@: %@"), appName, error.localizedDescription)
+        }
+    }
+
+    func amazonLaunchGame(
+        prefix: String,
+        amazonId: String,
+        backend: String = "auto",
+        retinaMode: Bool = false,
+        metalHud: Bool = false,
+        gameMode: Bool = true,
+        esync: Bool = true,
+        msync: Bool = true,
+        customEnv: String = "",
+        debug: Bool = false
+    ) async {
+        do {
+            _ = try await send(cmd: "nile_launch_game", params: [
+                "amazon_id": amazonId,
+                "prefix": prefix,
+                "backend": backend,
+                "retina_mode": retinaMode,
+                "metal_hud": metalHud,
+                "game_mode": gameMode,
+                "esync": esync,
+                "msync": msync,
+                "custom_env": customEnv,
+                "debug": debug,
+            ])
+        } catch {
+            lastError = String(format: L("Failed to launch %@: %@"), amazonId, error.localizedDescription)
         }
     }
 
