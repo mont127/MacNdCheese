@@ -299,10 +299,15 @@ final class BackendClient: ObservableObject {
         }
 
         let isEpic = bottle?.isEpicBottle ?? false
+        let isAmazon = bottle?.isAmazonBottle ?? false
         Task {
             if isEpic {
                 await legendaryStatus()
                 await epicCheckAuth()
+            }
+            if isAmazon {
+                await nileStatus()
+                await amazonCheckAuth()
             }
             await scanGames(prefix: path)
             await scanApps(prefix: path)
@@ -347,6 +352,11 @@ final class BackendClient: ObservableObject {
     @Published var legendaryInstalling = false
     @Published var epicDownloads: [String: EpicDownloadState] = [:]
     @Published var epicAuthURL: URL? = nil
+
+    @Published var amazonAuthenticated = false
+    @Published var amazonDisplayName: String? = nil
+    @Published var nileInstalled = false
+    @Published var nileInstalling = false
 
     @Published var steamRunning = false
     /// True while a SteamSetup install is in progress -> ContentView shows the "Installing Steam…"
@@ -954,6 +964,69 @@ final class BackendClient: ObservableObject {
         guard let prefix = activePrefix else { return (false, "", "No active bottle") }
         do {
             let result = try await send(cmd: "legendary_auth", params: ["code": code, "prefix": prefix])
+            if let dict = result as? [String: Any] {
+                return (
+                    dict["ok"] as? Bool ?? false,
+                    dict["display_name"] as? String ?? "",
+                    dict["error"] as? String ?? ""
+                )
+            }
+        } catch {
+            return (false, "", error.localizedDescription)
+        }
+        return (false, "", "Unknown error")
+    }
+
+    // MARK: - Amazon Games / Nile
+
+    func nileStatus() async {
+        do {
+            let result = try await send(cmd: "nile_status")
+            if let dict = result as? [String: Any] {
+                nileInstalled = dict["installed"] as? Bool ?? false
+                nileInstalling = dict["installing"] as? Bool ?? false
+            }
+        } catch {}
+    }
+
+    /// Starts a fresh Amazon sign-in attempt. Unlike Epic's `epicAuthURL`, this
+    /// is not cached — each attempt needs a new PKCE challenge from the backend,
+    /// so callers should invoke this every time the sign-in sheet is opened.
+    func nileGetAuthParams() async -> (url: URL?, clientId: String, codeVerifier: String, serial: String) {
+        do {
+            let result = try await send(cmd: "nile_get_auth_params")
+            if let dict = result as? [String: Any],
+               let urlStr = dict["url"] as? String,
+               let url = URL(string: urlStr) {
+                return (
+                    url,
+                    dict["client_id"] as? String ?? "",
+                    dict["code_verifier"] as? String ?? "",
+                    dict["serial"] as? String ?? ""
+                )
+            }
+        } catch {}
+        return (nil, "", "", "")
+    }
+
+    func amazonCheckAuth() async {
+        guard let prefix = activePrefix else { return }
+        do {
+            let result = try await send(cmd: "nile_check_auth", params: ["prefix": prefix])
+            if let dict = result as? [String: Any] {
+                amazonAuthenticated = dict["authenticated"] as? Bool ?? false
+                amazonDisplayName = dict["display_name"] as? String
+            }
+        } catch {}
+    }
+
+    func amazonAuth(code: String, clientId: String, codeVerifier: String, serial: String) async -> (ok: Bool, displayName: String, error: String) {
+        guard let prefix = activePrefix else { return (false, "", "No active bottle") }
+        do {
+            let result = try await send(cmd: "nile_auth", params: [
+                "code": code, "prefix": prefix, "client_id": clientId,
+                "code_verifier": codeVerifier, "serial": serial,
+            ])
             if let dict = result as? [String: Any] {
                 return (
                     dict["ok"] as? Bool ?? false,

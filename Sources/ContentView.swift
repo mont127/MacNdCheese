@@ -114,7 +114,7 @@ struct ContentView: View {
     /// underlying values change in the same update (e.g. switching bottles
     /// changes activePrefix, games, apps, and isLoadingLibrary all at once).
     private enum DetailBranch: Equatable {
-        case store, noPrefix, driveMissing, epic, loading, launcherMissing, empty, grid
+        case store, noPrefix, driveMissing, epic, amazon, loading, launcherMissing, empty, grid
     }
 
     private var detailBranch: DetailBranch {
@@ -122,6 +122,7 @@ struct ContentView: View {
         if backend.activePrefix == nil { return .noPrefix }
         if backend.activeBottlePathMissing { return .driveMissing }
         if activeBottle?.isEpicBottle == true { return .epic }
+        if activeBottle?.isAmazonBottle == true { return .amazon }
         if backend.isLoadingLibrary { return .loading }
         if activeBottle?.isLauncherReachable == false && !hasAccessibleContent { return .launcherMissing }
         if backend.games.isEmpty && backend.apps.isEmpty { return .empty }
@@ -187,9 +188,13 @@ struct ContentView: View {
             EpicLandingView(searchText: $searchText)
                 .id(backend.activePrefix)
                 .transition(.opacity)
+        case .amazon:
+            AmazonLandingView(searchText: $searchText)
+                .id(backend.activePrefix)
+                .transition(.opacity)
         case .loading:
-            // Only reached for Steam/manual bottles — Epic manages its own
-            // loading state internally via EpicLibraryView.
+            // Only reached for Steam/manual bottles — Epic/Amazon manage their
+            // own loading state internally via their landing views.
             LibraryLoadingView()
                 .id(backend.activePrefix)
                 .transition(.opacity)
