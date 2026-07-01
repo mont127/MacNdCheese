@@ -11,6 +11,7 @@ struct CachedGame: Codable {
     var coverUrl: String?
     var exe: String?
     var epicAppName: String?
+    var amazonId: String?
     var installDir: String
 }
 
@@ -44,6 +45,7 @@ enum GameIndexCache {
                 coverUrl: g.coverUrl,
                 exe: g.exe,
                 epicAppName: g.epicAppName,
+                amazonId: g.amazonId,
                 installDir: g.installDir
             )
         }
@@ -67,7 +69,8 @@ enum GameIndexCache {
     }
 
     /// Look up a game by its Spotlight uniqueIdentifier.
-    /// Epic games use "epic:::<epicAppName>"; Steam/manual use "\(bottlePath):::\(appid)".
+    /// Epic games use "epic:::<epicAppName>"; Amazon games use "amazon:::<amazonId>";
+    /// Steam/manual use "\(bottlePath):::\(appid)".
     static func game(byUID uid: String) -> CachedGame? {
         let parts = uid.components(separatedBy: ":::")
         guard parts.count >= 2 else { return nil }
@@ -75,6 +78,9 @@ enum GameIndexCache {
         if parts[0] == "epic" {
             let epicAppName = parts[1]
             return allGames().first { $0.epicAppName == epicAppName }
+        } else if parts[0] == "amazon" {
+            let amazonId = parts[1]
+            return allGames().first { $0.amazonId == amazonId }
         } else {
             let appid = parts.last!
             let bottlePath = parts.dropLast().joined(separator: ":::")

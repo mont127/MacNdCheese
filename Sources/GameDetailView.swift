@@ -216,7 +216,7 @@ struct GameDetailView: View {
         .buttonStyle(.borderedProminent)
         .tint(.green)
         .controlSize(.large)
-        .disabled((game.epicAppName == nil && effectiveExe.isEmpty) || isLaunching)
+        .disabled((game.epicAppName == nil && game.amazonId == nil && effectiveExe.isEmpty) || isLaunching)
     }
 
     @ViewBuilder
@@ -511,6 +511,11 @@ struct GameDetailView: View {
             if let appName = game.epicAppName {
                 await backend.epicLaunchGame(
                     prefix: prefix, appName: appName, backend: selectedBackend,
+                    retinaMode: retinaMode, metalHud: metalHud,
+                    esync: sync.esync, msync: sync.msync, customEnv: env, debug: advancedDebug)
+            } else if let amazonId = game.amazonId {
+                await backend.amazonLaunchGame(
+                    prefix: prefix, amazonId: amazonId, backend: selectedBackend,
                     retinaMode: retinaMode, metalHud: metalHud,
                     esync: sync.esync, msync: sync.msync, customEnv: env, debug: advancedDebug)
             } else {

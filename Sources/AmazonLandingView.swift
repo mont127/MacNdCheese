@@ -10,6 +10,8 @@ struct AmazonLandingView: View {
 
     @State private var phase: Phase = .downloading
     @State private var pollTimer: Timer?
+    @State private var gamesPollTask: Task<Void, Never>? = nil
+    @State private var isFetchingGames = true
 
     var body: some View {
         Group {
@@ -19,16 +21,20 @@ struct AmazonLandingView: View {
             case .auth:
                 AmazonAuthView(onAuthenticated: { transitionToLibrary() })
             case .library:
-                // Library browsing/installing lands in a follow-up phase; for now
-                // confirm the connected account so users know sign-in succeeded.
-                AmazonComingSoonView(displayName: backend.amazonDisplayName)
+                AmazonLibraryView(games: sortedGames, searchText: $searchText, isFetching: isFetchingGames)
             }
         }
         .animation(.easeInOut(duration: 0.22), value: phase == .library)
         .onAppear { onAppearHandler() }
-        .onDisappear { stopDownloadPolling() }
+        .onDisappear { stopAll() }
         .onChange(of: backend.nileInstalled) { _, installed in
             if installed && phase == .downloading { transitionToAuth() }
+        }
+    }
+
+    private var sortedGames: [Game] {
+        backend.games.sorted {
+            ($0.isInstalled ? 0 : 1) < ($1.isInstalled ? 0 : 1)
         }
     }
 
@@ -63,6 +69,7 @@ struct AmazonLandingView: View {
     private func transitionToLibrary() {
         stopDownloadPolling()
         phase = .library
+        startGamesPolling()
     }
 
     /// Polls nile_status every 2 s while Nile is being downloaded.
@@ -78,6 +85,42 @@ struct AmazonLandingView: View {
                 }
             }
         }
+    }
+
+    /// Polls scan_games and download state every 3 s.
+    private func startGamesPolling() {
+        gamesPollTask?.cancel()
+        isFetchingGames = true
+        guard let prefix = backend.activePrefix else { return }
+        gamesPollTask = Task {
+            await backend.scanGames(prefix: prefix)
+            await backend.refreshAmazonDownloads()
+            isFetchingGames = false
+            // Poll until games appear (cold start / fresh install)
+            var attempts = 0
+            while !Task.isCancelled && backend.games.isEmpty && attempts < 100 {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled, backend.activePrefix == prefix else { break }
+                await backend.scanGames(prefix: prefix)
+                await backend.refreshAmazonDownloads()
+                attempts += 1
+            }
+            // Keep polling downloads; refresh library only when a download is active.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled, backend.activePrefix == prefix else { break }
+                await backend.refreshAmazonDownloads()
+                if !backend.amazonDownloads.isEmpty {
+                    await backend.scanGames(prefix: prefix)
+                }
+            }
+        }
+    }
+
+    private func stopAll() {
+        stopDownloadPolling()
+        gamesPollTask?.cancel()
+        gamesPollTask = nil
     }
 
     private func stopDownloadPolling() {
@@ -301,33 +344,5 @@ private struct AmazonWebView: NSViewRepresentable {
             captured = true
             onCodeCaptured(code)
         }
-    }
-}
-
-// MARK: - Post-auth placeholder (library browsing lands separately)
-
-private struct AmazonComingSoonView: View {
-    let displayName: String?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            AmazonLogo(size: 64)
-                .padding(.bottom, 12)
-            Text(L("Connected"))
-                .font(.title2.weight(.bold))
-            if let name = displayName, !name.isEmpty {
-                Text(String(format: L("Signed in as %@"), name))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-            }
-            Text(L("Your Amazon Games library is coming soon."))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.top, 12)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
