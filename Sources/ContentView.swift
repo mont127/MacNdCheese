@@ -57,6 +57,13 @@ struct ContentView: View {
         return backend.bottles.first { $0.path == prefix }
     }
 
+    /// True once the library has finished loading and at least one game or
+    /// app in it is actually usable right now (as opposed to merely present
+    /// in the list but pointing at a currently-disconnected drive).
+    private var hasAccessibleContent: Bool {
+        backend.games.contains { $0.isReachable } || backend.apps.contains { $0.isReachable }
+    }
+
     private var detailTitle: String {
         if showStore { return L("Store") }
         if let bottle = activeBottle { return bottle.name }
@@ -96,6 +103,15 @@ struct ContentView: View {
             // Only reached for Steam/manual bottles — Epic manages its own
             // loading state internally via EpicLibraryView.
             LibraryLoadingView()
+                .transition(.opacity)
+        } else if activeBottle?.isLauncherReachable == false && !hasAccessibleContent {
+            // The bottle folder itself is fine (or the earlier check would
+            // have already caught it), but its launcher — and everything
+            // else in it — isn't reachable, usually because it's symlinked
+            // to a disconnected external drive. Showing "Launch Steam" here
+            // would be exactly as misleading as the bottle-missing case.
+            DriveDisconnectedView(bottle: activeBottle, kind: .launcherMissing)
+                .id(backend.activePrefix)
                 .transition(.opacity)
         } else if backend.games.isEmpty && backend.apps.isEmpty {
             if activeBottle?.isSteamBottle ?? true {

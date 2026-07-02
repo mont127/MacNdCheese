@@ -276,6 +276,16 @@ struct GameCardView: View {
     @State private var isHovering = false
     @State private var coverImage: NSImage?
     @State private var isLaunching = false
+    // game.isReachable does a real FileManager syscall. Reading it directly
+    // in `body` would re-run that on every re-render of this card — and
+    // SwiftUI's ObservableObject invalidation is coarse: ANY @Published
+    // change on backend (e.g. isLoadingLibrary flipping during a bottle
+    // switch) re-renders every card in the grid, not just ones whose data
+    // actually changed. For a library with many games that's a real
+    // main-thread stall. Cache it instead and only recheck when it could
+    // plausibly have changed: on first appearance, and when a drive
+    // mounts/unmounts.
+    @State private var isReachable = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -351,7 +361,7 @@ struct GameCardView: View {
             }
             .frame(height: 220)
             .overlay(alignment: .topLeading) {
-                if !game.isReachable {
+                if !isReachable {
                     Image(systemName: "externaldrive.badge.exclamationmark")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
@@ -380,13 +390,19 @@ struct GameCardView: View {
                     lineWidth: 1
                 )
         )
-        .opacity(game.isReachable ? 1.0 : 0.6)
+        .opacity(isReachable ? 1.0 : 0.6)
         .scaleEffect(isHovering ? 1.02 : 1.0)
         .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
         .shadow(color: isHovering ? Color.brand.opacity(0.35) : .clear, radius: 16)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in isHovering = hovering }
-        .onAppear { loadCover() }
+        .onAppear {
+            loadCover()
+            isReachable = game.isReachable
+        }
+        .onChange(of: backend.volumeChangeTick) { _, _ in
+            isReachable = game.isReachable
+        }
         .contextMenu {
             Button(L("Launch")) { directLaunch() }
             Button(L("Launch Options…")) { onOpen() }
@@ -419,7 +435,7 @@ struct GameCardView: View {
     }
 
     private func directLaunch() {
-        guard let prefix = backend.activePrefix, !isLaunching, game.isReachable else { return }
+        guard let prefix = backend.activePrefix, !isLaunching, isReachable else { return }
         isLaunching = true
         Task {
             let cfg = await backend.getGameConfig(prefix: prefix, appid: game.appid)
@@ -495,6 +511,9 @@ struct AppCardView: View {
     @State private var isHovering = false
     @State private var isLaunching = false
     @State private var showUninstallConfirm = false
+    // See GameCardView.isReachable for why this is cached rather than read
+    // directly from `app` in body.
+    @State private var isReachable = true
 
     private var icon: NSImage? {
         guard let b64 = app.iconBase64,
@@ -535,7 +554,7 @@ struct AppCardView: View {
                         )
                 )
                 .overlay(alignment: .topLeading) {
-                    if !app.isReachable {
+                    if !isReachable {
                         Image(systemName: "externaldrive.badge.exclamationmark")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.white)
@@ -544,7 +563,7 @@ struct AppCardView: View {
                             .padding(4)
                     }
                 }
-                .opacity(app.isReachable ? 1.0 : 0.6)
+                .opacity(isReachable ? 1.0 : 0.6)
                 .scaleEffect(isHovering ? 1.05 : 1.0)
 
                 Text(app.name)
@@ -557,8 +576,12 @@ struct AppCardView: View {
         .buttonStyle(.plain)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { isHovering = $0 }
-        .help(app.isReachable ? app.name : L("This app's files aren't available — its drive isn't connected."))
+        .help(isReachable ? app.name : L("This app's files aren't available — its drive isn't connected."))
         .accessibilityLabel("Launch \(app.name)")
+        .onAppear { isReachable = app.isReachable }
+        .onChange(of: backend.volumeChangeTick) { _, _ in
+            isReachable = app.isReachable
+        }
         .contextMenu {
             Button("Launch") { launch() }
             Button("Show in Finder") {
@@ -580,7 +603,7 @@ struct AppCardView: View {
     }
 
     private func launch() {
-        guard let prefix = backend.activePrefix, !isLaunching, app.isReachable else { return }
+        guard let prefix = backend.activePrefix, !isLaunching, isReachable else { return }
         isLaunching = true
         Task {
             await backend.launchApp(prefix: prefix, app: app)

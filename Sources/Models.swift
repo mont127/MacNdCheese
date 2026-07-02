@@ -36,6 +36,27 @@ struct Bottle: Identifiable, Codable, Hashable {
     var isReachable: Bool {
         FileManager.default.fileExists(atPath: path)
     }
+
+    /// Path to the bottle's own launcher exe — the custom `launcherExe` if
+    /// set, else the default Steam.exe location for Steam bottles. nil for a
+    /// bare manual bottle with no specific launcher (its empty-state buttons
+    /// are generic file pickers, not tied to a fixed exe, so there's nothing
+    /// meaningful to check).
+    var launcherExePath: String? {
+        if let exe = launcherExe, !exe.isEmpty { return exe }
+        if isSteamBottle { return path + "/drive_c/Program Files (x86)/Steam/Steam.exe" }
+        return nil
+    }
+
+    /// True when there's no specific launcher to check, or when there is and
+    /// it's currently present on disk. Distinct from `isReachable`: the
+    /// bottle folder can be on the internal drive (reachable) while the
+    /// launcher exe itself sits behind a symlink into a now-disconnected
+    /// external drive.
+    var isLauncherReachable: Bool {
+        guard let exe = launcherExePath else { return true }
+        return FileManager.default.fileExists(atPath: exe)
+    }
 }
 
 struct Game: Identifiable, Codable, Hashable {

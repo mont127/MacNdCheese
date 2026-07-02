@@ -123,6 +123,7 @@ enum Localization {
         "Drive Not Connected": "驱动器未连接",
         "\"%@\" is on the drive \"%@\", which isn't connected. Reconnect it to continue.": "“%@”位于驱动器“%@”上，该驱动器未连接。请重新连接以继续。",
         "Can't find this bottle's folder. If it's on an external drive, reconnect it.": "找不到该容器的文件夹。如果它位于外部驱动器上，请重新连接。",
+        "Can't find this bottle's launcher. If it's on an external drive, reconnect it.": "找不到该容器的启动器。如果它位于外部驱动器上，请重新连接。",
         "Try Again": "重试",
         "This game's files aren't available — its drive isn't connected.": "无法访问该游戏的文件——其驱动器未连接。",
         "This app's files aren't available — its drive isn't connected.": "无法访问该程序的文件——其驱动器未连接。",
