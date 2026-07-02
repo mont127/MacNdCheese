@@ -6,7 +6,7 @@ struct EpicLandingView: View {
     @EnvironmentObject var backend: BackendClient
     @Binding var searchText: String
 
-    enum Phase { case downloading, auth, library }
+    enum Phase { case downloading, checkingAuth, auth, library }
 
     @State private var phase: Phase = .downloading
     @State private var pollTimer: Timer?
@@ -31,6 +31,8 @@ struct EpicLandingView: View {
             switch phase {
             case .downloading:
                 EpicDownloadingView()
+            case .checkingAuth:
+                EpicDownloadingView(message: L("Checking your Epic Games account…"))
             case .auth:
                 EpicAuthView(onAuthenticated: { transitionToLibrary() })
             case .library:
@@ -53,12 +55,22 @@ struct EpicLandingView: View {
     }
 
     private func onAppearHandler() {
+        // Set this up front, not just inside startGamesPolling() — it also
+        // needs to gate the auth-check phase below, so a bottle switch that
+        // happens mid-check doesn't let a stale response flip phase/games
+        // for a view that's no longer showing this bottle.
+        ownPrefix = backend.activePrefix
         if backend.legendaryInstalled {
-            // Always do a fresh auth check — the cached value belongs to the previous bottle.
-            phase = .auth
+            // Always do a fresh auth check — the cached value belongs to the
+            // previous bottle — but show a loading state while it's in
+            // flight instead of the "connect your account" prompt: jumping
+            // straight to .auth was misleading whenever the user was
+            // already signed in, which is the common case.
+            phase = .checkingAuth
             Task {
                 await backend.epicCheckAuth()
-                if backend.epicAuthenticated { transitionToLibrary() }
+                guard isShowingOwnBottle else { return }
+                if backend.epicAuthenticated { transitionToLibrary() } else { phase = .auth }
             }
             return
         }
@@ -67,9 +79,12 @@ struct EpicLandingView: View {
         startDownloadPolling()
         Task {
             await backend.legendaryStatus()
+            guard isShowingOwnBottle else { return }
             if backend.legendaryInstalled {
                 stopDownloadPolling()
+                phase = .checkingAuth
                 await backend.epicCheckAuth()
+                guard isShowingOwnBottle else { return }
                 if backend.epicAuthenticated { transitionToLibrary() } else { phase = .auth }
             }
         }
@@ -144,9 +159,11 @@ struct EpicLandingView: View {
     }
 }
 
-// MARK: - Downloading state
+// MARK: - Downloading / checking state
 
 private struct EpicDownloadingView: View {
+    var message: String = L("Preparing Epic Games support…")
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -159,7 +176,7 @@ private struct EpicDownloadingView: View {
             ProgressView()
                 .controlSize(.large)
                 .padding(.bottom, 12)
-            Text(L("Preparing Epic Games support…"))
+            Text(message)
                 .foregroundStyle(.secondary)
                 .font(.subheadline)
             Spacer()

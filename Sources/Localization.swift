@@ -254,6 +254,7 @@ enum Localization {
         "%@%%": "%@%%",
         "EPIC GAMES": "EPIC GAMES",
         "Preparing Epic Games support…": "正在准备 Epic Games 支持…",
+        "Checking your Epic Games account…": "正在检查你的 Epic Games 账户…",
         "Connect your Epic Games account to access your library.": "连接你的 Epic Games 账户以访问游戏库。",
         "Signing in…": "正在登录…",
         "Connect": "连接",

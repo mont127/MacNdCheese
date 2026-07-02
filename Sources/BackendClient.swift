@@ -39,17 +39,35 @@ final class BackendClient: ObservableObject {
     private var pendingCallbacks: [Int: (Result<Any, Error>) -> Void] = [:]
     private var readBuffer = Data()
 
-    /// In-memory, session-only snapshot of the last successful scan per
-    /// bottle path. Lets switching back to an already-visited bottle show
-    /// its games/apps instantly instead of re-showing the loading spinner —
+    /// Snapshot of the last successful scan per bottle path, persisted to disk
+    /// (UserDefaults) so switching to — or cold-launching into — an
+    /// already-visited bottle shows its games/apps instantly instead of a
+    /// loading spinner, even on the very first scan of a new app launch.
     /// selectBottle still fires a background rescan to keep it fresh.
-    /// Never persisted: reachability is always re-checked fresh on selection,
-    /// so a cache entry can never mask a bottle that's since gone missing.
-    private struct LibrarySnapshot {
+    /// Reachability is always re-checked fresh on selection BEFORE this cache
+    /// is ever consulted, so a stale entry can never mask a bottle that's
+    /// since gone missing — worst case it shows last session's games for a
+    /// moment before the rescan replaces them.
+    private struct LibrarySnapshot: Codable {
         var games: [Game] = []
         var apps: [WineApp] = []
     }
-    private var libraryCache: [String: LibrarySnapshot] = [:]
+    private static let libraryCacheKey = "BackendClient.libraryCache.v1"
+    private var libraryCache: [String: LibrarySnapshot] = BackendClient.loadPersistedLibraryCache() {
+        didSet { Self.persistLibraryCache(libraryCache) }
+    }
+
+    private static func loadPersistedLibraryCache() -> [String: LibrarySnapshot] {
+        guard let data = UserDefaults.standard.data(forKey: libraryCacheKey),
+              let decoded = try? JSONDecoder().decode([String: LibrarySnapshot].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    private static func persistLibraryCache(_ cache: [String: LibrarySnapshot]) {
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        UserDefaults.standard.set(data, forKey: libraryCacheKey)
+    }
 
     // MARK: - Lifecycle
 
@@ -453,6 +471,7 @@ final class BackendClient: ObservableObject {
             _ = try await send(cmd: "delete_bottle", params: ["path": path])
             SpotlightIndexer.deleteForBottle(path)
             GameIndexCache.removeGames(forBottle: path)
+            libraryCache.removeValue(forKey: path)
             if activePrefix == path {
                 activePrefix = nil
                 games = []
