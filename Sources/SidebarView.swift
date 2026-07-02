@@ -100,38 +100,49 @@ struct BottleRow: View {
     @State private var exeIcon: NSImage?
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(bottle.name)
-                    .fontWeight(.medium)
-                Text(abbreviatePath(bottle.path))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        HStack {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bottle.name)
+                        .fontWeight(.medium)
+                    Text(abbreviatePath(bottle.path))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            } icon: {
+                if let icon = exeIcon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 22, height: 22)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if bottle.isEpicBottle {
+                    EpicIcon(size: 22)
+                } else if bottle.isSteamBottle {
+                    Image(systemName: "gamecontroller.fill")
+                        .foregroundStyle(.blue)
+                } else {
+                    Image(systemName: "wineglass")
+                        .foregroundStyle(Color.brand)
+                }
             }
-        } icon: {
-            if let icon = exeIcon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-            } else if bottle.isEpicBottle {
-                EpicIcon(size: 22)
-            } else if bottle.isSteamBottle {
-                Image(systemName: "gamecontroller.fill")
-                    .foregroundStyle(.blue)
-            } else {
-                Image(systemName: "wineglass")
-                    .foregroundStyle(Color.brand)
+
+            if !bottle.isReachable {
+                Spacer(minLength: 4)
+                Image(systemName: "externaldrive.badge.exclamationmark")
+                    .foregroundStyle(.orange)
+                    .help(L("This bottle's drive isn't connected."))
             }
         }
+        .opacity(bottle.isReachable ? 1.0 : 0.85)
         .padding(.vertical, 2)
         .onAppear { Task { await loadIcon() } }
     }
 
     private func loadIcon() async {
-        
+        guard bottle.isReachable else { return }
+
         if let iconPath = bottle.iconPath, !iconPath.isEmpty,
            FileManager.default.fileExists(atPath: iconPath),
            let img = NSImage(contentsOfFile: iconPath) {

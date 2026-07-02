@@ -19,6 +19,13 @@ final class BackendClient: ObservableObject {
     }
     @Published var runningGamePid: Int?
     @Published var lastError: String?
+    /// True while the initial games+apps scan is in flight for the active
+    /// Steam/manual bottle. Epic bottles manage their own loading state
+    /// internally (EpicLandingView) and never set this.
+    @Published var isLoadingLibrary = false
+    /// True when the active bottle's folder can't be found on disk right now
+    /// (e.g. it lives on an external drive that's since been unmounted).
+    @Published var activeBottlePathMissing = false
 
     private var process: Process?
     private var stdinPipe: Pipe?
@@ -97,9 +104,18 @@ final class BackendClient: ObservableObject {
     func refreshAll() async {
         await loadBottles()
         await loadStatus()
+        // Normally loadBottles() already restored (and scanned) the last-active
+        // bottle via selectBottle(), so activePrefix is nil here. This block is
+        // a defensive fallback for a hypothetical future call site that invokes
+        // refreshAll() with a bottle already selected.
         if let prefix = activePrefix {
+            let reachable = bottles.first { $0.path == prefix }?.isReachable ?? true
+            activeBottlePathMissing = !reachable
+            guard reachable else { return }
+            isLoadingLibrary = true
             await scanGames(prefix: prefix)
             await scanApps(prefix: prefix)
+            if activePrefix == prefix { isLoadingLibrary = false }
         }
     }
 
@@ -156,10 +172,19 @@ final class BackendClient: ObservableObject {
     }
 
     func selectBottle(_ path: String) {
+        let bottle = bottles.first { $0.path == path }
         activePrefix = path
         games = []  // clear immediately so stale games don't show for the new bottle
         apps = []
-        let isEpic = bottles.first { $0.path == path }?.isEpicBottle ?? false
+
+        // Default to "reachable" if the bottle list hasn't loaded yet, so we
+        // don't flash a false "drive missing" state before loadBottles() runs.
+        let reachable = bottle?.isReachable ?? true
+        activeBottlePathMissing = !reachable
+        guard reachable else { return }  // nothing to scan against a dead path
+
+        let isEpic = bottle?.isEpicBottle ?? false
+        isLoadingLibrary = true
         Task {
             if isEpic {
                 await legendaryStatus()
@@ -167,6 +192,8 @@ final class BackendClient: ObservableObject {
             }
             await scanGames(prefix: path)
             await scanApps(prefix: path)
+            // Discard if the user switched bottles again while this was in flight.
+            if activePrefix == path { isLoadingLibrary = false }
         }
     }
 

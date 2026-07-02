@@ -81,9 +81,21 @@ struct ContentView: View {
         } else if backend.activePrefix == nil {
             NoPrefixView(showCreateBottle: $showCreateBottle)
                 .transition(.opacity)
+        } else if backend.activeBottlePathMissing {
+            // Takes priority over Epic and the loading state below: an
+            // unreachable bottle path means there's nothing for either of
+            // those flows to scan or authenticate against.
+            DriveDisconnectedView(bottle: activeBottle)
+                .id(backend.activePrefix)
+                .transition(.opacity)
         } else if activeBottle?.isEpicBottle == true {
             EpicLandingView(searchText: $searchText)
                 .id(backend.activePrefix)
+                .transition(.opacity)
+        } else if backend.isLoadingLibrary {
+            // Only reached for Steam/manual bottles — Epic manages its own
+            // loading state internally via EpicLibraryView.
+            LibraryLoadingView()
                 .transition(.opacity)
         } else if backend.games.isEmpty && backend.apps.isEmpty {
             if activeBottle?.isSteamBottle ?? true {
@@ -121,6 +133,8 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.22), value: showStore)
         .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
         .animation(.easeInOut(duration: 0.22), value: backend.apps.isEmpty)
+        .animation(.easeInOut(duration: 0.22), value: backend.isLoadingLibrary)
+        .animation(.easeInOut(duration: 0.22), value: backend.activeBottlePathMissing)
         .background(Color(.windowBackgroundColor))
         .navigationTitle(detailTitle)
         .navigationSubtitle(detailSubtitle)
@@ -279,6 +293,25 @@ private struct OnboardingPresenter: ViewModifier {
                 show = true
             }
         }
+    }
+}
+
+/// Shown while a Steam/manual bottle's initial games+apps scan is still in
+/// flight, so a slow (e.g. external) drive doesn't get mistaken for an empty
+/// library. Mirrors EpicLibraryView's fetching branch.
+struct LibraryLoadingView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            ProgressView()
+                .controlSize(.large)
+                .padding(.bottom, 12)
+            Text(L("Loading your library…"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
