@@ -350,6 +350,17 @@ struct GameCardView: View {
                 }
             }
             .frame(height: 220)
+            .overlay(alignment: .topLeading) {
+                if !game.isReachable {
+                    Image(systemName: "externaldrive.badge.exclamationmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(6)
+                        .background(.orange, in: Circle())
+                        .padding(8)
+                        .help(L("This game's files aren't available — its drive isn't connected."))
+                }
+            }
 
             // Game name
             Text(game.name)
@@ -369,6 +380,7 @@ struct GameCardView: View {
                     lineWidth: 1
                 )
         )
+        .opacity(game.isReachable ? 1.0 : 0.6)
         .scaleEffect(isHovering ? 1.02 : 1.0)
         .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
         .shadow(color: isHovering ? Color.brand.opacity(0.35) : .clear, radius: 16)
@@ -407,7 +419,7 @@ struct GameCardView: View {
     }
 
     private func directLaunch() {
-        guard let prefix = backend.activePrefix, !isLaunching else { return }
+        guard let prefix = backend.activePrefix, !isLaunching, game.isReachable else { return }
         isLaunching = true
         Task {
             let cfg = await backend.getGameConfig(prefix: prefix, appid: game.appid)
@@ -522,6 +534,17 @@ struct AppCardView: View {
                             lineWidth: 1
                         )
                 )
+                .overlay(alignment: .topLeading) {
+                    if !app.isReachable {
+                        Image(systemName: "externaldrive.badge.exclamationmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(4)
+                            .background(.orange, in: Circle())
+                            .padding(4)
+                    }
+                }
+                .opacity(app.isReachable ? 1.0 : 0.6)
                 .scaleEffect(isHovering ? 1.05 : 1.0)
 
                 Text(app.name)
@@ -534,7 +557,7 @@ struct AppCardView: View {
         .buttonStyle(.plain)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { isHovering = $0 }
-        .help(app.name)
+        .help(app.isReachable ? app.name : L("This app's files aren't available — its drive isn't connected."))
         .accessibilityLabel("Launch \(app.name)")
         .contextMenu {
             Button("Launch") { launch() }
@@ -557,7 +580,7 @@ struct AppCardView: View {
     }
 
     private func launch() {
-        guard let prefix = backend.activePrefix, !isLaunching else { return }
+        guard let prefix = backend.activePrefix, !isLaunching, app.isReachable else { return }
         isLaunching = true
         Task {
             await backend.launchApp(prefix: prefix, app: app)

@@ -74,6 +74,21 @@ struct Game: Identifiable, Codable, Hashable {
         updateAvailable = try c.decodeIfPresent(Bool.self, forKey: .updateAvailable) ?? false
         epicAppName = try c.decodeIfPresent(String.self, forKey: .epicAppName)
     }
+
+    /// True unless this game's install folder is a real, known path that's
+    /// currently missing on disk — e.g. installDir is a symlink into a game
+    /// that was moved to (or lives entirely on) a now-disconnected external
+    /// drive, even though the bottle itself is on the internal drive and
+    /// otherwise reachable. The backend's own is_installed/exe detection
+    /// can't tell "never installed" apart from "currently unreachable" for
+    /// this case, so this is a client-side check, same idea as
+    /// Bottle.isReachable. Epic games may legitimately have no installDir
+    /// yet (not downloaded) — that's not a missing-drive case, so it's
+    /// excluded here.
+    var isReachable: Bool {
+        guard epicAppName == nil, !installDir.isEmpty else { return true }
+        return FileManager.default.fileExists(atPath: installDir)
+    }
 }
 
 /// A Windows application discovered inside a bottle (Start Menu shortcut or
@@ -97,6 +112,13 @@ struct WineApp: Identifiable, Codable, Hashable {
         exe = try c.decode(String.self, forKey: .exe)
         args = try c.decodeIfPresent(String.self, forKey: .args) ?? ""
         iconBase64 = try c.decodeIfPresent(String.self, forKey: .iconBase64)
+    }
+
+    /// Same idea as Game.isReachable / Bottle.isReachable — catches a Start
+    /// Menu / Program Files app whose exe sits behind a symlink into a
+    /// now-disconnected external drive.
+    var isReachable: Bool {
+        FileManager.default.fileExists(atPath: exe)
     }
 }
 

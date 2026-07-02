@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// Shown instead of the generic empty-state / "Launch Steam" prompt when the
@@ -63,11 +62,10 @@ struct DriveDisconnectedView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Reconnecting the drive should resolve this automatically — no need
-        // to make the user remember to click "Try Again".
-        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
-            recheck()
-        }
+        // Reconnecting the drive resolves this automatically — BackendClient
+        // observes volume mounts globally and reloads the active bottle — so
+        // "Try Again" below is a manual nudge for the rare case that doesn't
+        // fire a mount notification (e.g. a network share becoming reachable).
     }
 
     private func recheck() {

@@ -12,6 +12,19 @@ struct EpicLandingView: View {
     @State private var pollTimer: Timer?
     @State private var gamesPollTask: Task<Void, Never>? = nil
     @State private var isFetchingGames = true
+    /// The bottle path this instance is polling for. `backend.games` is a
+    /// single array shared with Steam/manual bottles; once the user switches
+    /// away, `selectBottle` clears it for the NEW bottle while this view may
+    /// still be live mid-fade-out (SwiftUI keeps `.transition(.opacity)`
+    /// views reactive during their removal animation). Without this guard,
+    /// that clear briefly makes EpicLibraryView think there are zero games
+    /// and flash its own empty state right as it's fading away.
+    @State private var ownPrefix: String?
+
+    private var isShowingOwnBottle: Bool {
+        guard let ownPrefix else { return true }
+        return backend.activePrefix == ownPrefix
+    }
 
     var body: some View {
         Group {
@@ -21,7 +34,7 @@ struct EpicLandingView: View {
             case .auth:
                 EpicAuthView(onAuthenticated: { transitionToLibrary() })
             case .library:
-                EpicLibraryView(games: sortedGames, searchText: $searchText, isFetching: isFetchingGames)
+                EpicLibraryView(games: sortedGames, searchText: $searchText, isFetching: isFetchingGames || !isShowingOwnBottle)
             }
         }
         .animation(.easeInOut(duration: 0.22), value: phase == .library)
@@ -33,7 +46,8 @@ struct EpicLandingView: View {
     }
 
     private var sortedGames: [Game] {
-        backend.games.sorted {
+        guard isShowingOwnBottle else { return [] }
+        return backend.games.sorted {
             ($0.isInstalled ? 0 : 1) < ($1.isInstalled ? 0 : 1)
         }
     }
@@ -97,6 +111,7 @@ struct EpicLandingView: View {
         gamesPollTask?.cancel()
         isFetchingGames = true
         guard let prefix = backend.activePrefix else { return }
+        ownPrefix = prefix
         gamesPollTask = Task {
             await backend.scanGames(prefix: prefix)
             await backend.refreshEpicDownloads()

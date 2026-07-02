@@ -138,6 +138,13 @@ struct BottleRow: View {
         .opacity(bottle.isReachable ? 1.0 : 0.85)
         .padding(.vertical, 2)
         .onAppear { Task { await loadIcon() } }
+        // The row's own .onAppear only fires once per mount, so if a drive
+        // was disconnected when this row first loaded, the icon fetch was
+        // skipped and never retried. volumeChangeTick bumps on every
+        // mount/unmount; retry then if we still don't have an icon.
+        .onChange(of: backend.volumeChangeTick) { _, _ in
+            if exeIcon == nil { Task { await loadIcon() } }
+        }
     }
 
     private func loadIcon() async {
