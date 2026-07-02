@@ -116,8 +116,14 @@ enum Localization {
         "Move to Front": "移到最前",
         "Move to Back": "移到最后",
         "Kill Wineserver": "终止 Wineserver",
+        "This bottle's drive isn't connected.": "该容器的驱动器未连接。",
 
         // ── Library / games ──────────────────────────────────────────────
+        "Loading your library…": "正在加载游戏库…",
+        "Drive Not Connected": "驱动器未连接",
+        "\"%@\" is on the drive \"%@\", which isn't connected. Reconnect it to continue.": "“%@”位于驱动器“%@”上，该驱动器未连接。请重新连接以继续。",
+        "Can't find this bottle's folder. If it's on an external drive, reconnect it.": "找不到该容器的文件夹。如果它位于外部驱动器上，请重新连接。",
+        "Try Again": "重试",
         "No Games": "暂无游戏",
         "Add a game or run an installer to get started.": "添加游戏或运行安装程序以开始。",
         "Run Installer": "运行安装程序",

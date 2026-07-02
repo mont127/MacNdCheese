@@ -27,6 +27,15 @@ struct Bottle: Identifiable, Codable, Hashable {
         case defaultBackend = "default_backend"
         case wineBinary = "wine_binary"
     }
+
+    /// Cheap, synchronous, client-side check — the SwiftUI app and the Python
+    /// backend both run on the same Mac, so no backend round-trip is needed
+    /// to know whether this bottle's folder (e.g. on an external drive) is
+    /// currently present. Mirrors the FileManager check already used in
+    /// SidebarView.BottleRow.loadIcon().
+    var isReachable: Bool {
+        FileManager.default.fileExists(atPath: path)
+    }
 }
 
 struct Game: Identifiable, Codable, Hashable {
