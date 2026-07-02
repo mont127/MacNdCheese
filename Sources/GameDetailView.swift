@@ -216,7 +216,8 @@ struct GameDetailView: View {
         .buttonStyle(.borderedProminent)
         .tint(.green)
         .controlSize(.large)
-        .disabled((game.epicAppName == nil && effectiveExe.isEmpty) || isLaunching)
+        .disabled((game.epicAppName == nil && effectiveExe.isEmpty) || isLaunching || !game.isReachable)
+        .help(game.isReachable ? "" : L("This game's files aren't available — its drive isn't connected."))
     }
 
     @ViewBuilder
@@ -502,7 +503,7 @@ struct GameDetailView: View {
     }
 
     private func launchGame() {
-        guard let prefix = backend.activePrefix else { return }
+        guard let prefix = backend.activePrefix, game.isReachable else { return }
         isLaunching = true
         let env = combinedCustomEnv()
         Task {

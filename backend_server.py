@@ -44,6 +44,7 @@ import time
 import urllib.parse
 import uuid
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -394,17 +395,27 @@ def log(msg: str) -> None:
 
 
 
+# Guards every JSON state file this backend reads/writes (bottles.json,
+# prefixes.json, per-bottle game-config files, ...). Command handling can run
+# concurrently (see _scan_executor below), so a read here can now overlap a
+# write from a different thread; without this lock a reader could catch a
+# file mid-write (path.write_text() truncates before writing, so a torn read
+# could see empty/partial JSON instead of the old or new content).
+_json_file_lock = threading.Lock()
+
 def _read_json(path: Path, default: Any = None) -> Any:
     try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
+        with _json_file_lock:
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         log(f"Failed to read {path}: {exc}")
     return default
 
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    with _json_file_lock:
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 def _load_prefixes() -> List[str]:
     data = _read_json(PREFIXES_JSON, [])
@@ -6547,6 +6558,12 @@ COMMANDS: Dict[str, Any] = {
 # Response helpers
 # ---------------------------------------------------------------------------
 
+# Command handling can run concurrently (see _scan_executor below), so two
+# responses can now be written around the same time. Without this lock their
+# writes could interleave into one corrupted line the Swift client can't
+# parse as JSON — each _respond() call must land atomically.
+_stdout_lock = threading.Lock()
+
 def _respond(req_id: Any, ok: bool, data: Any = None, error: str = "") -> None:
     resp: Dict[str, Any] = {"id": req_id, "ok": ok}
     if ok:
@@ -6554,8 +6571,9 @@ def _respond(req_id: Any, ok: bool, data: Any = None, error: str = "") -> None:
     else:
         resp["error"] = error
     line = json.dumps(resp, default=str)
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    with _stdout_lock:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -6569,6 +6587,30 @@ _QUIET_POLL_CMDS = {
     "legendary_status",
     "epic_download_progress",
 }
+
+# scan_games/scan_apps walk the filesystem (Steam manifests, Start Menu
+# shortcuts, exe detection) and can take seconds on a slow or external drive.
+# The main loop below otherwise processes one command at a time, so a slow
+# scan for one bottle used to block every other command behind it in the
+# queue — including a fast, unrelated one like an Epic auth check for a
+# bottle the user just switched to. Both handlers are read-only (they never
+# write bottles.json/prefixes.json or any other shared state), so running
+# several concurrently is safe; _json_file_lock/_stdout_lock cover the only
+# state they do touch (a quick bottle-config read, and writing the response).
+_SCAN_EXECUTOR_CMDS = {"scan_games", "scan_apps"}
+_scan_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="scan")
+
+def _run_and_respond(cmd_name: str, req_id: Any, handler, request: Dict[str, Any]) -> None:
+    try:
+        # High-frequency UI polls (every 0.5–3s, forever) used to flood
+        # the log with tens of thousands of identical lines - skip them.
+        if cmd_name not in _QUIET_POLL_CMDS:
+            log(f"Handling cmd={cmd_name} id={req_id}")
+        result = handler(request)
+        _respond(req_id, True, data=result)
+    except Exception as exc:
+        log(f"Error in {cmd_name}: {exc}")
+        _respond(req_id, False, error=str(exc))
 
 def main() -> None:
     log("MacNCheese backend server started")
@@ -6605,16 +6647,10 @@ def main() -> None:
                 _respond(req_id, False, error=f"Unknown command: {cmd_name}")
                 continue
 
-            try:
-                # High-frequency UI polls (every 0.5–3s, forever) used to flood
-                # the log with tens of thousands of identical lines - skip them.
-                if cmd_name not in _QUIET_POLL_CMDS:
-                    log(f"Handling cmd={cmd_name} id={req_id}")
-                result = handler(request)
-                _respond(req_id, True, data=result)
-            except Exception as exc:
-                log(f"Error in {cmd_name}: {exc}")
-                _respond(req_id, False, error=str(exc))
+            if cmd_name in _SCAN_EXECUTOR_CMDS:
+                _scan_executor.submit(_run_and_respond, cmd_name, req_id, handler, request)
+            else:
+                _run_and_respond(cmd_name, req_id, handler, request)
     finally:
         _terminate_legendary_installs()
         _game_mode_reset()

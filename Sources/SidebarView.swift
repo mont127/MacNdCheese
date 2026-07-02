@@ -98,6 +98,14 @@ struct BottleRow: View {
     @EnvironmentObject var backend: BackendClient
     let bottle: Bottle
     @State private var exeIcon: NSImage?
+    // bottle.isReachable does a real FileManager syscall. Reading it directly
+    // in `body` would re-run that on every re-render of this row — and
+    // SwiftUI's ObservableObject invalidation is coarse: ANY @Published
+    // change on backend re-renders every row in the sidebar, not just the
+    // one whose data changed. Cache it and only recheck when it could
+    // plausibly have changed: on first appearance, and when a drive
+    // mounts/unmounts.
+    @State private var isReachable = true
 
     var body: some View {
         HStack {
@@ -128,16 +136,27 @@ struct BottleRow: View {
                 }
             }
 
-            if !bottle.isReachable {
+            if !isReachable {
                 Spacer(minLength: 4)
                 Image(systemName: "externaldrive.badge.exclamationmark")
                     .foregroundStyle(.orange)
                     .help(L("This bottle's drive isn't connected."))
             }
         }
-        .opacity(bottle.isReachable ? 1.0 : 0.85)
+        .opacity(isReachable ? 1.0 : 0.85)
         .padding(.vertical, 2)
-        .onAppear { Task { await loadIcon() } }
+        .onAppear {
+            isReachable = bottle.isReachable
+            Task { await loadIcon() }
+        }
+        // The row's own .onAppear only fires once per mount, so if a drive
+        // was disconnected when this row first loaded, the icon fetch was
+        // skipped and never retried. volumeChangeTick bumps on every
+        // mount/unmount; recheck reachability and retry the icon then.
+        .onChange(of: backend.volumeChangeTick) { _, _ in
+            isReachable = bottle.isReachable
+            if exeIcon == nil { Task { await loadIcon() } }
+        }
     }
 
     private func loadIcon() async {
