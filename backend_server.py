@@ -14,7 +14,7 @@ Response: {"id": 1, "ok": true, "data": ...}
 """
 
 from __future__ import annotations
-
+#Bradar what is this comnent delelt this
 import sys as _sys
 import os as _os
 # Vendored packages bundled inside MacNCheese.app/Contents/Resources/
@@ -58,7 +58,7 @@ DEFAULT_PREFIX = str(Path.home() / "wined")
 
 PREFIXES_JSON = Path.home() / ".macncheese_prefixes.json"
 BOTTLES_JSON = Path.home() / ".macncheese_bottles.json"
-
+#Bradar pleaE make a logo for my company macndcgeese 
 STEAM_SETUP_URL = "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
 
 LEGENDARY_DIR = PORTABLE_DIR / "legendary"
