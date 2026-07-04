@@ -214,20 +214,24 @@ WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
 WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
 UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk")
 
-# The d3d DLL slots the unified loader routes to. Steam exes and the dxmt backend
-# use the canonical names (canonical d3d11/dxgi/d3d10core ARE DXMT). The d3dmetal
-# backend routes to *_d3dm and dxvk to *_dxvk. All of these must physically exist
-# in a prefix system32 or the loader has nothing to route to. We bundle the set
-# and stage it into every prefix on launch.
+# The d3d DLL slots the unified loader routes to. As of 2026-07-04 the design
+# inverted -- canonical d3d11/dxgi/d3d10core are now the D3DMetal STUBS so games
+# default to D3DMetal with no per-game files and the loader routes Steam exes
+# EXPLICITLY to the *_dxmt build. d3dmetal backend -> *_d3dm. dxvk -> *_dxvk.
+# dxmt -> *_dxmt. All must physically exist in a prefix system32 or the loader
+# has nothing to route to. We bundle the set and stage it into a prefix on launch.
 UNIFIED_D3D_DIR = WINE_UNIFIED_DIR / "mnc-d3d"
 UNIFIED_D3D_DEV = Path("/Volumes/ASAFE/steam-clean2/drive_c/windows/system32")
 UNIFIED_D3D_DLLS = (
-    # canonical = DXMT (Steam always; dxmt game backend)
+    # canonical d3d11/dxgi/... = D3DMetal stubs. games fall here by default. also
+    # the loader fallback. winemetal.dll backs the DXMT builds.
     "d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll",
     "d3d12.dll", "d3d12core.dll", "winemetal.dll",
-    # D3DMetal stubs (d3dmetal game backend -> libd3dshared)
+    # DXMT builds -- the loader routes Steam exes here always. dxmt game backend too.
+    "d3d11_dxmt.dll", "dxgi_dxmt.dll", "d3d10core_dxmt.dll",
+    # D3DMetal stubs. d3dmetal game backend -> libd3dshared.
     "d3d11_d3dm.dll", "dxgi_d3dm.dll", "d3d10core_d3dm.dll", "d3d10_d3dm.dll", "d3d12_d3dm.dll",
-    # DXVK (dxvk game backend)
+    # DXVK. dxvk game backend.
     "d3d11_dxvk.dll", "d3d10core_dxvk.dll", "dxgi_dxvk.dll",
 )
 
@@ -596,6 +600,18 @@ def _wine_env(prefix: str) -> Dict[str, str]:
     vk_icd = _find_moltenvk_icd()
     if vk_icd:
         env["VK_ICD_FILENAMES"] = vk_icd
+
+    # fast wineboot gate (no-op unless the unified patched wine is used)
+    env["MNC_SKIP_WOW64_INSTALL"] = "1"
+
+    # freetype fallback so direct-Popen launches (cmd_run_exe etc.) find libfreetype.
+    # paths that wrap wine in `arch` re-export this in-shell since arch strips DYLD_*
+    env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join([
+        "/usr/local/lib", "/usr/local/opt/freetype/lib",
+        "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib",
+        "/usr/local/opt/glib/lib", "/usr/local/opt/gettext/lib",
+        "/usr/local/opt/sdl2/lib", "/usr/lib",
+    ])
 
     return env
 
@@ -2579,6 +2595,19 @@ def _stage_unified_mf(prefix: str) -> None:
                 pass
 
 
+def _apply_retina_unified(bt: Path, wine: str, env: Dict[str, str], retina_mode: bool) -> None:
+    """Apply the RetinaMode/LogPixels regedit for the unified flow then flush the hive
+    so the setting survives the steam path wineserver -k. Without it unified launches
+    render in a tiny HiDPI window."""
+    _apply_retina_regedit(wine, env, retina_mode)
+    try:
+        subprocess.run(["/usr/bin/arch", "-x86_64", str(bt / "server" / "wineserver"), "-w"],
+                       env=env, timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 def _unified_engine_active(bottle_cfg: Dict[str, Any]) -> bool:
     """Unified engine is the default; opt out with engine="classic". Falls back to
     the classic per-game flow when the unified wine isn't installed."""
@@ -2626,6 +2655,9 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         "DYLD_FALLBACK_LIBRARY_PATH": dyld,
         "WINEDLLOVERRIDES": "winemenubuilder.exe=d;mscoree=;mshtml=;nvapi,nvapi64=",
         "MNC_STEAM_DXMT": "1",
+        # skip the slow i386 Wow64Install during wineboot (10s vs 309s) and keep
+        # the PE loader resolving 32-bit builtins from the wine lib dir post-bootstrap
+        "MNC_SKIP_WOW64_INSTALL": "1",
         "MNC_GAME_BACKEND": game_backend,
         # GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
         # this is the exact load-bearing set from the proven steam-unified-run.sh
@@ -2671,22 +2703,27 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True)
     wine = str(bt / "wine")
     wineserver = str(bt / "server" / "wineserver")
+    _apply_retina_unified(bt, wine, env, params.get("retina_mode", False))
     silent = bool(params.get("silent", False))
     steam_args = STEAM_SILENT_ARGS if silent else "-tcp"
     log_path = str(LOG_DIR / "Steam-wine.log")
     # match the proven steam-unified-run.sh: kill the server then wipe the CEF caches
     # (incl userdata GPUCache) so Steam comes up clean on the spoofed GPU + DXMT
     cmd = (
+        # export DYLD inside the shell. the outer arch (SIP-restricted) strips DYLD_* so
+        # running wine via `arch wine` loses the fallback path and wine cannot dlopen
+        # freetype -> no fonts -> tiny empty window. run wine directly under the arch shell
+        f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(env['DYLD_FALLBACK_LIBRARY_PATH'])}\n"
         f"{shlex.quote(wineserver)} -k 2>/dev/null; sleep 1\n"
         f"cd {shlex.quote(str(steam_dir))} || exit 1\n"
         f"rm -f .crash 2>/dev/null\n"
         f"rm -rf appcache config/htmlcache 2>/dev/null\n"
         f"rm -f logs/* dumps/*.dmp 2>/dev/null\n"
         f"find userdata -type d -name GPUCache -prune -exec rm -rf {{}} + 2>/dev/null\n"
-        f"/usr/bin/arch -x86_64 {shlex.quote(wine)} steam.exe {steam_args} > {shlex.quote(log_path)} 2>&1"
+        f"{shlex.quote(wine)} steam.exe {steam_args} > {shlex.quote(log_path)} 2>&1"
     )
     log(f"Launching Steam (unified/DXMT, backend={game_backend}, silent={silent})")
-    proc = subprocess.Popen(["bash", "-lc", cmd], env=env,
+    proc = subprocess.Popen(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", cmd], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
     _steam_process = proc
@@ -2735,17 +2772,24 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
             pass
         env["SteamAppId"] = steam_appid
         env["SteamGameId"] = steam_appid
-    wine = str(bt / "loader" / "wine")
+    # use bt/wine (the build-tree loader symlink -> tools/wine/wine) not bt/loader/wine
+    # the latter is the install-style loader and cannot find the build nls -> l_intl.nls fails
+    wine = str(bt / "wine")
+    _apply_retina_unified(bt, wine, env, params.get("retina_mode", bottle_cfg.get("retina_mode", False)))
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", exe_path.stem)
     log_path = str(LOG_DIR / f"{safe_name}-wine.log")
     quoted_args = (" " + args) if args else ""
     cmd = (
+        # export DYLD inside the shell. the outer arch (SIP-restricted) strips DYLD_* so
+        # running wine via `arch wine` loses the fallback path and wine cannot dlopen
+        # freetype -> no fonts. run wine directly under the arch shell (same as Steam)
+        f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(env['DYLD_FALLBACK_LIBRARY_PATH'])}\n"
         f"cd {shlex.quote(exe_dir)} || exit 1\n"
-        f"/usr/bin/arch -x86_64 {shlex.quote(wine)} {shlex.quote(str(exe_path))}{quoted_args} "
+        f"{shlex.quote(wine)} {shlex.quote(str(exe_path))}{quoted_args} "
         f"> {shlex.quote(log_path)} 2>&1"
     )
     log(f"Launching game (unified, backend={backend}): {exe_path.name}")
-    proc = subprocess.Popen(["bash", "-lc", cmd], env=env,
+    proc = subprocess.Popen(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", cmd], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
     _launched_games[(str(prefix), str(exe))] = proc.pid
@@ -3403,7 +3447,8 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
             subprocess.run(
                 [wine, "wineboot", "-u"],
                 env=env,
-                timeout=120,
+                # backstop: gate makes this ~10s but allow the slow full install to finish
+                timeout=600,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -3799,7 +3844,7 @@ def cmd_init_prefix(params: Dict[str, Any]) -> Any:
     env = _wine_env(prefix)
     log(f"init_prefix: wineboot -u for {prefix}")
     subprocess.run(
-        [wine, "wineboot", "-u"], env=env, timeout=120,
+        [wine, "wineboot", "-u"], env=env, timeout=600,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return None
@@ -3816,7 +3861,7 @@ def cmd_clean_prefix(params: Dict[str, Any]) -> Any:
     env = _wine_env(prefix)
     log(f"clean_prefix: wineboot -u for {prefix}")
     subprocess.run(
-        [wine, "wineboot", "-u"], env=env, timeout=120,
+        [wine, "wineboot", "-u"], env=env, timeout=600,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return None
