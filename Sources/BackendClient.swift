@@ -19,6 +19,18 @@ final class BackendClient: ObservableObject {
     }
     @Published var runningGamePid: Int?
     @Published var lastError: String?
+    /// True while the initial games+apps scan is in flight for the active
+    /// Steam/manual bottle. Epic bottles manage their own loading state
+    /// internally (EpicLandingView) and never set this.
+    @Published var isLoadingLibrary = false
+    /// True when the active bottle's folder can't be found on disk right now
+    /// (e.g. it lives on an external drive that's since been unmounted).
+    @Published var activeBottlePathMissing = false
+    /// Bumped on every volume mount/unmount so views that read per-item
+    /// on-disk reachability (sidebar bottle rows, game tiles) re-render —
+    /// those checks are plain FileManager calls, not @Published state, so
+    /// nothing would otherwise tell SwiftUI to re-evaluate them.
+    @Published private(set) var volumeChangeTick = 0
 
     private var process: Process?
     private var stdinPipe: Pipe?
@@ -26,6 +38,36 @@ final class BackendClient: ObservableObject {
     private var requestId = 0
     private var pendingCallbacks: [Int: (Result<Any, Error>) -> Void] = [:]
     private var readBuffer = Data()
+
+    /// Snapshot of the last successful scan per bottle path, persisted to disk
+    /// (UserDefaults) so switching to — or cold-launching into — an
+    /// already-visited bottle shows its games/apps instantly instead of a
+    /// loading spinner, even on the very first scan of a new app launch.
+    /// selectBottle still fires a background rescan to keep it fresh.
+    /// Reachability is always re-checked fresh on selection BEFORE this cache
+    /// is ever consulted, so a stale entry can never mask a bottle that's
+    /// since gone missing — worst case it shows last session's games for a
+    /// moment before the rescan replaces them.
+    private struct LibrarySnapshot: Codable {
+        var games: [Game] = []
+        var apps: [WineApp] = []
+    }
+    private static let libraryCacheKey = "BackendClient.libraryCache.v1"
+    private var libraryCache: [String: LibrarySnapshot] = BackendClient.loadPersistedLibraryCache() {
+        didSet { Self.persistLibraryCache(libraryCache) }
+    }
+
+    private static func loadPersistedLibraryCache() -> [String: LibrarySnapshot] {
+        guard let data = UserDefaults.standard.data(forKey: libraryCacheKey),
+              let decoded = try? JSONDecoder().decode([String: LibrarySnapshot].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    private static func persistLibraryCache(_ cache: [String: LibrarySnapshot]) {
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        UserDefaults.standard.set(data, forKey: libraryCacheKey)
+    }
 
     // MARK: - Lifecycle
 
@@ -82,6 +124,59 @@ final class BackendClient: ObservableObject {
         } catch {
             lastError = String(format: L("Failed to start backend: %@"), error.localizedDescription)
         }
+
+        // React to external drives coming and going for the lifetime of the
+        // app, not just at bottle-selection time — otherwise a drive pulled
+        // while the user is just browsing an already-loaded library leaves a
+        // stale grid on screen (Launch would silently fail), and a drive
+        // reconnected while a *different* bottle is active never refreshes
+        // that bottle's sidebar icon/dimming until it's re-selected.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didMountNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleVolumeMounted() }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleVolumeUnmounted() }
+        }
+    }
+
+    /// A drive appeared. If it's the one backing the currently-missing active
+    /// bottle, do a full reload. Otherwise, only bother with a silent rescan
+    /// if something in the currently-shown library is already known to be
+    /// unreachable (e.g. a game symlinked to external storage) — this mount
+    /// might be what fixes it. Deliberately NOT unconditional: with an
+    /// already-healthy library, re-scanning on every unrelated volume mount
+    /// (Time Machine snapshots, random USB sticks, DMG installers) would be
+    /// pure waste, and re-triggers the exact slow-scan cost #93 fixed.
+    private func handleVolumeMounted() {
+        volumeChangeTick += 1
+        guard let prefix = activePrefix else { return }
+        let reachable = bottles.first { $0.path == prefix }?.isReachable ?? true
+        guard reachable else { return }
+        if activeBottlePathMissing {
+            selectBottle(prefix)
+        } else if games.contains(where: { !$0.isReachable }) || apps.contains(where: { !$0.isReachable }) {
+            Task {
+                await scanGames(prefix: prefix)
+                await scanApps(prefix: prefix)
+            }
+        }
+    }
+
+    /// A drive disappeared. If it was backing the active bottle, stop showing
+    /// content that's no longer valid instead of leaving a stale grid up.
+    private func handleVolumeUnmounted() {
+        volumeChangeTick += 1
+        guard let prefix = activePrefix, !activeBottlePathMissing else { return }
+        let reachable = bottles.first { $0.path == prefix }?.isReachable ?? true
+        guard !reachable else { return }
+        activeBottlePathMissing = true
+        games = []
+        apps = []
+        isLoadingLibrary = false
     }
 
     func stop() {
@@ -97,9 +192,23 @@ final class BackendClient: ObservableObject {
     func refreshAll() async {
         await loadBottles()
         await loadStatus()
+        // Normally loadBottles() already restored (and scanned) the last-active
+        // bottle via selectBottle(), so activePrefix is nil here. This block is
+        // a defensive fallback for a hypothetical future call site that invokes
+        // refreshAll() with a bottle already selected.
         if let prefix = activePrefix {
+            let reachable = bottles.first { $0.path == prefix }?.isReachable ?? true
+            activeBottlePathMissing = !reachable
+            guard reachable else { return }
+            if let cached = libraryCache[prefix] {
+                games = cached.games
+                apps = cached.apps
+            } else {
+                isLoadingLibrary = true
+            }
             await scanGames(prefix: prefix)
             await scanApps(prefix: prefix)
+            if activePrefix == prefix { isLoadingLibrary = false }
         }
     }
 
@@ -127,10 +236,13 @@ final class BackendClient: ObservableObject {
     func scanGames(prefix: String) async {
         do {
             let result = try await send(cmd: "scan_games", params: ["prefix": prefix])
-            // Discard results if the user switched bottles while the request was in flight.
-            guard activePrefix == prefix else { return }
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode([Game].self, from: data) {
+                // Keep the cache warm for this prefix even if the user has since
+                // navigated elsewhere — it's still useful the next time they visit.
+                libraryCache[prefix, default: LibrarySnapshot()].games = decoded
+                // Discard results if the user switched bottles while the request was in flight.
+                guard activePrefix == prefix else { return }
                 self.games = decoded
                 let bottleName = bottles.first { $0.path == prefix }?.name ?? ""
                 GameIndexCache.updateGames(decoded, bottlePath: prefix, bottleName: bottleName)
@@ -144,10 +256,13 @@ final class BackendClient: ObservableObject {
     func scanApps(prefix: String) async {
         do {
             let result = try await send(cmd: "scan_apps", params: ["prefix": prefix])
-            // Discard results if the user switched bottles while in flight.
-            guard activePrefix == prefix else { return }
             if let data = try? JSONSerialization.data(withJSONObject: result),
                let decoded = try? JSONDecoder().decode([WineApp].self, from: data) {
+                // Keep the cache warm for this prefix even if the user has since
+                // navigated elsewhere — it's still useful the next time they visit.
+                libraryCache[prefix, default: LibrarySnapshot()].apps = decoded
+                // Discard results if the user switched bottles while in flight.
+                guard activePrefix == prefix else { return }
                 self.apps = decoded
             }
         } catch {
@@ -156,10 +271,34 @@ final class BackendClient: ObservableObject {
     }
 
     func selectBottle(_ path: String) {
+        let bottle = bottles.first { $0.path == path }
         activePrefix = path
-        games = []  // clear immediately so stale games don't show for the new bottle
-        apps = []
-        let isEpic = bottles.first { $0.path == path }?.isEpicBottle ?? false
+
+        // Default to "reachable" if the bottle list hasn't loaded yet, so we
+        // don't flash a false "drive missing" state before loadBottles() runs.
+        let reachable = bottle?.isReachable ?? true
+        activeBottlePathMissing = !reachable
+        guard reachable else {
+            games = []
+            apps = []
+            isLoadingLibrary = false
+            return  // nothing to scan against a dead path
+        }
+
+        // Show what we already know instantly (no spinner) and refresh silently
+        // in the background; only fall back to a loading state on a bottle
+        // we've genuinely never scanned before.
+        if let cached = libraryCache[path] {
+            games = cached.games
+            apps = cached.apps
+            isLoadingLibrary = false
+        } else {
+            games = []
+            apps = []
+            isLoadingLibrary = true
+        }
+
+        let isEpic = bottle?.isEpicBottle ?? false
         Task {
             if isEpic {
                 await legendaryStatus()
@@ -167,6 +306,8 @@ final class BackendClient: ObservableObject {
             }
             await scanGames(prefix: path)
             await scanApps(prefix: path)
+            // Discard if the user switched bottles again while this was in flight.
+            if activePrefix == path { isLoadingLibrary = false }
         }
     }
 
@@ -330,6 +471,7 @@ final class BackendClient: ObservableObject {
             _ = try await send(cmd: "delete_bottle", params: ["path": path])
             SpotlightIndexer.deleteForBottle(path)
             GameIndexCache.removeGames(forBottle: path)
+            libraryCache.removeValue(forKey: path)
             if activePrefix == path {
                 activePrefix = nil
                 games = []

@@ -57,6 +57,50 @@ struct ContentView: View {
         return backend.bottles.first { $0.path == prefix }
     }
 
+    /// True once the library has finished loading and at least one game or
+    /// app in it is actually usable right now (as opposed to merely present
+    /// in the list but pointing at a currently-disconnected drive).
+    private var hasAccessibleContent: Bool {
+        backend.games.contains { $0.isReachable } || backend.apps.contains { $0.isReachable }
+    }
+
+    /// The single source of truth for which state detailContent should show
+    /// (it switches on this directly) — also gives detailPane one coalesced
+    /// value to animate on (see detailTransitionKey below) instead of
+    /// stacking several independent .animation(value:) modifiers, which can
+    /// fire as separate, conflicting transactions when multiple of the
+    /// underlying values change in the same update (e.g. switching bottles
+    /// changes activePrefix, games, apps, and isLoadingLibrary all at once).
+    private enum DetailBranch: Equatable {
+        case store, noPrefix, driveMissing, epic, loading, launcherMissing, empty, grid
+    }
+
+    private var detailBranch: DetailBranch {
+        if showStore { return .store }
+        if backend.activePrefix == nil { return .noPrefix }
+        if backend.activeBottlePathMissing { return .driveMissing }
+        if activeBottle?.isEpicBottle == true { return .epic }
+        if backend.isLoadingLibrary { return .loading }
+        if activeBottle?.isLauncherReachable == false && !hasAccessibleContent { return .launcherMissing }
+        if backend.games.isEmpty && backend.apps.isEmpty { return .empty }
+        return .grid
+    }
+
+    /// Includes activePrefix alongside the branch so switching between two
+    /// bottles that land on the *same* branch (e.g. two different non-empty
+    /// Steam bottles, both `.grid`) still triggers the cross-fade — the
+    /// branch alone wouldn't change in that case, but the .id(activePrefix)
+    /// on each branch's view still forces a remount that needs an active
+    /// animation transaction to animate rather than hard-cut.
+    private struct DetailTransitionKey: Equatable {
+        var prefix: String?
+        var branch: DetailBranch
+    }
+
+    private var detailTransitionKey: DetailTransitionKey {
+        DetailTransitionKey(prefix: backend.activePrefix, branch: detailBranch)
+    }
+
     private var detailTitle: String {
         if showStore { return L("Store") }
         if let bottle = activeBottle { return bottle.name }
@@ -75,30 +119,59 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detailContent: some View {
-        if showStore {
+        // Switches on the same branch computation detailTransitionKey
+        // animates on, so the two can never drift out of sync. Every branch
+        // (other than the store, which isn't tied to a bottle) gets
+        // .id(activePrefix): without it, switching between two bottles that
+        // land on the *same* branch (e.g. two different non-empty Steam
+        // bottles) would have SwiftUI diff the old content against the new
+        // one in place — for GameGridView specifically, that means diffing
+        // an entirely different set of appids plus an AppsSectionView whose
+        // position shifts with the new item count, which could show stale
+        // content mid-transition (a leftover label from the old bottle
+        // briefly overlapping the new grid) instead of a clean cross-fade.
+        switch detailBranch {
+        case .store:
             StoreView(searchText: searchText)
                 .transition(.opacity)
-        } else if backend.activePrefix == nil {
+        case .noPrefix:
             NoPrefixView(showCreateBottle: $showCreateBottle)
                 .transition(.opacity)
-        } else if activeBottle?.isEpicBottle == true {
+        case .driveMissing:
+            DriveDisconnectedView(bottle: activeBottle)
+                .id(backend.activePrefix)
+                .transition(.opacity)
+        case .epic:
             EpicLandingView(searchText: $searchText)
                 .id(backend.activePrefix)
                 .transition(.opacity)
-        } else if backend.games.isEmpty && backend.apps.isEmpty {
+        case .loading:
+            // Only reached for Steam/manual bottles — Epic manages its own
+            // loading state internally via EpicLibraryView.
+            LibraryLoadingView()
+                .id(backend.activePrefix)
+                .transition(.opacity)
+        case .launcherMissing:
+            DriveDisconnectedView(bottle: activeBottle, kind: .launcherMissing)
+                .id(backend.activePrefix)
+                .transition(.opacity)
+        case .empty:
             if activeBottle?.isSteamBottle ?? true {
                 SteamLandingView()
+                    .id(backend.activePrefix)
                     .transition(.opacity)
             } else {
                 EmptyBottleLandingView()
+                    .id(backend.activePrefix)
                     .transition(.opacity)
             }
-        } else {
+        case .grid:
             GameGridView(
                 games: filteredGames,
                 searchText: $searchText,
                 onOpenDetail: { openDetail($0) }
             )
+            .id(backend.activePrefix)
             .transition(.opacity)
         }
     }
@@ -117,10 +190,7 @@ struct ContentView: View {
                     .zIndex(3)
             }
         }
-        .animation(.easeInOut(duration: 0.22), value: backend.activePrefix)
-        .animation(.easeInOut(duration: 0.22), value: showStore)
-        .animation(.easeInOut(duration: 0.22), value: backend.games.isEmpty)
-        .animation(.easeInOut(duration: 0.22), value: backend.apps.isEmpty)
+        .animation(.easeInOut(duration: 0.22), value: detailTransitionKey)
         .background(Color(.windowBackgroundColor))
         .navigationTitle(detailTitle)
         .navigationSubtitle(detailSubtitle)
@@ -279,6 +349,25 @@ private struct OnboardingPresenter: ViewModifier {
                 show = true
             }
         }
+    }
+}
+
+/// Shown while a Steam/manual bottle's initial games+apps scan is still in
+/// flight, so a slow (e.g. external) drive doesn't get mistaken for an empty
+/// library. Mirrors EpicLibraryView's fetching branch.
+struct LibraryLoadingView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            ProgressView()
+                .controlSize(.large)
+                .padding(.bottom, 12)
+            Text(L("Loading your library…"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

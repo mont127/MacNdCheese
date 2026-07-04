@@ -98,40 +98,70 @@ struct BottleRow: View {
     @EnvironmentObject var backend: BackendClient
     let bottle: Bottle
     @State private var exeIcon: NSImage?
+    // bottle.isReachable does a real FileManager syscall. Reading it directly
+    // in `body` would re-run that on every re-render of this row — and
+    // SwiftUI's ObservableObject invalidation is coarse: ANY @Published
+    // change on backend re-renders every row in the sidebar, not just the
+    // one whose data changed. Cache it and only recheck when it could
+    // plausibly have changed: on first appearance, and when a drive
+    // mounts/unmounts.
+    @State private var isReachable = true
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(bottle.name)
-                    .fontWeight(.medium)
-                Text(abbreviatePath(bottle.path))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        HStack {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bottle.name)
+                        .fontWeight(.medium)
+                    Text(abbreviatePath(bottle.path))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            } icon: {
+                if let icon = exeIcon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 22, height: 22)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if bottle.isEpicBottle {
+                    EpicIcon(size: 22)
+                } else if bottle.isSteamBottle {
+                    Image(systemName: "gamecontroller.fill")
+                        .foregroundStyle(.blue)
+                } else {
+                    Image(systemName: "wineglass")
+                        .foregroundStyle(Color.brand)
+                }
             }
-        } icon: {
-            if let icon = exeIcon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-            } else if bottle.isEpicBottle {
-                EpicIcon(size: 22)
-            } else if bottle.isSteamBottle {
-                Image(systemName: "gamecontroller.fill")
-                    .foregroundStyle(.blue)
-            } else {
-                Image(systemName: "wineglass")
-                    .foregroundStyle(Color.brand)
+
+            if !isReachable {
+                Spacer(minLength: 4)
+                Image(systemName: "externaldrive.badge.exclamationmark")
+                    .foregroundStyle(.orange)
+                    .help(L("This bottle's drive isn't connected."))
             }
         }
+        .opacity(isReachable ? 1.0 : 0.85)
         .padding(.vertical, 2)
-        .onAppear { Task { await loadIcon() } }
+        .onAppear {
+            isReachable = bottle.isReachable
+            Task { await loadIcon() }
+        }
+        // The row's own .onAppear only fires once per mount, so if a drive
+        // was disconnected when this row first loaded, the icon fetch was
+        // skipped and never retried. volumeChangeTick bumps on every
+        // mount/unmount; recheck reachability and retry the icon then.
+        .onChange(of: backend.volumeChangeTick) { _, _ in
+            isReachable = bottle.isReachable
+            if exeIcon == nil { Task { await loadIcon() } }
+        }
     }
 
     private func loadIcon() async {
-        
+        guard bottle.isReachable else { return }
+
         if let iconPath = bottle.iconPath, !iconPath.isEmpty,
            FileManager.default.fileExists(atPath: iconPath),
            let img = NSImage(contentsOfFile: iconPath) {
