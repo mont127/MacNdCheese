@@ -739,6 +739,21 @@ final class BackendClient: ObservableObject {
         return nil
     }
 
+    func checkAudioInput() async -> AudioInputInfo? {
+        do {
+            let result = try await send(cmd: "check_audio_input")
+            if let data = try? JSONSerialization.data(withJSONObject: result),
+               let decoded = try? JSONDecoder().decode(AudioInputInfo.self, from: data) {
+                return decoded
+            }
+        } catch { }
+        return nil
+    }
+
+    func openSoundSettings() async {
+        _ = try? await send(cmd: "open_sound_settings")
+    }
+
     func openWinecfg(prefix: String) async {
         do {
             _ = try await send(cmd: "open_winecfg", params: ["prefix": prefix])

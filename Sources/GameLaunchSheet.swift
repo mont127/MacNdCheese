@@ -17,6 +17,7 @@ struct GameLaunchSheet: View {
     @State private var loadingBackends = true
     @State private var retinaMode: Bool = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
     @State private var metalHud: Bool = false
+    @State private var micInfo: AudioInputInfo?
     @State private var gameMode: Bool = true
     @State private var advancedDebug: Bool = false
     @State private var enableEsync: Bool = true
@@ -46,6 +47,8 @@ struct GameLaunchSheet: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
 
+                micWarningBanner
+
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 10) {
                         steamDescriptionSection
@@ -74,6 +77,7 @@ struct GameLaunchSheet: View {
         .task {
             await loadExes()
             await loadBackends()
+            await loadMicInfo()
             await loadBottleDefaults()   // bottle-level defaults first…
             await loadGameConfig()       // …then per-game overrides
             await loadSteamDescription()
@@ -472,6 +476,28 @@ struct GameLaunchSheet: View {
             selectedBackend = "auto"
         }
         loadingBackends = false
+    }
+
+    private func loadMicInfo() async {
+        micInfo = await backend.checkAudioInput()
+    }
+
+    @ViewBuilder private var micWarningBanner: some View {
+        if let m = micInfo, m.warn {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "mic.slash.fill").foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(m.message).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    Button(L("Open Sound Settings")) { Task { await backend.openSoundSettings() } }
+                        .font(.caption).buttonStyle(.link)
+                }
+                Spacer()
+            }
+            .padding(8)
+            .background(Color.orange.opacity(0.12))
+            .cornerRadius(6)
+            .padding(.vertical, 6)
+        }
     }
 
     private func loadBottleDefaults() async {

@@ -182,6 +182,15 @@ struct GraphicsBackend: Identifiable, Codable {
     }
 }
 
+struct AudioInputInfo: Codable {
+    let name: String
+    let rate: Int
+    let transport: String
+    let warn: Bool
+    let message: String
+    let suggest: String
+}
+
 struct BackendsResponse: Codable {
     let backends: [GraphicsBackend]
     let autoResolved: String
