@@ -171,10 +171,10 @@ BACKEND_WINE = "wine"
 BACKEND_WINE_DEVEL = "wine_devel"  # Wine Staging 11.8 + OpenGL 3.2 macdrv patch (Mewgenics/SDL3)
 BACKEND_DXVK = "dxvk"
 BACKEND_DXMT = "dxmt"
-# monofunc/dxmt fork (feature/openxr branch): DXMT's Metal D3D11/10 translation
+# Brada monofunc/dxmt fork (feature/openxr branch): DXMT's Metal D3D11/10 translation
 # plus OpenXR passthrough, so D3D11 OpenXR (VR) apps can reach a native macOS
-# OpenXR runtime via the wineopenxr bridge. Kept separate from BACKEND_DXMT so a
-# stock DXMT install and the VR fork can coexist and be selected independently.
+# Brada OpenXR runtime via the wineopenxr bridge. Kept separate from BACKEND_DXMT so a
+# Brada stock DXMT install and the VR fork can coexist and be selected independently.
 BACKEND_DXMT_OPENXR = "dxmt_openxr"
 BACKEND_MESA_LLVMPIPE = "mesa:llvmpipe"
 BACKEND_MESA_ZINK = "mesa:zink"
@@ -188,9 +188,9 @@ BACKEND_D3DMETAL3 = "d3dmetal3"
 DEFAULT_DXVK_INSTALL = Path.home() / "dxvk-release"
 DEFAULT_MESA_DIR = Path.home() / "mesa" / "x64"
 DEFAULT_DXMT_DIR = Path.home() / "dxmt"
-# Staging dir for the monofunc/dxmt OpenXR fork (built from source by
-# installer.sh install_dxmt_openxr). Separate from DEFAULT_DXMT_DIR so the two
-# DXMT variants don't clobber each other.
+# Brada Staging dir for the monofunc/dxmt OpenXR fork (built from source by
+# Brada installer.sh install_dxmt_openxr). Separate from DEFAULT_DXMT_DIR so the two
+# Brada DXMT variants don't clobber each other.
 DEFAULT_DXMT_OPENXR_DIR = Path.home() / "dxmt-openxr"
 # Host OpenXR runtime (Monado), built x86_64 by installer.sh
 # install_monado_runtime. The wineopenxr bridge forwards D3D11 OpenXR to whatever
@@ -207,36 +207,36 @@ DEFAULT_GPTK_DIR = Path.home() / "gptk"
 GPTK3_ROOT = Path.home() / "gptk3" / "Game Porting Toolkit.app"
 D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
 
-# Unified engine: one wine renders Steam CEF via DXMT and routes games-from-Steam
-# to a chosen backend (MNC_GAME_BACKEND) via the loader. Steam exes are pinned to
-# DXMT by the loader no matter what MNC_GAME_BACKEND is. WINE_UNIFIED_DIR holds the
+# Brada Unified engine: one wine renders Steam CEF via DXMT and routes games-from-Steam
+# Brada to a chosen backend (MNC_GAME_BACKEND) via the loader. Steam exes are pinned to
+# Brada DXMT by the loader no matter what MNC_GAME_BACKEND is. WINE_UNIFIED_DIR holds the
 # bundled build (build64 layout: loader/wine + dlls + server). DEV path is a fallback.
 WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
 WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
 UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk")
 
-# The d3d DLL slots the unified loader routes to. As of 2026-07-04 the design
-# inverted -- canonical d3d11/dxgi/d3d10core are now the D3DMetal STUBS so games
-# default to D3DMetal with no per-game files and the loader routes Steam exes
-# EXPLICITLY to the *_dxmt build. d3dmetal backend -> *_d3dm. dxvk -> *_dxvk.
-# dxmt -> *_dxmt. All must physically exist in a prefix system32 or the loader
+# Brada The d3d DLL slots the unified loader routes to. As of 2026-07-04 the design
+# Brada inverted -- canonical d3d11/dxgi/d3d10core are now the D3DMetal STUBS so games
+# Brada default to D3DMetal with no per-game files and the loader routes Steam exes
+# Brada EXPLICITLY to the *_dxmt build. d3dmetal backend -> *_d3dm. dxvk -> *_dxvk.
+# Brada dxmt -> *_dxmt. All must physically exist in a prefix system32 or the loader
 # has nothing to route to. We bundle the set and stage it into a prefix on launch.
 UNIFIED_D3D_DIR = WINE_UNIFIED_DIR / "mnc-d3d"
 UNIFIED_D3D_DEV = Path("/Volumes/ASAFE/steam-clean2/drive_c/windows/system32")
 UNIFIED_D3D_DLLS = (
-    # canonical d3d11/dxgi/... = D3DMetal stubs. games fall here by default. also
-    # the loader fallback. winemetal.dll backs the DXMT builds.
+    # Brada canonical d3d11/dxgi/... = D3DMetal stubs. games fall here by default. also
+    # Brada the loader fallback. winemetal.dll backs the DXMT builds.
     "d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll",
     "d3d12.dll", "d3d12core.dll", "winemetal.dll",
-    # DXMT builds -- the loader routes Steam exes here always. dxmt game backend too.
+    # Brada DXMT builds -- the loader routes Steam exes here always. dxmt game backend too.
     "d3d11_dxmt.dll", "dxgi_dxmt.dll", "d3d10core_dxmt.dll",
-    # D3DMetal stubs. d3dmetal game backend -> libd3dshared.
+    # Brada D3DMetal stubs. d3dmetal game backend -> libd3dshared.
     "d3d11_d3dm.dll", "dxgi_d3dm.dll", "d3d10core_d3dm.dll", "d3d10_d3dm.dll", "d3d12_d3dm.dll",
-    # DXVK. dxvk game backend.
+    # Brada DXVK. dxvk game backend.
     "d3d11_dxvk.dll", "d3d10core_dxvk.dll", "dxgi_dxvk.dll",
 )
 
-# Game-side MediaFoundation video bridge. A homebrew-GStreamer winegstreamer variant
+# Brada Game-side MediaFoundation video bridge. A homebrew-GStreamer winegstreamer variant
 # so games decode H264 intro videos while Steam stays off GStreamer. Its PE exports
 # wineg_game so the loader pairs it with dlls/wineg_game (its own unix half on the
 # Cellar gst core) not Steam packaged-core slot which would dual-load GStreamer and
@@ -380,7 +380,7 @@ def _rpc_bridge_uninstall_prefix(prefix: str) -> None:
         log(f"rpc-bridge: uninstall failed: {exc}")
 
 
-# Centralised log directory (wine logs, dxvk logs, app log)
+# Brada Centralised log directory (wine logs, dxvk logs, app log)
 LOG_DIR = Path.home() / "Library" / "Logs" / "MacNCheese"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 (LOG_DIR / "dxvk").mkdir(exist_ok=True)
@@ -646,7 +646,7 @@ def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
         reg_file.write_text(reg_content, encoding="utf-8")
         # Timeout is generous (5 min) because the FIRST regedit call against
         # a fresh prefix has to wait for wineboot --init to finish — that's
-        # ~2-5 min under our patched wine-d3dmetal because every helper
+        # Brada ~2-5 min under our patched wine-d3dmetal because every helper
         # process (services, explorer, plugplay, winedevice, mscoree) goes
         # through the in-process Cocoa launcher init. Subsequent regedit
         # calls in the same prefix return in <1s.
@@ -681,7 +681,7 @@ def _dxvk_available() -> bool:
     return all((DEFAULT_DXVK_INSTALL / "bin" / dll).exists() for dll in DXVK_DLLS)
 
 def _mesa_available() -> bool:
-    # Mesa was removed; the unified engine covers DXMT/DXVK/D3DMetal.
+    # Brada Mesa was removed; the unified engine covers DXMT/DXVK/D3DMetal.
     return False
 
 def _vkd3d_available() -> bool:
@@ -825,14 +825,14 @@ def _d3dmetal3_available() -> bool:
     Requires: GPTK DLLs in x86_64-windows/, and D3DMetal native runtime
     (D3DMetal.framework + libd3dshared.dylib) in the native dir.
     """
-    # The unified wine now provides D3DMetal via the loader (MNC_GAME_BACKEND).
+    # Brada The unified wine now provides D3DMetal via the loader (MNC_GAME_BACKEND).
     if _unified_available():
         return True
-    # The no-shim wine-11-d3dmetal app is fully self-contained (bundles
-    # libd3dshared.dylib + D3DMetal.framework), so its presence IS availability.
+    # Brada The no-shim wine-11-d3dmetal app is fully self-contained (bundles
+    # Brada libd3dshared.dylib + D3DMetal.framework), so its presence IS availability.
     if _wine_d3dmetal_installed():
         return True
-    # Legacy fallback: GPTK DLLs + external D3DMetal native runtime.
+    # Brada Legacy fallback: GPTK DLLs + external D3DMetal native runtime.
     dll_dir = DEFAULT_GPTK_DIR / "lib" / "wine" / "x86_64-windows"
     has_dlls = (
         dll_dir.exists()
@@ -980,7 +980,7 @@ def _apply_backend_env(env: Dict[str, str], backend: str, debug: bool = False) -
         env.pop("MESA_GLTHREAD", None)
 
     elif backend == BACKEND_DXMT_OPENXR:
-        # Same Metal D3D11/10/DXGI translation as DXMT (the fork's builtin PE
+        # Brada Same Metal D3D11/10/DXGI translation as DXMT (the fork's builtin PE
         # DLLs are synced into the wine lib by _prepare_game_for_backend), but
         # wineopenxr is force-loaded so D3D11 OpenXR apps resolve the bridge that
         # forwards to the native macOS OpenXR runtime (registered per-prefix as
@@ -1081,7 +1081,7 @@ def _apply_backend_env(env: Dict[str, str], backend: str, debug: bool = False) -
 def _backend_wine_binary(backend: str, exe: str) -> Optional[str]:
     """Return the wine binary for backends that need a special one, else None."""
     if backend == BACKEND_D3DMETAL3:
-        # D3DMetal = the no-shim wine-11-d3dmetal app, shipped as Wine D3DMetal.app.
+        # Brada D3DMetal = the no-shim wine-11-d3dmetal app, shipped as Wine D3DMetal.app.
         # Launched via `open -n` (see _backend_launch_cmd); return its Cocoa
         # launcher so callers have a non-None wine path.
         app = PORTABLE_DIR / "Wine D3DMetal.app"
@@ -1162,13 +1162,13 @@ def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
         )
 
     if backend == BACKEND_D3DMETAL3:
-        # D3DMetal = no-shim wine-11-d3dmetal app, launched by DIRECT-EXEC of its
+        # Brada D3DMetal = no-shim wine-11-d3dmetal app, launched by DIRECT-EXEC of its
         # in-process Cocoa launcher (Contents/MacOS/wine), NOT `open -n`.
         #
         # WHY NOT `open -n`: macOS SIP STRIPS DYLD_* env vars across the `open`/
         # LaunchServices boundary (proven: passing --env DYLD_FALLBACK_LIBRARY_PATH
         # to `open` arrives EMPTY inside the process). With DYLD_FALLBACK stripped,
-        # the MF→winegstreamer→GStreamer video path never initializes
+        # Brada the MF→winegstreamer→GStreamer video path never initializes
         # (wg_init_gstreamer=0, MFCreateSourceReader=0) and RE-Engine titles (RE4)
         # exit ~1.3GB on a black screen. Direct-exec preserves the env we set here
         # (subprocess.Popen passes env= straight through, no SIP boundary), so
@@ -1185,11 +1185,11 @@ def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
             str(libext),
             "/usr/local/opt/freetype/lib",
             "/usr/local/opt/fontconfig/lib",
-            # Self-contained font fallback: the Wine D3DMetal bundle ships an
+            # Brada Self-contained font fallback: the Wine D3DMetal bundle ships an
             # x86_64 libfreetype.6.dylib (+ libpng) in its lib/ dir. Listing it
             # here means machines WITHOUT Homebrew freetype (the common case —
             # the installer never installs it) still resolve freetype, so
-            # RE-Engine/D3DMetal titles (RE4) don't fail font init / black-screen.
+            # Brada RE-Engine/D3DMetal titles (RE4) don't fail font init / black-screen.
             # Placed after the Homebrew paths so existing setups are unchanged.
             str(rx / "lib"),
             "/usr/local/lib",
@@ -1226,7 +1226,7 @@ def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
         # GPTK uses the heredoc-to-zsh pattern so that
         # DYLD_FALLBACK_LIBRARY_PATH survives macOS SIP stripping.
         mnc_root = PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine"
-        # D3DMetal native runtime: .dylib and .framework files, not Windows .dlls
+        # Brada D3DMetal native runtime: .dylib and .framework files, not Windows .dlls
         dyld_fallback = ":".join([
             str(D3DMETAL_NATIVE_DIR),
             "/usr/local/lib",
@@ -1327,7 +1327,7 @@ def _restore_wine_lib_from_dxmt_backup() -> List[str]:
                         touched.append(dll)
                     except Exception as exc:
                         log(f"DXMT restore: failed copying {dll}: {exc}")
-        # winemetal.dll is the DXMT bridge — wine itself doesn't ship one, so
+        # Brada winemetal.dll is the DXMT bridge — wine itself doesn't ship one, so
         # the safe action is removal. Keeping it leaves a fallback path that
         # the dxgi/d3d11 PE loader can pick up.
         winemetal = win64_lib / "winemetal.dll"
@@ -1418,10 +1418,10 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
     game_dir = Path(install_dir) if install_dir else exe_path.parent
     target_dirs = _collect_target_dirs(game_dir, exe_path)
 
-    # Any non-DXMT backend has to undo a prior DXMT install's wine-lib
-    # contamination first, otherwise winemetal.dll + DXMT's d3d11/dxgi
+    # Brada Any non-DXMT backend has to undo a prior DXMT install's wine-lib
+    # Brada contamination first, otherwise winemetal.dll + DXMT's d3d11/dxgi
     # leak into the wine PE loader's search path even with native DLLs
-    # placed correctly in the game dir. The OpenXR fork is DXMT-family
+    # Brada placed correctly in the game dir. The OpenXR fork is DXMT-family
     # (it installs the same winemetal-based DLLs), so it's excluded too.
     if backend not in (BACKEND_DXMT, BACKEND_DXMT_OPENXR):
         _restore_wine_lib_from_dxmt_backup()
@@ -1498,7 +1498,7 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
 
     elif backend == BACKEND_DXMT:
         _unpatch_dxvk(game_dir)
-        # Sync DXMT DLLs and Unix bridge into every installed Wine bundle so the
+        # Brada Sync DXMT DLLs and Unix bridge into every installed Wine bundle so the
         # correct version is loaded regardless of which Wine (Stable/Staging) runs.
         wine_libs = _find_all_wine_libs()
         if wine_libs:
@@ -1520,8 +1520,8 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
 
     elif backend == BACKEND_DXMT_OPENXR:
         _unpatch_dxvk(game_dir)
-        # Same sync as DXMT, but sourced from the OpenXR fork's staging dir so it
-        # doesn't depend on / clobber a stock DXMT install.
+        # Brada Same sync as DXMT, but sourced from the OpenXR fork's staging dir so it
+        # Brada doesn't depend on / clobber a stock DXMT install.
         src_dir = DEFAULT_DXMT_OPENXR_DIR
         wine_libs = _find_all_wine_libs()
         if wine_libs:
@@ -1543,7 +1543,7 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
 
     elif backend == BACKEND_WINE:
         _unpatch_dxvk(game_dir)
-        # Restore original Wine PE DLLs if DXMT had replaced them.
+        # Brada Restore original Wine PE DLLs if DXMT had replaced them.
         wine_lib = _find_wine_win64_lib()
         backup_dir = PORTABLE_DIR / ".dxmt-wine-backups"
         if wine_lib and backup_dir.is_dir():
@@ -2646,7 +2646,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         env.pop(var, None)
     nd = _d3dmetal_native_dir()
     libd3d = str(nd / "libd3dshared.dylib")
-    # winegstreamer_game.so links the x86_64 homebrew gstreamer by absolute path so its
+    # Brada winegstreamer_game.so links the x86_64 homebrew gstreamer by absolute path so its
     # plugins MUST come from that SAME homebrew instance or the registry rejects them
     gst_lib = "/usr/local/opt/gstreamer/lib"
     gst = gst_lib + "/gstreamer-1.0"
@@ -2666,11 +2666,11 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         "DYLD_FALLBACK_LIBRARY_PATH": dyld,
         "WINEDLLOVERRIDES": "winemenubuilder.exe=d;mscoree=;mshtml=;nvapi,nvapi64=",
         "MNC_STEAM_DXMT": "1",
-        # skip the slow i386 Wow64Install during wineboot (10s vs 309s) and keep
+        # Brada skip the slow i386 Wow64Install during wineboot (10s vs 309s) and keep
         # the PE loader resolving 32-bit builtins from the wine lib dir post-bootstrap
         "MNC_SKIP_WOW64_INSTALL": "1",
         "MNC_GAME_BACKEND": game_backend,
-        # GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
+        # Brada GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
         # this is the exact load-bearing set from the proven steam-unified-run.sh
         "MNC_WEBHELPER_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
             "--ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds --disable-software-rasterizer "
@@ -2719,7 +2719,7 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     steam_args = STEAM_SILENT_ARGS if silent else "-tcp"
     log_path = str(LOG_DIR / "Steam-wine.log")
     # match the proven steam-unified-run.sh: kill the server then wipe the CEF caches
-    # (incl userdata GPUCache) so Steam comes up clean on the spoofed GPU + DXMT
+    # Brada (incl userdata GPUCache) so Steam comes up clean on the spoofed GPU + DXMT
     cmd = (
         # export DYLD inside the shell. the outer arch (SIP-restricted) strips DYLD_* so
         # running wine via `arch wine` loses the fallback path and wine cannot dlopen
@@ -2831,7 +2831,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     verbose_debug = bool(params.get("debug", bottle_cfg.get("debug", False)))
     # "silent" (background Steam, no window) | "open" (full Steam UI) | "none".
     # Both silent and open launch Steam via the SAME Wine-Stable path
-    # (cmd_launch_steam) — the no-shim D3DMetal wine can't render Steam's CEF UI.
+    # Brada (cmd_launch_steam) — the no-shim D3DMetal wine can't render Steam's CEF UI.
     steam_mode = params.get("steam_mode", "silent")
     # Mirror the frontend's power toggle so the idle-Steam watchdog follows it.
     global _auto_stop_steam
@@ -2886,7 +2886,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     wine_pref = bottle_cfg.get("wine_binary", "auto")
 
     # Steam launcher selection from the launch sheet ("Silent Steam" / "Open
-    # Steam" / "No Steam") — honoured for EVERY backend, not just D3DMetal. We
+    # Brada Steam" / "No Steam") — honoured for EVERY backend, not just D3DMetal. We
     # bring Steam up the SAME way the "Open Steam" button does (cmd_launch_steam
     # → Wine Stable), so a Steamworks game always finds an authenticated Steam
     # client. steam_mode picks silent (-silent, background, no window) vs open
@@ -2894,7 +2894,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     # We BLOCK until Steam reaches [Logged On] before launching the game — a
     # Steamworks game started before the Steam API is authenticated dies with
     # "Steam denied appID". An already-running Steam is assumed ready.
-    # (The no-shim D3DMetal wine in particular can't render Steam's CEF UI, which
+    # Brada (The no-shim D3DMetal wine in particular can't render Steam's CEF UI, which
     # is the original reason Steam must come up via Wine Stable, not the backend.)
     # Only for Steam bottles — a "None"/custom bottle's launch must not drag up
     # Steam (or the bottle's custom launcher) on every game start.
@@ -2921,7 +2921,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
 
 
     # Honour the bottle's Wine selection (Auto / Stable / Staging / Devel) when
-    # the graphics backend doesn't force a Wine of its own (d3dmetal3/gptk/devel).
+    # Brada the graphics backend doesn't force a Wine of its own (d3dmetal3/gptk/devel).
     wine = _backend_wine_binary(backend, exe) or _find_wine_for_bottle(wine_pref)
     if not wine:
         raise FileNotFoundError("Wine not found. Install Wine first.")
@@ -2994,9 +2994,9 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
 
     arg_parts = shlex.split(args) if args else []
     # UE4 (4.x) games default to the D3D12 RHI, but UE4's D3D12 path null-derefs
-    # under D3DMetal (EXCEPTION_ACCESS_VIOLATION at RHI init — e.g. Escape the
+    # Brada under D3DMetal (EXCEPTION_ACCESS_VIOLATION at RHI init — e.g. Escape the
     # Backrooms "Fatal error!"), while its D3D11 RHI runs fine. Force -d3d11 for
-    # UE4 titles on the D3DMetal/GPTK backends. NOT for UE5 (Nanite/Lumen require
+    # Brada UE4 titles on the D3DMetal/GPTK backends. NOT for UE5 (Nanite/Lumen require
     # D3D12), and never override a user-supplied RHI flag.
     if backend in (BACKEND_D3DMETAL3, BACKEND_GPTK):
         _rhi_flags = ("-d3d11", "-d3d12", "-dx11", "-dx12", "-sm5", "-sm6", "-vulkan", "-opengl", "-d3d10")
@@ -3014,7 +3014,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     if metal_hud:
         launch_extra_env["MTL_HUD_ENABLED"] = "1"
     if steam_appid:
-        # The d3dmetal3/gptk heredocs export SteamAppId from extra_env.
+        # Brada The d3dmetal3/gptk heredocs export SteamAppId from extra_env.
         launch_extra_env["SteamAppId"] = steam_appid
         launch_extra_env["SteamGameId"] = steam_appid
     cmd = _backend_launch_cmd(
@@ -3048,7 +3048,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     log(f"Game launched with PID {proc.pid}, backend={backend}, log at {log_path}")
 
     # Revert the per-launch DLL swap once the game exits, so nothing is left
-    # replaced: the game-dir copies (D3DMetal/GPTK/DXVK/…) and, for DXMT, the
+    # Brada replaced: the game-dir copies (D3DMetal/GPTK/DXVK/…) and, for DXMT, the
     # shared Wine-Stable lib (so Steam can launch cleanly afterwards).
     if patch_record or backend in (BACKEND_DXMT, BACKEND_DXMT_OPENXR):
         threading.Thread(
@@ -3104,12 +3104,12 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     if _unified_engine_active(_ucfg):
         return _launch_steam_unified(prefix, _ucfg, params)
 
-    # Steam runs on Wine Stable. A prior DXMT game replaces Wine Stable's shared
+    # Brada Steam runs on Wine Stable. A prior DXMT game replaces Wine Stable's shared
     # lib d3d11/dxgi/d3d10core (and drops winemetal.dll); if left in place, Steam
-    # loads DXMT's Metal-based Direct3D and fails to launch. Restore the stock
+    # Brada loads DXMT's Metal-based Direct3D and fails to launch. Restore the stock
     # DLLs first so Steam always starts on clean Direct3D. (In the game-launch
     # flow Steam comes up + reaches [Logged On] BEFORE the per-game DLL prep
-    # re-applies DXMT, so the game still gets DXMT and Steam stays stock.)
+    # Brada re-applies DXMT, so the game still gets DXMT and Steam stays stock.)
     try:
         _restore_wine_lib_from_dxmt_backup()
     except Exception as exc:
@@ -3729,7 +3729,7 @@ def cmd_kill_wineserver(params: Dict[str, Any]) -> Any:
     env = _wine_env(prefix)
 
     # 1) graceful shutdown on every portable Wine build that exists (each build
-    #    has its own wineserver; the D3DMetal one was previously never asked).
+    # Brada    has its own wineserver; the D3DMetal one was previously never asked).
     servers: List[str] = []
     for app in ("Wine Stable.app", "Wine Staging.app", "Wine Devel.app", "Wine D3DMetal.app"):
         cand = PORTABLE_DIR / app / "Contents" / "Resources" / "wine" / "bin" / "wineserver"
@@ -4284,7 +4284,7 @@ def cmd_detect_wine(params: Dict[str, Any]) -> Any:
             "version": _get_wine_version(path) if path else None,
         })
 
-    # The unified wine is the default engine (Steam via DXMT + games on the chosen
+    # Brada The unified wine is the default engine (Steam via DXMT + games on the chosen
     # backend). It isn't a wine_binary pref so report it as an informational extra.
     ubt = _unified_build_dir()
     variants.append({
