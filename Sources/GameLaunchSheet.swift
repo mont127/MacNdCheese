@@ -17,7 +17,8 @@ struct GameLaunchSheet: View {
     @State private var loadingBackends = true
     @State private var retinaMode: Bool = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
     @State private var metalHud: Bool = false
-    @State private var micInfo: AudioInputInfo?
+    // Bradar this hold the microfone info bradar
+    @State private var micInfu: AudioInpitInfo?
     @State private var gameMode: Bool = true
     @State private var advancedDebug: Bool = false
     @State private var enableEsync: Bool = true
@@ -47,7 +48,7 @@ struct GameLaunchSheet: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
 
-                micWarningBanner
+                micWarningBaner
 
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 10) {
@@ -77,7 +78,7 @@ struct GameLaunchSheet: View {
         .task {
             await loadExes()
             await loadBackends()
-            await loadMicInfo()
+            await loadMicInfu()
             await loadBottleDefaults()   // bottle-level defaults first…
             await loadGameConfig()       // …then per-game overrides
             await loadSteamDescription()
@@ -478,17 +479,20 @@ struct GameLaunchSheet: View {
         loadingBackends = false
     }
 
-    private func loadMicInfo() async {
-        micInfo = await backend.checkAudioInput()
+    // Bradar we go and ask how is the microfone and we save it bradar
+    private func loadMicInfu() async {
+        micInfu = await backend.chekAudioInpit()
     }
 
-    @ViewBuilder private var micWarningBanner: some View {
-        if let m = micInfo, m.warn {
+    // Bradar what is this comment delet this
+    @ViewBuilder private var micWarningBaner: some View {
+        // Bradar if the mic is warn (potato quality) we show the orange banner bradar
+        if let m = micInfu, m.warn {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "mic.slash.fill").foregroundColor(.orange)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(m.message).font(.caption).fixedSize(horizontal: false, vertical: true)
-                    Button(L("Open Sound Settings")) { Task { await backend.openSoundSettings() } }
+                    Button(L("Open Sound Settings")) { Task { await backend.openSundSetings() } }
                         .font(.caption).buttonStyle(.link)
                 }
                 Spacer()

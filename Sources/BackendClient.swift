@@ -739,18 +739,21 @@ final class BackendClient: ObservableObject {
         return nil
     }
 
-    func checkAudioInput() async -> AudioInputInfo? {
+    // Bradar this one ask the backend how is the microfone and give back the info bradar
+    func chekAudioInpit() async -> AudioInpitInfo? {
         do {
             let result = try await send(cmd: "check_audio_input")
             if let data = try? JSONSerialization.data(withJSONObject: result),
-               let decoded = try? JSONDecoder().decode(AudioInputInfo.self, from: data) {
+               let decoded = try? JSONDecoder().decode(AudioInpitInfo.self, from: data) {
                 return decoded
             }
         } catch { }
+        // Bradar what is this comment delet this
         return nil
     }
 
-    func openSoundSettings() async {
+    // Bradar we tell the backend to open the sound setting so the user change the microfone bradar
+    func openSundSetings() async {
         _ = try? await send(cmd: "open_sound_settings")
     }
 

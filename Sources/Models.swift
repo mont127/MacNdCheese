@@ -182,7 +182,9 @@ struct GraphicsBackend: Identifiable, Codable {
     }
 }
 
-struct AudioInputInfo: Codable {
+// Bradar this struct is holding the info about the microfone bradar the name the rate the warning everything
+struct AudioInpitInfo: Codable {
+    // Bradar what is this comment delet this
     let name: String
     let rate: Int
     let transport: String

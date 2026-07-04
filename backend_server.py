@@ -6541,78 +6541,85 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
     return {"job_id": job_id}
 
 
-def _default_input_info() -> Dict[str, Any]:
-    """Inspect the macOS default audio INPUT device and flag low-quality mics.
-    Bluetooth headsets (AirPods) get forced into 24 kHz mono HFP mode the moment an
-    app opens the mic so voice sounds muffled and laggy in games. Returns the device
-    name/rate/transport a warn flag a message and a >=48 kHz device to suggest."""
-    info = {"name": "", "rate": 0, "transport": "", "warn": False, "message": "", "suggest": ""}
+def _defualt_inpit_info() -> Dict[str, Any]:
+    # Bradar this function look at the microfone of the mac and if it is potato quality we warn the user bradar
+    infu = {"name": "", "rate": 0, "transport": "", "warn": False, "message": "", "suggest": ""}
     try:
-        out = subprocess.run(["system_profiler", "SPAudioDataType", "-json"],
+        # Bradar we ask the system profiler what audio device is connected bradar
+        aut = subprocess.run(["system_profiler", "SPAudioDataType", "-json"],
                              capture_output=True, text=True, timeout=12).stdout
-        data = json.loads(out)
+        dataa = json.loads(aut)
     except Exception as exc:
         log(f"mic-guard: system_profiler failed: {exc}")
-        return info
+        return infu
 
-    def find_items(o):
+    # Bradar what is this comment delet this
+    def find_itmes(o):
+        # Bradar this one dig inside the json to find the device list and it call himself again and again bradar
         if isinstance(o, dict):
             if "_items" in o:
                 return o["_items"]
             for v in o.values():
-                r = find_items(v)
+                r = find_itmes(v)
                 if r:
                     return r
         elif isinstance(o, list):
             for x in o:
-                r = find_items(x)
+                r = find_itmes(x)
                 if r:
                     return r
         return None
 
-    items = find_items(data) or []
-    default = None
-    suggest = ""
-    for it in items:
+    itmes = find_itmes(dataa) or []
+    defualt = None
+    sugest = ""
+    # Bradar now we go one by one on every device bradar
+    for it in itmes:
         if not isinstance(it, dict):
             continue
-        is_input = it.get("coreaudio_device_input") or it.get("coreaudio_input_source")
-        rate = int(it.get("coreaudio_device_srate") or 0)
+        is_inpit = it.get("coreaudio_device_input") or it.get("coreaudio_input_source")
+        rait = int(it.get("coreaudio_device_srate") or 0)
         if it.get("coreaudio_default_audio_input_device") == "spaudio_yes":
-            default = it
-        elif is_input and rate >= 48000 and not suggest \
+            # Bradar this is the one the mac is using right now bradar
+            defualt = it
+        elif is_inpit and rait >= 48000 and not sugest \
                 and "bluetooth" not in str(it.get("coreaudio_device_transport", "")):
-            suggest = it.get("_name", "")
-    if not default:
-        return info
+            # Bradar this device is 48 kHz very good so we remember it to suggest bradar
+            sugest = it.get("_name", "")
+    if not defualt:
+        return infu
 
-    name = default.get("_name", "")
-    rate = int(default.get("coreaudio_device_srate") or 0)
-    transport = str(default.get("coreaudio_device_transport", "")).replace("coreaudio_device_type_", "")
-    info.update({"name": name, "rate": rate, "transport": transport, "suggest": suggest})
-    if rate and rate < 44100:
-        info["warn"] = True
-        msg = f'Your mic "{name}" is running at {rate // 1000} kHz'
-        if "bluetooth" in transport:
-            msg += " (Bluetooth HFP). AirPods and BT headsets drop to 24 kHz mono when used as a mic so voice sounds muffled and laggy in games."
+    # Bradar what is this comment delet this
+    nem = defualt.get("_name", "")
+    rait = int(defualt.get("coreaudio_device_srate") or 0)
+    transpurt = str(defualt.get("coreaudio_device_transport", "")).replace("coreaudio_device_type_", "")
+    infu.update({"name": nem, "rate": rait, "transport": transpurt, "suggest": sugest})
+    # Bradar if the rate is small like under 44100 the mic is potato so we must warn bradar
+    if rait and rait < 44100:
+        infu["warn"] = True
+        mesaj = f'Your mic "{nem}" is running at {rait // 1000} kHz'
+        if "bluetooth" in transpurt:
+            mesaj += " (Bluetooth HFP). AirPods and BT headsets drop to 24 kHz mono when used as a mic so voice sounds muffled and laggy in games."
         else:
-            msg += " which is low quality for voice."
-        msg += (f' Switch to "{suggest}" (48 kHz) in System Settings > Sound > Input.'
-                if suggest else " Pick a 48 kHz mic in System Settings > Sound > Input.")
-        info["message"] = msg
-    return info
+            mesaj += " which is low quality for voice."
+        mesaj += (f' Switch to "{sugest}" (48 kHz) in System Settings > Sound > Input.'
+                if sugest else " Pick a 48 kHz mic in System Settings > Sound > Input.")
+        infu["message"] = mesaj
+    return infu
 
 
-def cmd_check_audio_input(params: Dict[str, Any]) -> Any:
-    return _default_input_info()
+def cmd_chek_audio_inpit(params: Dict[str, Any]) -> Any:
+    # Bradar the app is asking how is the microfone so we go and check it bradar
+    return _defualt_inpit_info()
 
 
-def cmd_open_sound_settings(params: Dict[str, Any]) -> Any:
-    """Open System Settings -> Sound so the user can pick a better mic."""
+def cmd_open_sund_setings(params: Dict[str, Any]) -> Any:
+    # Bradar we open the sound setting for the user so he can change the microfone bradar very nice
     try:
         subprocess.run(["open", "x-apple.systempreferences:com.apple.Sound-Settings.extension"], timeout=10)
         return {"ok": True}
     except Exception as exc:
+        # Bradar what is this comment delet this
         return {"ok": False, "error": str(exc)}
 
 
@@ -6642,8 +6649,8 @@ COMMANDS: Dict[str, Any] = {
     "detect_exes": cmd_detect_exes,
     "list_backends": cmd_list_backends,
     "get_components_status": cmd_get_components_status,
-    "check_audio_input": cmd_check_audio_input,
-    "open_sound_settings": cmd_open_sound_settings,
+    "check_audio_input": cmd_chek_audio_inpit,
+    "open_sound_settings": cmd_open_sund_setings,
     "detect_wine": cmd_detect_wine,
     "get_update_info": cmd_get_update_info,
     "check_app_update": cmd_check_app_update,
