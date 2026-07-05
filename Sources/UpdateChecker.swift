@@ -22,7 +22,7 @@ final class UpdateChecker: ObservableObject {
     @Published var currentStep = ""
     @Published var installLog: [String] = []
 
-    func check() {
+    func check(autoInstallWith backend: BackendClient? = nil) {
         Task.detached(priority: .utility) {
             do {
                 let apiURL = "https://api.github.com/repos/\(Self.githubRepo)/releases/latest"
@@ -55,6 +55,10 @@ final class UpdateChecker: ObservableObject {
                         self.releaseURL = htmlURL
                         self.dmgURL = dmgDownload
                         self.updateAvailable = true
+                        // Bradar AUTO-update on launch: a newer version is out -> apply it right now
+                        // (download DMG -> extract+codesign -> swap -> relaunch) insted of waitin for
+                        // a manual banner click. the banner still shows "Updating to X…" live.
+                        if let backend, !dmgDownload.isEmpty { self.install(backend: backend) }
                     }
                 }
             } catch {

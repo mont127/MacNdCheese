@@ -1343,6 +1343,50 @@ find_wineopenxr_wine_tree() {
   return 1
 }
 
+install_vr() {
+  # Bradar ONE-tap VR for the unified wine. the openxr-DXMT d3d DLLs + the wineopenxr builtin
+  # already ride WITH the unified wine (install_wine_unified stages mnc-d3d w/ the _openxr slots
+  # + the wine bundle carries dlls/wineopenxr). so this just: (1) belt-stage the openxr DLLs +
+  # wineopenxr PE into mnc-d3d, (2) stage the OpenXR-runtime manifest, (3) install x86_64 Monado.
+  echo "Step: Installing VR (OpenXR: wineopenxr bridge + openxr-DXMT + Monado runtime)..."
+  local wineruut res dxo c woxdll
+  wineruut="${PORTABLE_DIR}/wine-unified"
+  res="${RESOURCES_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
+  # (1) openxr-DXMT d3d DLLs -> mnc-d3d as the _openxr slots the loader routes MNC_GAME_BACKEND=vr to
+  dxo=""
+  for c in "$res/dxmt-openxr" "$HOME/macndcheese/dxmt-openxr" "$HOME/dxmt-openxr"; do
+    [ -f "$c/d3d11.dll" ] && { dxo="$c"; break; }
+  done
+  if [ -n "$dxo" ] && [ -d "$wineruut/mnc-d3d" ]; then
+    cp -f "$dxo/d3d11.dll"     "$wineruut/mnc-d3d/d3d11_openxr.dll"     2>/dev/null || true
+    cp -f "$dxo/dxgi.dll"      "$wineruut/mnc-d3d/dxgi_openxr.dll"      2>/dev/null || true
+    cp -f "$dxo/d3d10core.dll" "$wineruut/mnc-d3d/d3d10core_openxr.dll" 2>/dev/null || true
+    echo "install_vr: staged openxr-DXMT d3d DLLs into mnc-d3d"
+  fi
+  # (2) the wineopenxr bridge PE (the .so builtin ships in the wine bundle at dlls/wineopenxr)
+  woxdll=""
+  for c in "$wineruut/dlls/wineopenxr/x86_64-windows/wineopenxr.dll" "$res/wineopenxr/wineopenxr.dll" "$HOME/macndcheese/mnc-d3d/wineopenxr.dll"; do
+    [ -f "$c" ] && { woxdll="$c"; break; }
+  done
+  [ -n "$woxdll" ] && [ -d "$wineruut/mnc-d3d" ] && cp -f "$woxdll" "$wineruut/mnc-d3d/wineopenxr.dll" 2>/dev/null || true
+  # (3) OpenXR-runtime manifest -> PORTABLE_DIR/wineopenxr (register_wineopenxr_in_prefix reads this)
+  for c in "$res/wineopenxr/wineopenxr64.json" "$HOME/macndcheese/wineopenxr/wineopenxr64.json" "$wineruut/wineopenxr/wineopenxr64.json"; do
+    if [ -f "$c" ]; then mkdir -p "$PORTABLE_DIR/wineopenxr"; cp -f "$c" "$PORTABLE_DIR/wineopenxr/wineopenxr64.json"; echo "install_vr: wineopenxr manifest staged"; break; fi
+  done
+  # (4) the x86_64 Monado OpenXR runtime (arm64 wont dlopen into the Rosetta wine)
+  install_monado_runtime || echo "install_vr: WARNING monado runtime install failed — VR wont reach an HMD"
+  write_component_version "vr" "unified-1"
+  echo "install_vr: done"
+}
+
+uninstall_vr() {
+  echo "Step: Uninstalling VR..."
+  uninstall_monado_runtime 2>/dev/null || true
+  rm -rf "$PORTABLE_DIR/wineopenxr" 2>/dev/null || true
+  # leave the wine-side openxr DLLs + wineopenxr builtin — theyre inert unless a game runs backend=vr
+  echo "uninstall_vr: done"
+}
+
 install_wineopenxr() {
   echo "Step: Installing wineopenxr (D3D11 OpenXR bridge for macOS)..."
 
@@ -2116,6 +2160,41 @@ EOF
   return 1
 }
 
+sign_unified_wine() {
+  # Bradar this is the BIG one for steam speed — sign the wine loader exes with the
+  # no-W^X entitlement (disable-executable-page-protection) so the 32-bit steam code
+  # (SteamService.exe) dont trap into a sigsegv/rosetta-exception storm that eat a whole core.
+  # without this the wine binary is unsigned -> macOS enforce W^X hard -> every write<->exec
+  # page flip fault -> rosetta exceptionserver handle it -> ~100% cpu for nothing.
+  local wineruut entfyle signd b
+  wineruut="$1"
+  entfyle="$(mktemp -t mncjitent 2>/dev/null || echo /tmp/mncjitent.plist).plist"
+  cat > "$entfyle" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.disable-executable-page-protection</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+    <key>com.apple.security.get-task-allow</key><true/>
+</dict>
+</plist>
+PLIST
+  # Bradar the entitlement is process-wide from the main exe so signin the loaders is enuf,
+  # we dont gotta sign every .so (disable-library-validation lets it still load the unsigned ones)
+  signd=0
+  for b in wine loader/wine tools/wine/wine server/wineserver bin/wine bin/wineserver; do
+    if [ -e "$wineruut/$b" ]; then
+      /usr/bin/codesign --force --sign - --options runtime --entitlements "$entfyle" "$wineruut/$b" 2>/dev/null && signd=$((signd+1))
+    fi
+  done
+  rm -f "$entfyle" 2>/dev/null || true
+  echo "sign_unified_wine: signed $signd wine loader binarys with the no-W^X / JIT entitlement"
+}
+
 install_wine_unified() {
   # install the unified wine (build64 layout) into deps
   # prefers the bundled zip so a packaged app installs offline
@@ -2140,6 +2219,7 @@ install_wine_unified() {
     find "$dst" -name 'wine' -type f -exec chmod +x {} \; 2>/dev/null || true
     xattr -dr com.apple.quarantine "$dst" 2>/dev/null || true
     stage_unified_d3d_pack "$dst"
+    sign_unified_wine "$dst"
     echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
     return 0
   fi
@@ -2152,7 +2232,17 @@ install_wine_unified() {
   echo "Bundling unified wine: $src -> $dst"
   mkdir -p "$dst"
   rsync -a --delete "$src/" "$dst/"
+  # build64/nls + build64/fonts are symlinks into the source tree so rsync leaves them
+  # dangling. materialize the real files (cp -L follows the links) so the bundled
+  # wineserver finds l_intl.nls and games are not fontless or tiny
+  for d in nls fonts; do
+    if [ -d "$src/$d" ]; then
+      rm -rf "$dst/$d"
+      cp -RL "$src/$d" "$dst/$d" 2>/dev/null || true
+    fi
+  done
   stage_unified_d3d_pack "$dst"
+  sign_unified_wine "$dst"
   echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
 }
 
@@ -2266,6 +2356,12 @@ case "$ACTION" in
     ;;
   uninstall_rpc_bridge)
     uninstall_rpc_bridge
+    ;;
+  install_vr)
+    install_vr
+    ;;
+  uninstall_vr)
+    uninstall_vr
     ;;
   install_wineopenxr)
     install_wineopenxr

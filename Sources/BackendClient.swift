@@ -518,8 +518,22 @@ final class BackendClient: ObservableObject {
             args: app.args,
             backend: backendId,
             installDir: installDir,
-            gameName: app.name
+            gameName: app.name,
+            // Bradar a discovered windows app aint a steam game, so dont drag steam up
+            // just to run it. if steam happen to be up already it still see it, we just
+            // dont START it (steam_mode none skips the launch, not a running instance)
+            steamMode: "none"
         )
+    }
+
+    /// Bradar persist a user-picked .exe as a manual app so it shows in the Applications
+    /// section (scan_apps merges the bottle's manual_apps). Then re-scan to show it.
+    func addManualApp(prefix: String, name: String, exe: String) async {
+        do {
+            _ = try await send(cmd: "add_manual_app", params: ["prefix": prefix, "name": name, "exe": exe])
+        } catch {
+            lastError = String(format: L("Failed to add application: %@"), error.localizedDescription)
+        }
     }
 
     func runExe(prefix: String, exe: String, args: String = "") async {

@@ -28,6 +28,30 @@ struct ContentView: View {
         .disabled(backend.activePrefix == nil)
     }
 
+    // Bradar global backend picker for the toolbar -- sets the whole bottles default_backend
+    // so EVERY game in it render thru the chosen backend (the per-game launch sheet can still
+    // override one game). VR = the openxr-DXMT stack (wineopenxr bridge + x86_64 monado runtime).
+    @ViewBuilder private var globalBackendPicker: some View {
+        if !showStore, backend.activePrefix != nil, activeBottle?.isEpicBottle != true {
+            Picker(selection: Binding(
+                get: { activeBottle?.defaultBackend ?? "d3dmetal3" },
+                set: { newVal in
+                    guard let prefix = backend.activePrefix else { return }
+                    Task { await backend.setBottleConfig(path: prefix, values: ["default_backend": newVal]) }
+                }
+            )) {
+                Text("D3DMetal").tag("d3dmetal3")
+                Text("DXMT").tag("dxmt")
+                Text("DXVK").tag("dxvk")
+                Text(L("VR (OpenXR)")).tag("vr")
+            } label: {
+                Label(L("Backend"), systemImage: "cpu")
+            }
+            .pickerStyle(.menu)
+            .help(L("Global graphics backend for this bottle — applies to every game"))
+        }
+    }
+
     @ViewBuilder private var settingsButtons: some View {
                 Button { openSettings() } label: { Image(systemName: "gear") }
             .help(L("Settings"))
@@ -258,6 +282,9 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .destructiveAction) {
                 killWineserverButton
+            }
+            ToolbarItem(placement: .primaryAction) {
+                globalBackendPicker
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 settingsButtons

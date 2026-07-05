@@ -1,5 +1,26 @@
 import Foundation
 
+/// Bradar robust "is this paths drive actually here" check. a plain fileExists()
+/// false-negative on a CONNECTED external volume — TCC after the app got re-signed,
+/// a broke symlink somwhere in the chain, or a moved subfolder — so the app was
+/// cryin "Drive Not Connected" about a drive thats literaly right there. so we say
+/// reachable if the file is there OR the volume the path live on is still mounted.
+func driveIsKonnected(forPath path: String) -> Bool {
+    if path.isEmpty { return true }
+    if FileManager.default.fileExists(atPath: path) { return true }
+    // Bradar internal paths sit on the root volume ("/") which is allways mounted
+    guard path.hasPrefix("/Volumes/") else { return true }
+    // Bradar external path -> its volume is /Volumes/<name>, connected iff that one is mounted.
+    // this dont need file-access permission (volume enum is TCC-free) so it survive a re-sign
+    let komps = path.split(separator: "/", omittingEmptySubsequences: true)
+    guard komps.count >= 2 else { return true }
+    let volPath = "/Volumes/" + komps[1]
+    let mounz = (FileManager.default.mountedVolumeURLs(
+        includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
+    ).map { $0.path }
+    return mounz.contains(volPath)
+}
+
 struct Bottle: Identifiable, Codable, Hashable {
     var id: String { path }
     let path: String
@@ -34,7 +55,7 @@ struct Bottle: Identifiable, Codable, Hashable {
     /// currently present. Mirrors the FileManager check already used in
     /// SidebarView.BottleRow.loadIcon().
     var isReachable: Bool {
-        FileManager.default.fileExists(atPath: path)
+        driveIsKonnected(forPath: path)
     }
 
     /// Path to the bottle's own launcher exe — the custom `launcherExe` if
@@ -55,7 +76,7 @@ struct Bottle: Identifiable, Codable, Hashable {
     /// external drive.
     var isLauncherReachable: Bool {
         guard let exe = launcherExePath else { return true }
-        return FileManager.default.fileExists(atPath: exe)
+        return driveIsKonnected(forPath: exe)
     }
 }
 
@@ -108,7 +129,7 @@ struct Game: Identifiable, Codable, Hashable {
     /// excluded here.
     var isReachable: Bool {
         guard epicAppName == nil, !installDir.isEmpty else { return true }
-        return FileManager.default.fileExists(atPath: installDir)
+        return driveIsKonnected(forPath: installDir)
     }
 }
 
@@ -139,7 +160,7 @@ struct WineApp: Identifiable, Codable, Hashable {
     /// Menu / Program Files app whose exe sits behind a symlink into a
     /// now-disconnected external drive.
     var isReachable: Bool {
-        FileManager.default.fileExists(atPath: exe)
+        driveIsKonnected(forPath: exe)
     }
 }
 

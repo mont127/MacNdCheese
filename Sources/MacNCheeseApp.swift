@@ -187,7 +187,7 @@ struct MacNCheeseApp: App {
                 .onAppear {
                     backend.start()
                     announcements.check()
-                    updateChecker.check()
+                    updateChecker.check(autoInstallWith: backend)
 
                     let handler = MacNCheeseURLHandler(backend: backend)
                     urlHandler = handler

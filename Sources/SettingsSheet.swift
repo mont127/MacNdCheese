@@ -224,6 +224,7 @@ struct BottleSettingsTab: View {
                                 Text("D3DMetal").tag("d3dmetal3")
                                 Text("DXMT").tag("dxmt")
                                 Text("DXVK").tag("dxvk")
+                                Text("VR").tag("vr")
                             }
                             .pickerStyle(.segmented)
                             .onChange(of: globalBackend) { saveBottleConfig() }
@@ -519,6 +520,7 @@ struct SetupSettingsTab: View {
     @State private var wantWineOpenXR = false
     @State private var wantDxmtOpenXR = false
     @State private var wantMonadoRuntime = false
+    @State private var wantVR = false
 
     // Baseline installed state (used to detect installs vs uninstalls)
     @State private var hadTools = false
@@ -533,6 +535,7 @@ struct SetupSettingsTab: View {
     @State private var hadWineOpenXR = false
     @State private var hadDxmtOpenXR = false
     @State private var hadMonadoRuntime = false
+    @State private var hadVR = false
 
     // Update availability per component
     @State private var toolsHasUpdate = false
@@ -627,21 +630,14 @@ struct SetupSettingsTab: View {
 
                 GroupBox(L("VR")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        ComponentToggleRow(L("wineopenxr (D3D11 OpenXR bridge, builds from source)"),
-                                          isOn: $wantWineOpenXR,
-                                          installed: hadWineOpenXR)
+                        // Bradar ONE VR toggle -- installs the whole openxr stack in one shot: the
+                        // wineopenxr bridge + the openxr-DXMT d3d DLLs into the unified wine + the
+                        // x86_64 Monado runtime. after this, pick VR in the backend picker n it works
+                        ComponentToggleRow(L("VR (OpenXR) — wineopenxr + Monado runtime, x86_64"),
+                                          isOn: $wantVR,
+                                          installed: hadVR)
                             .disabled(isRunning)
-                            .help(L("Clones monofunc/wineopenxr, builds it (needs cmake + mingw-w64), and registers it as the active OpenXR runtime so D3D11 OpenXR apps can talk to a native macOS OpenXR runtime via DXMT."))
-                        ComponentToggleRow(L("DXMT + OpenXR fork (monofunc/dxmt, builds from source)"),
-                                          isOn: $wantDxmtOpenXR,
-                                          installed: hadDxmtOpenXR)
-                            .disabled(isRunning)
-                            .help(L("Builds monofunc/dxmt (feature/openxr) — DXMT's Metal D3D11/10 translation plus OpenXR passthrough — with meson + mingw-w64 + llvm@15. Installs it as the \"DXMT + OpenXR (VR)\" graphics backend and pulls in wineopenxr so D3D11 VR apps reach the native macOS OpenXR runtime. Set DXMT_OPENXR_URL to install a prebuilt build instead."))
-                        ComponentToggleRow(L("Monado OpenXR runtime (x86_64, builds from source)"),
-                                          isOn: $wantMonadoRuntime,
-                                          installed: hadMonadoRuntime)
-                            .disabled(isRunning)
-                            .help(L("Builds Monado as an x86_64 OpenXR runtime and registers it. The wineopenxr bridge forwards D3D11 OpenXR to this runtime, which is loaded into the x86_64 (Rosetta) Wine process — so it MUST be x86_64. Without this, an arm64 system Monado fails with 'incompatible architecture' and VR won't start. Builds with cmake + the x86_64 Homebrew Vulkan/MoltenVK deps (slow)."))
+                            .help(L("One-tap VR. Stages the wineopenxr D3D11-OpenXR bridge + the openxr-DXMT d3d DLLs into the unified wine and installs the x86_64 Monado OpenXR runtime (an arm64 one won't load in the Rosetta wine). After this, pick VR as the graphics backend and launch a headset title."))
                     }
                     .padding(8)
                 }
@@ -731,6 +727,9 @@ struct SetupSettingsTab: View {
                 hadWineOpenXR = status.hasWineOpenXR;   wantWineOpenXR = status.hasWineOpenXR
                 hadDxmtOpenXR = status.hasDxmtOpenXR;   wantDxmtOpenXR = status.hasDxmtOpenXR
                 hadMonadoRuntime = status.hasMonadoRuntime; wantMonadoRuntime = status.hasMonadoRuntime
+                // Bradar VR is "installed" once the x86_64 Monado runtime is registered (the
+                // wineopenxr bridge + openxr DLLs ride with the unified wine already)
+                hadVR = status.hasMonadoRuntime; wantVR = hadVR
             }
             isLoadingStatus = false
 
@@ -772,9 +771,8 @@ struct SetupSettingsTab: View {
         plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
         plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
         plan(wantDxmt,        hadDxmt,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
-        plan(wantWineOpenXR,  hadWineOpenXR,  install: "install_wineopenxr",   uninstall: "uninstall_wineopenxr")
-        plan(wantDxmtOpenXR,  hadDxmtOpenXR,  install: "install_dxmt_openxr",  uninstall: "uninstall_dxmt_openxr")
-        plan(wantMonadoRuntime, hadMonadoRuntime, install: "install_monado_runtime", uninstall: "uninstall_monado_runtime")
+        // Bradar one VR action installs/uninstalls the whole openxr stack (installer install_vr)
+        plan(wantVR, hadVR, install: "install_vr", uninstall: "uninstall_vr")
 
         let allActions = uninstallActions + installActions
         guard !allActions.isEmpty else { return }

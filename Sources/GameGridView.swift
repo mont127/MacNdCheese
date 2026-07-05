@@ -89,7 +89,9 @@ struct GameGridView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
 
-            if !backend.apps.isEmpty {
+            // Bradar always show the Applications section (even empty) so the Add Application
+            // button is there to add the FIRST app, not only after some got auto-scanned
+            if backend.activePrefix != nil {
                 AppsSectionView(apps: backend.apps)
                     .padding(.bottom, 24)
             }
@@ -482,6 +484,7 @@ struct GameCardView: View {
 /// Installed Windows applications discovered in the bottle (Start Menu /
 /// Program Files), shown below the games grid.
 struct AppsSectionView: View {
+    @EnvironmentObject var backend: BackendClient
     let apps: [WineApp]
 
     private let columns = [
@@ -490,9 +493,18 @@ struct AppsSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Applications")
-                .font(.headline)
-                .padding(.horizontal, 24)
+            HStack {
+                Text("Applications")
+                    .font(.headline)
+                Spacer()
+                // Bradar Add Application -- point at any windows .exe n it sticks in this section
+                Button { addApplication() } label: {
+                    Label(L("Add Application"), systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help(L("Add a Windows .exe to this bottle's Applications"))
+            }
+            .padding(.horizontal, 24)
 
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(apps) { app in
@@ -502,6 +514,22 @@ struct AppsSectionView: View {
             .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func addApplication() {
+        guard let prefix = backend.activePrefix else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.exe]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = L("Add Application")
+        if panel.runModal() == .OK, let url = panel.url {
+            let name = url.deletingPathExtension().lastPathComponent
+            Task {
+                await backend.addManualApp(prefix: prefix, name: name, exe: url.path)
+                await backend.scanApps(prefix: prefix)
+            }
+        }
     }
 }
 

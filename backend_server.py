@@ -14,7 +14,7 @@ Response: {"id": 1, "ok": true, "data": ...}
 """
 
 from __future__ import annotations
-#Bradar what is this comnent delelt this
+
 import sys as _sys
 import os as _os
 # Vendored packages bundled inside MacNCheese.app/Contents/Resources/
@@ -58,7 +58,7 @@ DEFAULT_PREFIX = str(Path.home() / "wined")
 
 PREFIXES_JSON = Path.home() / ".macncheese_prefixes.json"
 BOTTLES_JSON = Path.home() / ".macncheese_bottles.json"
-#Bradar pleaE make a logo for my company macndcgeese 
+
 STEAM_SETUP_URL = "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
 
 LEGENDARY_DIR = PORTABLE_DIR / "legendary"
@@ -213,7 +213,7 @@ D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
 # bundled build (build64 layout: loader/wine + dlls + server). DEV path is a fallback.
 WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
 WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
-UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk")
+UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk", "vr")
 
 # Bradar The d3d DLL slots the unified loader routes to. As of 2026-07-04 the design
 # Bradar inverted -- canonical d3d11/dxgi/d3d10core are now the D3DMetal STUBS so games
@@ -234,6 +234,9 @@ UNIFIED_D3D_DLLS = (
     "d3d11_d3dm.dll", "dxgi_d3dm.dll", "d3d10core_d3dm.dll", "d3d10_d3dm.dll", "d3d12_d3dm.dll",
     # Bradar DXVK. dxvk game backend.
     "d3d11_dxvk.dll", "d3d10core_dxvk.dll", "dxgi_dxvk.dll",
+    # Bradar VR = openxr-DXMT (d3d11 w/ OpenXR passthrough) + the wineopenxr bridge PE.
+    # vr game backend -> loader openxr column routes d3d11 -> these _openxr slots
+    "d3d11_openxr.dll", "d3d10core_openxr.dll", "dxgi_openxr.dll", "wineopenxr.dll",
 )
 
 # Bradar Game-side MediaFoundation video bridge. A homebrew-GStreamer winegstreamer variant
@@ -2246,6 +2249,18 @@ def cmd_scan_apps(params: Dict[str, Any]) -> Any:
             "icon": icon_b64,
             "icon_format": "ico" if icon_b64 else "",
         })
+    # Bradar merge the manually-added apps (the "Add Application" button -> cmd_add_manual_app)
+    # so a user can point at ANY .exe n it sticks in the Applications section, deduped by exe path
+    try:
+        _mb = _load_bottles().get(_resolve_key(prefix_str), {})
+        _seen = {a.get("exe") for a in apps}
+        for m in _mb.get("manual_apps", []):
+            mexe = m.get("exe")
+            if mexe and mexe not in _seen and Path(mexe).exists():
+                apps.append({"name": m.get("name") or Path(mexe).stem, "exe": mexe,
+                             "args": m.get("args", ""), "icon": "", "icon_format": ""})
+    except Exception as _exc:
+        log(f"scan_apps: manual_apps merge failed: {_exc}")
     apps.sort(key=lambda a: a["name"].lower())
     return apps
 
@@ -2626,9 +2641,12 @@ def _unified_engine_active(bottle_cfg: Dict[str, Any]) -> bool:
 
 
 def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
-    """Map the app's backend id onto the loader's three game backends."""
+    """Map the app's backend id onto the loader's game backends (d3dmetal/dxmt/dxvk/vr)."""
     b = (backend or bottle_cfg.get("default_backend") or "d3dmetal").lower()
-    if b in ("dxmt", "dxmt_openxr"):
+    # Bradar vr = openxr-DXMT (d3d11 w/ OpenXR passthrough thru wineopenxr) -> loader openxr column
+    if b in ("vr", "openxr", "dxmt_openxr"):
+        return "vr"
+    if b == "dxmt":
         return "dxmt"
     if b in ("dxvk", "vkd3d", "vkd3d-proton"):
         return "dxvk"
@@ -2677,7 +2695,13 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
             "--disable-gpu-watchdog --disable-gpu-process-crash-limit --gpu-no-context-lost "
             "--disable-gpu-process-for-dx12-info-collection --no-delay-for-dx12-vulkan-info-collection "
             "--gpu-vendor-id=0x1002 --gpu-device-id=0x67df --gpu-driver-version=20.45.0 "
-            "--gpu-sub-system-id=0 --gpu-revision=0"),
+            "--gpu-sub-system-id=0 --gpu-revision=0 "
+            # Bradar trim the CEF cost -- 1 renderer proc insted of 9 (each one was runnin the
+            # wineserver-round-trip IPC loop that dominate wh.sample), + kill the native-occlusion
+            # recalc n the chromecast discovery utility proc = fewer background wakeups.
+            # if a steam panel ever go blank/white its this cap -> bump to 2
+            "--renderer-process-limit=1 --disable-features=CalculateNativeWinOcclusion,MediaRouter "
+            "--disable-smooth-scrolling"),
     })
     for var in ("GTK_PATH", "WINEPATH", "VKD3D_PROTON_PATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
         env.pop(var, None)
@@ -2728,9 +2752,19 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         f"{shlex.quote(wineserver)} -k 2>/dev/null; sleep 1\n"
         f"cd {shlex.quote(str(steam_dir))} || exit 1\n"
         f"rm -f .crash 2>/dev/null\n"
-        f"rm -rf appcache config/htmlcache 2>/dev/null\n"
+        # Bradar keep config/htmlcache (the CEF compiled-UI cache) so steam dont re-cache +
+        # re-JIT the whole panorama UI every boot -- only nuke appcache + the spoofed-GPU state
+        f"rm -rf appcache 2>/dev/null\n"
         f"rm -f logs/* dumps/*.dmp 2>/dev/null\n"
         f"find userdata -type d -name GPUCache -prune -exec rm -rf {{}} + 2>/dev/null\n"
+        # Bradar steam.cfg freeze the client self-updater -- stop the ~4.5min manifest-download
+        # churn every launch + stop it re-copyin/re-enablin the 32-bit service we disable below
+        f"[ -f steam.cfg ] || printf 'BootStrapperInhibitAll=Enable\\nBootStrapperForceSelfUpdate=disable\\n' > steam.cfg\n"
+        # Bradar THE big one -- disable the 'Steam Client Service' so wines SCM rejects the start
+        # BEFORE it spawns + cold-JITs the 32-bit SteamService.exe every 10s (that respawn loop
+        # IS the 100% core burst). re-applied each launch coz steam re-enables it on update.
+        # VAC/games dont use this service (Linux steam ships none), so its VAC-safe
+        f"{shlex.quote(wine)} reg add \"HKLM\\System\\CurrentControlSet\\Services\\Steam Client Service\" /v Start /t REG_DWORD /d 4 /f >/dev/null 2>&1\n"
         f"{shlex.quote(wine)} steam.exe {steam_args} > {shlex.quote(log_path)} 2>&1"
     )
     log(f"Launching Steam (unified/DXMT, backend={game_backend}, silent={silent})")
@@ -2792,6 +2826,21 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
             except Exception as exc:
                 log(f"unified: steam auto-launch failed: {exc} (continuing)")
     env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"))
+    # Bradar VR: register the wineopenxr bridge as the prefixs active OpenXR runtime + force
+    # our bundled x86_64 Monado runtime (an arm64 system one wont dlopen into the Rosetta wine)
+    if backend == "vr":
+        _ensure_wineopenxr_registered(str(prefix))
+        env = _apply_monado_runtime_env(env)
+    # Bradar DXVK MUST have the MoltenVK vulkan ICD wired or its vkCreateInstance dies with
+    # "Failed to create Vulkan 1.1 instance" -> the game pops "Error creating a D3D device".
+    # the unified env never set it (only the old per-backend path did) so EVERY dxvk game crashd.
+    # _find_moltenvk_icd resolves the x86_64 MoltenVK (the arm64 one wont dlopen in Rosetta wine)
+    if backend == "dxvk":
+        vk_icd = _find_moltenvk_icd()
+        if vk_icd:
+            env["VK_ICD_FILENAMES"] = vk_icd   # legacy vulkan-loader name
+            env["VK_DRIVER_FILES"] = vk_icd    # modern vulkan-loader name
+        env.setdefault("DXVK_STATE_CACHE", "0")
     exe_dir = str(exe_path.parent)
     steam_appid = str(params.get("steam_appid", "")).strip()
     if not steam_appid.isdigit():
@@ -3834,6 +3883,43 @@ def cmd_add_manual_game(params: Dict[str, Any]) -> Any:
     bottles[key] = bottle
     _save_bottles(bottles)
 
+    return manual
+
+
+def cmd_add_manual_app(params: Dict[str, Any]) -> Any:
+    # Bradar "Add Application" button -- persist a user-picked .exe as a manual app in the bottle
+    # so it shows in the Applications section (cmd_scan_apps merges bottle["manual_apps"])
+    prefix = params.get("prefix"); exe = params.get("exe"); name = params.get("name")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+    if not exe:
+        raise ValueError("Missing 'exe' parameter")
+    if not name:
+        name = Path(exe).stem
+    key = _resolve_key(prefix)
+    bottles = _load_bottles()
+    bottle = bottles.get(key, {})
+    manual: List[Dict[str, str]] = list(bottle.get("manual_apps", []))
+    if any(m.get("exe") == exe for m in manual):
+        return manual
+    manual.append({"name": name, "exe": exe, "args": params.get("args", "")})
+    bottle["manual_apps"] = manual
+    bottles[key] = bottle
+    _save_bottles(bottles)
+    return manual
+
+
+def cmd_remove_manual_app(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix"); exe = params.get("exe")
+    if not prefix or not exe:
+        raise ValueError("Missing 'prefix'/'exe' parameter")
+    key = _resolve_key(prefix)
+    bottles = _load_bottles()
+    bottle = bottles.get(key, {})
+    manual = [m for m in bottle.get("manual_apps", []) if m.get("exe") != exe]
+    bottle["manual_apps"] = manual
+    bottles[key] = bottle
+    _save_bottles(bottles)
     return manual
 
 
@@ -6665,6 +6751,8 @@ COMMANDS: Dict[str, Any] = {
     "open_prefix_folder": cmd_open_prefix_folder,
     "get_status": cmd_get_status,
     "add_manual_game": cmd_add_manual_game,
+    "add_manual_app": cmd_add_manual_app,
+    "remove_manual_app": cmd_remove_manual_app,
     "remove_manual_game": cmd_remove_manual_game,
     "detect_exes": cmd_detect_exes,
     "list_backends": cmd_list_backends,
