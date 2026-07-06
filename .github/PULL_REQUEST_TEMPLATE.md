@@ -2,6 +2,25 @@
 
 ## Why
 
+## Type
+- [ ] Feat QoL
+- [ ] Feat Compatibility
+- [ ] Bug fix
+- [ ] Incoherence fix
+- [ ] Other (docs, CI, chore...)
+
+## Area
+- [ ] Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)
+- [ ] Apps (.exe/.msi support, bottles)
+- [ ] Steam
+- [ ] Epic Games
+- [ ] UI / Settings
+- [ ] Release (packaging, DMG, codesigning)
+- [ ] CI / build tooling
+- [ ] Documentation
+
+If this closes an issue, link it (e.g. `Closes #123`) so labels/area carry over instead of being re-picked.
+
 ## How to test it
 
 ## Environment

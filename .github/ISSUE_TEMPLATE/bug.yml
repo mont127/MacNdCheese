@@ -1,0 +1,93 @@
+name: "Bug"
+description: Something isn't working
+title: "Bug: "
+labels: ["Bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Fill in what you can — the Area and "does this block you" fields
+        drive automatic labeling, so try to answer those even if you skip other fields.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the app is this in? Pick "Not sure" and a maintainer will route it.
+      options:
+        - "Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)"
+        - "Apps (.exe/.msi support, bottles)"
+        - "Steam"
+        - "Epic Games"
+        - "UI / Settings"
+        - "Release (packaging, DMG, codesigning)"
+        - "CI / build tooling"
+        - "Documentation"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Does this stop you from installing, launching, or playing a game at all?
+      description: This drives the priority label.
+      options:
+        - "Yes — completely blocked"
+        - "Partially — it works but is degraded or annoying"
+        - "No — it's cosmetic or minor"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-tried
+    attributes:
+      label: What did you try?
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened? What did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: App log output
+      description: Paste it, or attach the log file.
+      render: shell
+
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model
+
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Apple Silicon or Intel
+      options:
+        - "Apple Silicon"
+        - "Intel"
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+
+  - type: input
+    id: wine-log
+    attributes:
+      label: Wine log file path, if available
+
+  - type: input
+    id: dxvk-log
+    attributes:
+      label: DXVK log, if you were using DXVK

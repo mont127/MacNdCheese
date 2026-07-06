@@ -1,0 +1,40 @@
+name: "Help"
+description: You need assistance, have a question, or something else that doesn't fit the other templates
+title: "Help: "
+labels: ["Help"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For "how do I..." questions, or anything that doesn't cleanly fit Bug/Incoherence/Feature.
+        For real-time help you can also try the [Discord server](https://discord.gg/UPpVShYDaf).
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the app is this about, if any? Pick "Not sure" if it doesn't apply.
+      options:
+        - "Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)"
+        - "Apps (.exe/.msi support, bottles)"
+        - "Steam"
+        - "Epic Games"
+        - "UI / Settings"
+        - "Release (packaging, DMG, codesigning)"
+        - "CI / build tooling"
+        - "Documentation"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What do you need help with?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you already tried?

@@ -1,0 +1,100 @@
+name: Issue auto-triage
+
+# Reads the structured Area / impact fields from the issue forms in
+# .github/ISSUE_TEMPLATE/ and applies an area:* label (or "needs triage" if
+# the area is missing/unclear) plus a priority label where the template asks
+# a priority-relevant question. Deterministic — reads form answers, doesn't
+# guess from free text. The type label (Bug/Incoherence/Feat QoL/Feat
+# Compatibility/Help) is already applied by GitHub itself from each
+# template's `labels:` frontmatter, so this workflow doesn't touch that.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+
+            function fieldValue(heading) {
+              const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const re = new RegExp("### " + escaped + "\\s*\\n+([^\\n]*)");
+              const m = body.match(re);
+              return m ? m[1].trim() : null;
+            }
+
+            const AREA_MAP = [
+              ["Backend", "area:backend"],
+              ["Apps", "area:apps"],
+              ["Steam", "area:steam"],
+              ["Epic Games", "area:epic"],
+              ["UI / Settings", "area:ui"],
+              ["Release", "area:release"],
+              ["CI / build tooling", "area:ci"],
+              ["Documentation", "area:docs"],
+            ];
+
+            const PRIORITY_QUESTIONS = [
+              {
+                heading: "Does this stop you from installing, launching, or playing a game at all?",
+                map: [
+                  ["Yes", "High priority"],
+                  ["Partially", "Medium priority"],
+                  ["No", "Low priority"],
+                ],
+              },
+              {
+                heading: "Does this actively confuse/mislead users, or is it a smaller inconsistency?",
+                map: [
+                  ["Actively confuses", "Medium priority"],
+                  ["Minor inconsistency", "Low priority"],
+                ],
+              },
+              {
+                heading: "How big a change is this?",
+                map: [
+                  ["Small", "Low priority"],
+                  ["Bigger", "Medium priority"],
+                ],
+              },
+            ];
+
+            const labelsToAdd = [];
+
+            const areaValue = fieldValue("Area");
+            const matchedArea = areaValue
+              ? AREA_MAP.find(([prefix]) => areaValue.startsWith(prefix))
+              : null;
+            labelsToAdd.push(matchedArea ? matchedArea[1] : "needs triage");
+
+            for (const q of PRIORITY_QUESTIONS) {
+              const value = fieldValue(q.heading);
+              if (!value) continue;
+              const matched = q.map.find(([prefix]) => value.startsWith(prefix));
+              if (matched) {
+                labelsToAdd.push(matched[1]);
+              }
+              break;
+            }
+
+            const existing = new Set(
+              (context.payload.issue.labels || []).map((l) => l.name)
+            );
+            const toApply = labelsToAdd.filter((l) => !existing.has(l));
+
+            if (toApply.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: toApply,
+              });
+            }
