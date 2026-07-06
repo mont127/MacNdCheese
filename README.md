@@ -113,12 +113,14 @@ Because setting this up manually is painful, repetitive, and full of obscure com
 ## Building Manually (for nerds)
 
 > You only need this if you're on Intel or want to run from source. Normal users should just [download the app](https://github.com/mont127/MacNdCheese/releases).
+>
+> Contributing instead? Use `bash install.sh` for the fast local dev loop — see [CONTRIBUTING.md](CONTRIBUTING.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
 **Requirements:**
 - macOS with [Homebrew](https://brew.sh/) installed
 - Xcode Command Line Tools (`xcode-select --install`)
 
-**Run from source:**
+**Build a distributable .dmg from source:**
 ```bash
 bash buildapp.sh
 ```

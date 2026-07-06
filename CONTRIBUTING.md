@@ -30,27 +30,40 @@ Anything that downloads unknown binaries without a pinned source.
 
 You need.
 macOS.
-Python 3.
-Homebrew.
-Wine installed via Homebrew.
-Qt libraries via PyQt6.
+Xcode (for the Swift toolchain, codesign, iconutil). xcode-select --install at minimum.
+Homebrew and Wine, only once you want to test actual game-launching flows end to end.
 
 Clone.
 git clone https://github.com/mont127/MacNdCheese
 cd MacNdCheese
 
-Install python deps.
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+Build and install for local testing.
+bash install.sh
 
-Run.
-python3 MacNCheese.py
+This builds the Swift app in release mode, bundles backend_server.py alongside it, and installs
+straight into /Applications/MacNdCheese Launcher.app, then codesigns it. Re-run it after every
+change you want to test. It is the fast local loop, no .dmg involved.
+
+backend_server.py only uses the Python standard library, so there is nothing to pip install to
+build or run the app. requirements.txt (PyQt6, pyobjc, pypresence) belongs to
+MacNdCheeseARM-OLDER.py, a legacy pre-SwiftUI prototype kept for reference. It is not part of
+the current build.
+
+To produce a distributable .dmg instead (this is what CI runs).
+bash buildapp.sh arm64
+Or x86_64, or universal.
+
+Do not run installer.sh directly during development. install.sh and buildapp.sh both copy it
+into the built app's Contents/Resources. It is meant to be run BY the app at runtime, to install
+Wine, DXVK, Mesa and so on for end users, not by you as a dev script.
+
+See ARCHITECTURE.md for how the Swift UI and the Python backend talk to each other, and for a
+map of which file owns what.
 
 ## Testing
 
-There is no formal test suite yet.
-So you must test manually.
+There is no automated test suite yet. Adding CI is tracked separately in #103. Until then you
+must test manually.
 
 Before you open a pull request. verify at least these flows.
 App opens and UI renders.

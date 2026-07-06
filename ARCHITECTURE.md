@@ -1,0 +1,74 @@
+# Architecture
+
+MacNCheese is two processes wearing one app icon.
+
+## The two halves
+
+- **`Sources/`** — a SwiftUI app (`Package.swift`, macOS 14+). This is everything the user sees:
+  game grid, settings, onboarding, the Epic/Steam library views, the Discord-fed Game Showcase
+  tab, App Intents/Siri support.
+- **`backend_server.py`** — a single long-running Python process, standard library only. It does
+  the actual work: creating Wine prefixes, installing DXVK/VKD3D/Mesa/GPTK, detecting and
+  launching games, managing bottles, driving the Steam/Epic integrations, forcing Game Mode, etc.
+
+The Swift app launches `backend_server.py` as a subprocess and talks to it over a line-delimited
+JSON-RPC protocol on stdin/stdout — one JSON object per line each way (see the docstring at the
+top of `backend_server.py`). `Sources/BackendClient.swift` is the only file on the Swift side that
+speaks this protocol; every view calls through it rather than shelling out on its own.
+
+If you're adding a new backend capability: add a `cmd` handler in `backend_server.py`, then call
+it from `BackendClient.swift`. If you're changing something the user sees and it doesn't need new
+backend logic, you're almost certainly only touching files under `Sources/`.
+
+## Where things live (Swift side)
+
+| File | Owns |
+|---|---|
+| `MacNCheeseApp.swift` | App entry point, top-level state |
+| `ContentView.swift` / `SidebarView.swift` | Main window shell and navigation |
+| `GameGridView.swift` / `GameDetailView.swift` | Game library grid and per-game detail |
+| `GameLaunchSheet.swift` | Launch-time backend picker/options |
+| `CreateBottleSheet.swift` / `OpenExeSheet.swift` | Bottle creation, running an arbitrary .exe |
+| `SettingsSheet.swift` | App settings — the largest view, mostly independent sub-sections |
+| `StoreSheet.swift` / `GameShowcaseView.swift` | In-app store tab and the Discord-fed showcase (see `discord-showcase-bot/`) |
+| `EpicLibraryView.swift` / `EpicLandingView.swift` / `EpicLogo.swift` | Epic Games integration |
+| `OnboardingView.swift` | First-run flow |
+| `BackendClient.swift` | JSON-RPC bridge to `backend_server.py` — see above |
+| `AppIntents/` | Siri/Shortcuts support |
+
+## Build & install scripts
+
+Three scripts, three different jobs — they are not interchangeable:
+
+- **`install.sh`** — local dev loop. Builds the Swift release binary, bundles
+  `backend_server.py` + `installer.sh` + `vendor/gamepolicyctl`, installs to
+  `/Applications/MacNdCheese Launcher.app`, and codesigns it. Run this to test a change.
+- **`buildapp.sh [arm64|x86_64|universal]`** — release builder. Same bundling, but outputs into
+  `build/MacNCheese.app` and packages a distributable `.dmg`. `.github/scripts/build-macos.sh` is
+  effectively this script, run by `.github/workflows/build-universal.yml` to cut releases.
+- **`installer.sh`** — *not* a script you run yourself. It's copied into the built app's
+  `Contents/Resources/` and is what the app itself shells out to at runtime, to install Wine,
+  DXVK, VKD3D, Mesa, etc. onto an end user's machine.
+
+## `vendor/gamepolicyctl`
+
+A compiled, Apple-signed `gamepolicyctl` binary, vendored (not built from source in this repo) so
+the backend can force macOS Game Mode on for launched Wine games without requiring Xcode on the
+end user's machine. It must keep its **original** Apple signature — it carries private
+`com.apple.gamepolicyd.tool.*` entitlements that an ad-hoc re-sign would strip. Both `install.sh`
+and `buildapp.sh` check for this after codesigning and restore the pristine binary if it was
+touched. Don't try to rebuild or re-sign it yourself; see `vendor/README.md`.
+
+## `discord-showcase-bot/`
+
+Not game-launching logic — this syncs the project's Discord showcase forum channel into
+`showcase.json` on the `showcase-data` branch, which `Sources/GameShowcaseView.swift` reads to
+render the in-app Game Showcase tab. It runs as a scheduled GitHub Actions job
+(`.github/workflows/showcase-sync.yml`), not something you run locally. See
+`discord-showcase-bot/README.md`.
+
+## `MacNdCheeseARM-OLDER.py`
+
+A legacy, pre-SwiftUI prototype of the app built with PyQt6 (matches `requirements.txt`). Kept
+for reference; it is not part of the current build and nothing in `install.sh`, `buildapp.sh`,
+or CI touches it.
