@@ -18,7 +18,7 @@ Fixing bugs and edge cases.
 Better game exe detection.
 Making Intel support clearer and safer.
 Improving error messages so users can self fix.
-UI cleanup for Simplified UI and Dev UI modes.
+UI cleanup and consistency in Settings and the launch sheet.
 Docs and wiki pages.
 
 Please avoid.
@@ -55,7 +55,7 @@ Or x86_64, or universal.
 
 Do not run installer.sh directly during development. install.sh and buildapp.sh both copy it
 into the built app's Contents/Resources. It is meant to be run BY the app at runtime, to install
-Wine, DXVK, Mesa and so on for end users, not by you as a dev script.
+Wine, DXVK, DXMT and so on for end users, not by you as a dev script.
 
 See ARCHITECTURE.md for how the Swift UI and the Python backend talk to each other, and for a
 map of which file owns what.
@@ -69,19 +69,22 @@ for that yet, tracked in #103. Until then you must test those flows manually.
 
 Before you open a pull request. verify at least these flows.
 App opens and UI renders.
-Simplified UI toggle works.
-Dev UI toggle works.
 Install tools works or fails with a readable log.
 Install wine works or fails with a readable log.
-DXVK build 64 works.
-DXVK build 32 works.
-Mesa install works and creates ~/mesa/x64 with expected dlls.
+DXVK (Best Compatibility) works for at least one game. This downloads prebuilt DLLs now, there
+is no DXVK build step anymore.
+DXMT (Balanced) works for at least one game.
+D3DMetal (Best Performance) works for at least one game.
 Prefix init works.
 Steam install works.
 Steam launch works.
 Scan games finds installed titles.
 Launch game works for at least one title.
 Log output is readable and saved where expected.
+
+Mesa has been removed as a backend (the unified engine covers DXMT, DXVK and D3DMetal), so it is
+no longer part of this checklist. VKD3D-Proton (D3D12) is still selectable but is not part of
+backend auto-detection yet; test it directly if your change touches it.
 
 If your change touches a specific backend. test that backend with at least one real game.
 
