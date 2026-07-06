@@ -44,11 +44,26 @@ jobs:
           chmod +x buildapp.sh
           bash buildapp.sh universal
 
-      - name: Compute tag
+      - name: Compute tag and release notes
         id: tag
         run: |
           TAG="nightly-$(date +'%Y%m%d')-$(git rev-parse --short HEAD)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Not using generate_release_notes here: it diffs against the "previous
+          # release", but the step below deletes the previous nightly before this
+          # one publishes, so there's usually nothing relevant for it to diff
+          # against — it was falling back to unrelated, much older history
+          # instead of "what changed since yesterday's nightly."
+          {
+            echo "notes<<NOTES_EOF"
+            echo "Automated nightly build, universal (arm64 + x86_64) .dmg."
+            echo ""
+            echo "Built from $(git rev-parse --short HEAD): $(git log -1 --pretty=%s)"
+            echo ""
+            echo "https://github.com/${GITHUB_REPOSITORY}/commit/$(git rev-parse HEAD)"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Delete previous nightly prereleases
         # Keep only the one we're about to publish — otherwise these accumulate
@@ -69,5 +84,5 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Nightly ${{ steps.tag.outputs.tag }}
           prerelease: true
-          generate_release_notes: true
+          body: ${{ steps.tag.outputs.notes }}
           files: MacNCheese-universal.dmg
