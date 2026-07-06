@@ -26,6 +26,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select latest available Xcode
+        # See the same step in .github/workflows/ci.yml: GameGridView.swift needs the
+        # macOS 26 SDK to even compile the `#available(macOS 26, *)` branch, and
+        # macos-latest runners have been a mixed fleet during the rolling migration
+        # to the macOS 26 image (started 2026-06-15). Pick the newest Xcode_*.app
+        # actually present instead of trusting whatever xcode-select defaults to.
+        run: |
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null \
+            | sed 's#.*/Xcode_##; s/\.app$//' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
+          if [ -n "$LATEST" ]; then
+            sudo xcode-select -s "/Applications/Xcode_${LATEST}.app"
+          fi
+          xcodebuild -version
+
       - name: Install Rosetta (for Intel build)
         if: matrix.arch == 'x86_64'
         run: sudo softwareupdate --install-rosetta --agree-to-license

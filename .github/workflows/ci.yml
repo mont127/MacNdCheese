@@ -16,11 +16,23 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: List available Xcode/SDK versions (diagnostic)
+      - name: Select latest available Xcode
+        # GameGridView.swift uses a macOS 26 SDK API behind `#available(macOS 26, *)`.
+        # That's still a hard compile error on a toolchain whose SDK doesn't declare
+        # the symbol at all, and macos-latest runners have been a mixed fleet during
+        # the rolling migration to the macOS 26 image (started 2026-06-15) — some
+        # pulls still only have an older Xcode with no macOS 26 SDK. Pick the newest
+        # Xcode_*.app actually present so the build doesn't depend on which pull we
+        # land on, instead of trusting whatever xcode-select defaults to.
         run: |
-          ls /Applications | grep -i Xcode || true
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null \
+            | sed 's#.*/Xcode_##; s/\.app$//' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
+          if [ -n "$LATEST" ]; then
+            sudo xcode-select -s "/Applications/Xcode_${LATEST}.app"
+          fi
           xcodebuild -version
-          xcodebuild -showsdks
       - name: swift build
         run: swift build --package-path Sources
 
