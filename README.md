@@ -15,7 +15,7 @@ MacNCheese is a simple app that lets you install and play Windows games on your 
 ## Showcase 
 <p align="center">
   <img src="IMG_0734.png" width="128" alt="MacNCheese icon" />
-</>
+</p>
 
 ---
 ##  Quickstart Guide
@@ -58,7 +58,7 @@ Click the **Install Steam** / **Run installer** button. The Steam installer will
 ##  FAQ
 
 ## Does Mewgenics run on macndcheese?
-Wait like 30 seconds for startup make sure to launch with silent steam. Use the custom OpenGL wine backend and make sure to change the main wine with the custom OpenGL backend.
+Yes. Startup takes about 30 seconds — give it time before assuming it's stuck. Launch Steam in silent mode, and set both the main Wine and the game's backend to the custom OpenGL Wine build.
 
 
 
@@ -94,7 +94,8 @@ Leave it on **Auto** and let the app decide. If you're curious:
 | **VKD3D-Proton** | DirectX 12 games | (STILL BEING WORKED ON AND WILL BE RENAMED TO MoltenVKD3D-proton (Aka MVKD3D-P)
 | **GPTK(Launching from steam)** | DirectX 11/12 games|
 | **DXMT** | Experimental DX11 via Metal (bleeding edge) |
-| **Mesa** | Fallback / debugging | (Will no longer be supported)
+
+Mesa has been removed as an auto-detected/selectable backend — the DXMT/DXVK/D3DMetal engine covers what it used to.
 
 ### My game says "DirectX 11 not available"
 The graphics backend didn't load properly. Try:

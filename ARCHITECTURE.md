@@ -8,8 +8,10 @@ MacNCheese is two processes wearing one app icon.
   game grid, settings, onboarding, the Epic/Steam library views, the Discord-fed Game Showcase
   tab, App Intents/Siri support.
 - **`backend_server.py`** — a single long-running Python process, standard library only. It does
-  the actual work: creating Wine prefixes, installing DXVK/VKD3D/Mesa/GPTK, detecting and
+  the actual work: creating Wine prefixes, installing DXVK/VKD3D/DXMT/GPTK, detecting and
   launching games, managing bottles, driving the Steam/Epic integrations, forcing Game Mode, etc.
+  (Mesa install still exists in `installer.sh` for old configs, but it's been dropped from backend
+  auto-detection — `_mesa_available()` is hardcoded `False` — and isn't offered as a launch backend.)
 
 The Swift app launches `backend_server.py` as a subprocess and talks to it over a line-delimited
 JSON-RPC protocol on stdin/stdout — one JSON object per line each way (see the docstring at the
@@ -18,7 +20,9 @@ speaks this protocol; every view calls through it rather than shelling out on it
 
 If you're adding a new backend capability: add a `cmd` handler in `backend_server.py`, then call
 it from `BackendClient.swift`. If you're changing something the user sees and it doesn't need new
-backend logic, you're almost certainly only touching files under `Sources/`.
+backend logic, you're almost certainly only touching files under `Sources/`. The `COMMANDS` dict
+near the bottom of `backend_server.py` is a full index of every handler name — grep there first if
+you're looking for where a specific action is implemented.
 
 ## Where things live (Swift side)
 
@@ -34,7 +38,14 @@ backend logic, you're almost certainly only touching files under `Sources/`.
 | `EpicLibraryView.swift` / `EpicLandingView.swift` / `EpicLogo.swift` | Epic Games integration |
 | `OnboardingView.swift` | First-run flow |
 | `BackendClient.swift` | JSON-RPC bridge to `backend_server.py` — see above |
+| `Models.swift` | Shared data types decoded from the backend's JSON responses |
+| `Theme.swift` | Shared colors/fonts/styling constants |
+| `InstallRunner.swift` | Drives the install/repair flows (Wine, DXVK, DXMT, etc.) from the UI side |
+| `Localization.swift` | UI string translations |
 | `AppIntents/` | Siri/Shortcuts support |
+
+(Not exhaustive — the rest of `Sources/*.swift` follows the same one-file-per-screen pattern and
+is straightforward to match up by filename.)
 
 ## Build & install scripts
 
@@ -60,7 +71,8 @@ Three scripts, three different jobs — they are not interchangeable:
   every PR to fail fast on build breaks.
 - **`installer.sh`** — *not* a script you run yourself. It's copied into the built app's
   `Contents/Resources/` and is what the app itself shells out to at runtime, to install Wine,
-  DXVK, VKD3D, Mesa, etc. onto an end user's machine.
+  DXVK, VKD3D, DXMT, etc. onto an end user's machine (plus Mesa, kept only for old configs — see
+  above).
 
 ## `vendor/gamepolicyctl`
 
