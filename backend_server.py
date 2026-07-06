@@ -202,6 +202,14 @@ MONADO_RUNTIME_MANIFEST = PORTABLE_DIR / "monado" / "active_runtime.json"
 # The OpenXR loader's default system-wide runtime registration — inspected only
 # to warn when a stale arm64 runtime is registered and ours isn't installed.
 SYSTEM_OPENXR_ACTIVE_RUNTIME = Path("/usr/local/share/openxr/1/active_runtime.json")
+# Bradar oxrsys (github.com/demonixis/oxrsys) -- an x86_64 macOS OpenXR runtime that STREAMS
+# to a Quest/Pico companion app (WiFi/USB) + gets tracking back, so unlike Monado it can
+# actually reach a real HMD on macOS. built from its macos-x64 preset (x86_64 dylib, deps are
+# only system frameworks). wineopenxr already forwards D3D11-VR -> XR_KHR_metal_enable/MTLDevice
+# which is EXACTLY what oxrsys wants, so we just point XR_RUNTIME_JSON at it for VR launches.
+OXRSYS_RUNTIME_DIR = PORTABLE_DIR / "oxrsys"
+OXRSYS_RUNTIME_MANIFEST = OXRSYS_RUNTIME_DIR / "oxrsys-runtime.json"
+OXRSYS_CONFIG_DIR = Path.home() / "Library" / "Application Support" / "OXRSys"
 DEFAULT_VKD3D_DIR = Path.home() / "vkd3d-proton"
 DEFAULT_GPTK_DIR = Path.home() / "gptk"
 GPTK3_ROOT = Path.home() / "gptk3" / "Game Porting Toolkit.app"
@@ -735,6 +743,13 @@ def _monado_runtime_available() -> bool:
     dylib = _read_openxr_runtime_dylib(MONADO_RUNTIME_MANIFEST)
     return bool(dylib and Path(dylib).exists())
 
+def _oxrsys_runtime_available() -> bool:
+    """True if the x86_64 oxrsys STREAMING OpenXR runtime is staged -- the one that can
+    actually reach a Quest/Pico headset on macOS (via its companion app), unlike Monado
+    which loads fine but has no macOS HMD driver so never reaches a headset."""
+    dylib = _read_openxr_runtime_dylib(OXRSYS_RUNTIME_MANIFEST)
+    return bool(dylib and Path(dylib).exists() and _dylib_is_x86_64(Path(dylib)) is not False)
+
 def _apply_monado_runtime_env(env: Dict[str, str]) -> Dict[str, str]:
     """For VR (dxmt_openxr) launches, force the OpenXR loader to use our x86_64
     Monado runtime via XR_RUNTIME_JSON, so a stale arm64 system runtime can't be
@@ -742,6 +757,15 @@ def _apply_monado_runtime_env(env: Dict[str, str]) -> Dict[str, str]:
     installed, inspect the system registration and log a clear arch-mismatch
     warning instead of leaving the user with cryptic OpenXR-Loader errors."""
     try:
+        # Bradar prefer oxrsys -- the STREAMING runtime that reaches a real Quest/Pico headset
+        # on macOS. wineopenxr forwards D3D11-VR -> Metal -> oxrsys -> encode -> stream -> HMD.
+        # (Monado loads fine but has no macOS HMD driver, so it never reaches a headset.)
+        if _oxrsys_runtime_available():
+            env["XR_RUNTIME_JSON"] = str(OXRSYS_RUNTIME_MANIFEST)
+            log("vr: using oxrsys streaming OpenXR runtime "
+                f"{_read_openxr_runtime_dylib(OXRSYS_RUNTIME_MANIFEST)} -- streams to the "
+                "Quest/Pico companion app (open it + connect on the headset over WiFi/USB)")
+            return env
         if _monado_runtime_available():
             env["XR_RUNTIME_JSON"] = str(MONADO_RUNTIME_MANIFEST)
             # Self-contained prebuilt runtime: point the Vulkan loader at the
@@ -2724,6 +2748,61 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     return env
 
 
+def _commonredist_hasrun_reg_cmds(prefix: str, wine: str) -> str:
+    """Build shell 'wine reg add' lines that pre-set Steam's CommonRedist 'has-run'
+    keys. Steam only runs a redist install-script (.NET / VC++ / DirectX) when its
+    per-redist has-run key is MISSING - n those installers HANG forever under wine
+    (the bootstrapper Setup.exe never exits), wedgin the launch on "Running install
+    script (Microsoft .NET Framework)". pre-settin the keys makes steam SKIP them.
+    safe: those runtimes r already present (wine builtins / the .NET reg keys) n the
+    installers never actualy work under wine anyway. (proven on World War 3 / .NET 4.6.2)"""
+    shared = (Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam" /
+              "steamapps" / "common" / "Steamworks Shared")
+    if not shared.is_dir():
+        return ""
+    seen = set()
+    lines = []
+    # each redist ships _CommonRedist/<Type>/<Ver>/installscript.vdf. inside the
+    # "Run Process" list, every sub-block's LABEL is the has-run VALUE NAME n the
+    # "HasRunKey" field (case varys: HasRunKey / hasrunkey) is the reg KEY PATH.
+    # (the transient runasadmin.vdf steam gens per-run is deleted after it runs, so
+    # we parse the PERSISTENT installscript.vdfs instead - they always stick around.)
+    # HasRunKey is allways the 1st field in a block so [^{}] stays inside one block
+    # even tho some blocks nest a Requirement_OS {..} after it.
+    block_re = re.compile(r'"([^"]+)"\s*\{[^{}]*?"HasRunKey"\s+"([^"]+)"',
+                          re.IGNORECASE | re.DOTALL)
+    for vdf in sorted(shared.rglob("*.vdf")):
+        try:
+            txt = vdf.read_text(errors="ignore")
+        except Exception:
+            continue
+        if "hasrunkey" not in txt.lower():
+            continue
+        for label, keypath in block_re.findall(txt):
+            # VDF escapes backslashes as '\\' -> collapse to single; normalise the hive
+            keypath = keypath.replace("\\\\", "\\").replace("HKEY_LOCAL_MACHINE", "HKLM")
+            # steam.exe is a 32-bit proccess so it reads the Wow6432Node view -> set BOTH
+            variants = {keypath}
+            if "\\Software\\" in keypath and "Wow6432Node" not in keypath:
+                variants.add(keypath.replace("\\Software\\", "\\Software\\Wow6432Node\\", 1))
+            for kp in variants:
+                sig = (kp, label)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                lines.append(
+                    f"{shlex.quote(wine)} reg add {shlex.quote(kp)} /v {shlex.quote(label)} "
+                    f"/t REG_DWORD /d 1 /f >/dev/null 2>&1"
+                )
+    if not lines:
+        return ""
+    log(f"Steam CommonRedist: pre-settin {len(lines)} has-run key(s) so redist "
+        f"install-scripts skip (they hang under wine)")
+    return ("# Bradar pre-satisfy Steam CommonRedist has-run keys so the .NET/VC++/DirectX\n"
+            "# redist install-scripts SKIP (they hang forever under wine n wedge the launch)\n"
+            + "\n".join(lines) + "\n")
+
+
 def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
     """Launch Steam through the unified wine so its CEF renders via DXMT."""
     global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
@@ -2760,6 +2839,10 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         # Bradar steam.cfg freeze the client self-updater -- stop the ~4.5min manifest-download
         # churn every launch + stop it re-copyin/re-enablin the 32-bit service we disable below
         f"[ -f steam.cfg ] || printf 'BootStrapperInhibitAll=Enable\\nBootStrapperForceSelfUpdate=disable\\n' > steam.cfg\n"
+        # Bradar make steam SKIP the hang-prone .NET/VC++/DirectX redist install-scripts by
+        # pre-settin their has-run keys (else e.g. World War 3 wedges forever on "Running
+        # install script (Microsoft .NET Framework)" coz the NDP462 bootstrapper never exits)
+        f"{_commonredist_hasrun_reg_cmds(str(prefix), wine)}"
         # Bradar THE big one -- disable the 'Steam Client Service' so wines SCM rejects the start
         # BEFORE it spawns + cold-JITs the 32-bit SteamService.exe every 10s (that respawn loop
         # IS the 100% core burst). re-applied each launch coz steam re-enables it on update.
@@ -2813,11 +2896,15 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     steam_mode = params.get("steam_mode", "silent")
     is_steam_bottle = bottle_cfg.get("launcher_type", "steam") == "steam"
     if steam_mode != "none" and is_steam_bottle:
-        # Bradar if steam is already up we DONT touch it bradar - the old code always ran
+        # Bradar if steam is already up we DONT kill/relaunch it (the old code always ran
         # _launch_steam_unified which does a "wineserver -k" so it was killin n re-bootstrappin
-        # the whole steam EVERY game launch which is slow n stack up the process
+        # the whole steam EVERY launch - slow n stackd processes). BUT we STILL gotta block
+        # till it reachs [Logged On]: steam merely "running" aint enough - if its still
+        # [Connecting]/[Logging On] the games SteamAPI_Init races ahead n comes back
+        # "[API loaded no]" (proven: games launchd 18:33, steam only logd on 18:37 -> fail).
         if _steam_is_running():
-            log("unified: Steam already running -> skipping the Steam launch (no kill/relaunch) bradar")
+            ready, status = _wait_steam_ready(str(prefix), cap_s=180)
+            log(f"unified: Steam already running -> waited for auth: ready={ready} ({status})")
         else:
             try:
                 _launch_steam_unified(prefix, bottle_cfg,
@@ -3167,6 +3254,12 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
 
     # Check if Steam is already running
     if _steam_process is not None and _steam_process.poll() is None:
+        # Bradar even when its our OWN steam thats already up, honour wait_ready so a
+        # game launch dont race ahead of [Logged On] (the "[API loaded no]" bug).
+        if params.get("wait_ready"):
+            ready, status = _wait_steam_ready(str(prefix))
+            return {"already_running": True, "pid": _steam_process.pid,
+                    "ready": ready, "status": status}
         return {"already_running": True, "pid": _steam_process.pid}
 
     _ucfg = _load_bottles().get(_resolve_key(prefix), {})
@@ -3370,6 +3463,13 @@ def _wait_steam_ready(prefix: str, cap_s: int = 240) -> tuple:
             return False, f"connection_log read failed: {exc}"
 
     last = ""
+    # Bradar fast-path: if steam is ALREADY [Logged On] we return right away (no 5s
+    # penalty). this matters coz the game-launch path now waits even when steam was
+    # already up, so the common "already signed in" case must not stall the launch.
+    ok0, status0 = _check()
+    if ok0:
+        log("Steam already authenticated ([Logged On]) — no wait needed")
+        return True, status0
     for waited in range(5, cap_s + 5, 5):
         time.sleep(5)
         ok, status = _check()
@@ -4131,7 +4231,9 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
         {"id": BACKEND_DXVK, "label": "DXVK (D3D11→Vulkan)", "available": _dxvk_available()},
         {"id": BACKEND_VKD3D, "label": "VKD3D-Proton (D3D12)", "available": _vkd3d_available()},
         {"id": BACKEND_DXMT, "label": "DXMT (experimental)", "available": _dxmt_available()},
-        {"id": BACKEND_DXMT_OPENXR, "label": "DXMT + OpenXR (VR, monofunc fork)", "available": _dxmt_openxr_available()},
+        # Bradar VR = openxr-DXMT + wineopenxr + oxrsys streaming runtime. always shown so games
+        # can pick it (the openxr d3d DLLs ride w/ the unified wine); install the runtime via Settings -> VR
+        {"id": "vr", "label": "VR (OpenXR)", "available": True},
         {"id": BACKEND_D3DMETAL3, "label": "D3DMetal (injection, recommended)", "available": _d3dmetal3_available()},
         {"id": BACKEND_WINE_DEVEL, "label": "Wine Devel (OpenGL/SDL3, e.g. Mewgenics)", "available": _find_wine_devel() is not None},
         {"id": BACKEND_GPTK, "label": "GPTK (D3DMetal, copy DLLs)", "available": _gptk_available()},

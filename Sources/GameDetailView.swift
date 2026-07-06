@@ -319,8 +319,8 @@ struct GameDetailView: View {
                     Text(L("Detecting...")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                let mainIds: [String] = ["auto", "wine_devel", "dxmt", "dxmt_openxr", "d3dmetal3", "dxvk", "vkd3d-proton"]
-                let experimentalIds: [String] = ["wine", "gptk", "gptk_full"]
+                let mainIds: [String] = ["auto", "wine_devel", "dxmt", "vr", "d3dmetal3", "dxvk", "vkd3d-proton"]
+                let experimentalIds: [String] = ["wine", "gptk_full"]
                 let mainBackends = availableBackends.filter { mainIds.contains($0.backendId) }
                     .sorted { mainIds.firstIndex(of: $0.backendId) ?? 99 < mainIds.firstIndex(of: $1.backendId) ?? 99 }
                 let experimentalBackends = availableBackends.filter { experimentalIds.contains($0.backendId) }
@@ -547,7 +547,7 @@ struct GameDetailView: View {
         case "auto":          return L("Auto (recommended)")
         case "wine_devel":    return L("Wine Devel (OpenGL games)")
         case "dxmt":          return L("DXMT (Balanced)")
-        case "dxmt_openxr":   return L("DXMT + OpenXR (VR, monofunc)")
+        case "vr", "dxmt_openxr": return L("VR (OpenXR)")
         case "d3dmetal3":     return L("D3DMetal (Best Performance)")
         case "dxvk":          return L("DXVK (Best Compatibility)")
         case "vkd3d-proton":  return L("VKD3D-Proton (D3D12)")

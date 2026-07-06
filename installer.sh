@@ -1347,8 +1347,9 @@ install_vr() {
   # Bradar ONE-tap VR for the unified wine. the openxr-DXMT d3d DLLs + the wineopenxr builtin
   # already ride WITH the unified wine (install_wine_unified stages mnc-d3d w/ the _openxr slots
   # + the wine bundle carries dlls/wineopenxr). so this just: (1) belt-stage the openxr DLLs +
-  # wineopenxr PE into mnc-d3d, (2) stage the OpenXR-runtime manifest, (3) install x86_64 Monado.
-  echo "Step: Installing VR (OpenXR: wineopenxr bridge + openxr-DXMT + Monado runtime)..."
+  # wineopenxr PE into mnc-d3d, (2) stage the OpenXR-runtime manifest, (3) install the x86_64
+  # oxrsys STREAMING runtime (reaches a real Quest/Pico headset -- replaces Monado which cant).
+  echo "Step: Installing VR (OpenXR: wineopenxr bridge + openxr-DXMT + oxrsys streaming runtime)..."
   local wineruut res dxo c woxdll
   wineruut="${PORTABLE_DIR}/wine-unified"
   res="${RESOURCES_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
@@ -1373,9 +1374,35 @@ install_vr() {
   for c in "$res/wineopenxr/wineopenxr64.json" "$HOME/macndcheese/wineopenxr/wineopenxr64.json" "$wineruut/wineopenxr/wineopenxr64.json"; do
     if [ -f "$c" ]; then mkdir -p "$PORTABLE_DIR/wineopenxr"; cp -f "$c" "$PORTABLE_DIR/wineopenxr/wineopenxr64.json"; echo "install_vr: wineopenxr manifest staged"; break; fi
   done
-  # (4) the x86_64 Monado OpenXR runtime (arm64 wont dlopen into the Rosetta wine)
-  install_monado_runtime || echo "install_vr: WARNING monado runtime install failed — VR wont reach an HMD"
-  write_component_version "vr" "unified-1"
+  # (4) the oxrsys x86_64 STREAMING OpenXR runtime -- it renders+encodes (Metal/VideoToolbox)
+  # then streams to a Quest/Pico companion app over WiFi/USB + gets tracking back, so unlike
+  # Monado it can actually reach a headset on macOS. stage the x86_64 dylib + write the manifest
+  # the backend points XR_RUNTIME_JSON at + drop the streaming config where oxrsys reads it.
+  local oxsrc oxdst oxcfg
+  oxsrc=""
+  for c in "$res/oxrsys-runtime" "$HOME/macndcheese/oxrsys-runtime"; do
+    [ -f "$c/liboxrsys-runtime.dylib" ] && { oxsrc="$c"; break; }
+  done
+  if [ -n "$oxsrc" ]; then
+    oxdst="$PORTABLE_DIR/oxrsys"
+    mkdir -p "$oxdst"
+    cp -f "$oxsrc/liboxrsys-runtime.dylib" "$oxdst/liboxrsys-runtime.dylib"
+    /usr/bin/codesign --force --sign - "$oxdst/liboxrsys-runtime.dylib" 2>/dev/null || true
+    cat > "$oxdst/oxrsys-runtime.json" <<JSON
+{
+    "file_format_version": "1.0.0",
+    "runtime": { "name": "OXRSys Runtime", "library_path": "$oxdst/liboxrsys-runtime.dylib" }
+}
+JSON
+    # oxrsys reads its streaming config (bitrate/refresh/transport) from this fixed path
+    oxcfg="$HOME/Library/Application Support/OXRSys"
+    mkdir -p "$oxcfg"
+    [ -f "$oxsrc/oxrsys-runtime.toml" ] && [ ! -f "$oxcfg/oxrsys-runtime.toml" ] && cp -f "$oxsrc/oxrsys-runtime.toml" "$oxcfg/oxrsys-runtime.toml"
+    echo "install_vr: staged oxrsys x86_64 streaming runtime -> $oxdst (the headset needs the oxrsys companion app to connect)"
+  else
+    echo "install_vr: WARNING oxrsys runtime not bundled -- VR wont reach a headset"
+  fi
+  write_component_version "vr" "unified-oxrsys-1"
   echo "install_vr: done"
 }
 

@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var currentOpenRequest: OpenExeRequest?
     @State private var showOnboarding = false
     @State private var detailGame: Game?
+    @State private var showConsoleMode = false
 
     @ViewBuilder private var killWineserverButton: some View {
         Button {
@@ -53,6 +54,13 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var settingsButtons: some View {
+                // Bradar console / big-picture mode -- fullscreen controller-friendly library (PC logo)
+                Button { withAnimation(.easeInOut(duration: 0.25)) { showConsoleMode = true } } label: {
+                    Image(systemName: "pc")
+                }
+                .help(L("Console Mode"))
+                .accessibilityLabel(L("Console Mode"))
+                .disabled(backend.activePrefix == nil)
                 Button { openSettings() } label: { Image(systemName: "gear") }
             .help(L("Settings"))
             .accessibilityLabel(L("Settings"))
@@ -241,6 +249,14 @@ struct ContentView: View {
         .onChange(of: backend.activePrefix) { _, _ in showStore = false; detailGame = nil }
         .navigationSplitViewStyle(.balanced)
         .tint(.brand)   // brand accent for sidebar selection + prominent buttons
+        // Bradar console / big-picture mode takes over the whole window when its on
+        .overlay {
+            if showConsoleMode {
+                ConsoleModeView(isPresented: $showConsoleMode)
+                    .transition(.opacity)
+                    .zIndex(100)
+            }
+        }
         .searchable(text: $searchText, placement: .toolbar, prompt: showStore ? L("Search showcase") : L("Search games"))
         .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
             showCreateBottle = true
