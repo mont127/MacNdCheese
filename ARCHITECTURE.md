@@ -46,6 +46,9 @@ Three scripts, three different jobs — they are not interchangeable:
 - **`buildapp.sh [arm64|x86_64|universal]`** — release builder. Same bundling, but outputs into
   `build/MacNCheese.app` and packages a distributable `.dmg`. `.github/scripts/build-macos.sh` is
   effectively this script, run by `.github/workflows/build-universal.yml` to cut releases.
+  `.github/workflows/ci.yml` is a separate, lighter workflow: a plain `swift build` (no icon, no
+  signing, no `.dmg`) plus syntax checks on `backend_server.py` and the shell scripts, run on
+  every PR to fail fast on build breaks.
 - **`installer.sh`** — *not* a script you run yourself. It's copied into the built app's
   `Contents/Resources/` and is what the app itself shells out to at runtime, to install Wine,
   DXVK, VKD3D, Mesa, etc. onto an end user's machine.

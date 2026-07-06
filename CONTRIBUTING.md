@@ -62,8 +62,10 @@ map of which file owns what.
 
 ## Testing
 
-There is no automated test suite yet. Adding CI is tracked separately in #103. Until then you
-must test manually.
+CI (.github/workflows/ci.yml) runs on every PR and catches build breaks: it does a Swift debug
+build and syntax-checks backend_server.py, install.sh, buildapp.sh and installer.sh. It does not
+test actual app behavior (Wine, Steam, game launching, etc.) — there is no automated test suite
+for that yet, tracked in #103. Until then you must test those flows manually.
 
 Before you open a pull request. verify at least these flows.
 App opens and UI renders.

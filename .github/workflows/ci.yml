@@ -1,0 +1,36 @@
+name: CI
+
+# Fast build/syntax checks on every PR and push to main. This is deliberately
+# separate from build-universal.yml (which produces signed, distributable
+# .dmg releases via workflow_dispatch) — this workflow is meant to fail fast
+# on every change, not to build a shippable artifact.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-swift:
+    name: Build Swift app (debug)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift build
+        run: swift build --package-path Sources
+
+  check-backend:
+    name: Check backend/scripts syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile-check backend_server.py
+        run: python3 -m py_compile backend_server.py
+      - name: Shell syntax check (bash -n)
+        run: |
+          bash -n install.sh
+          bash -n buildapp.sh
+          bash -n installer.sh
