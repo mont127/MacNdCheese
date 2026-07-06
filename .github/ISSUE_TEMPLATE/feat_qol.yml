@@ -13,7 +13,8 @@ body:
     id: area
     attributes:
       label: Area
-      description: Which part of the app does this touch? Pick "Not sure" and a maintainer will route it.
+      description: Which part(s) of the app does this touch? Pick more than one if it genuinely spans areas. Pick "Not sure" if none of them fit and a maintainer will route it.
+      multiple: true
       options:
         - "Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)"
         - "Apps (.exe/.msi support, bottles)"

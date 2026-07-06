@@ -24,9 +24,15 @@ jobs:
           script: |
             const body = context.payload.issue.body || "";
 
-            function fieldValue(heading) {
+            // Captures everything between a "### <heading>" line and the next
+            // "### " heading (or end of body), not just the first line. Area is a
+            // multi-select dropdown, and GitHub's exact rendering of multiple
+            // selections (comma-joined on one line vs. one per line) isn't worth
+            // depending on — grabbing the whole block and matching by substring
+            // below works either way.
+            function fieldBlock(heading) {
               const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              const re = new RegExp("### " + escaped + "\\s*\\n+([^\\n]*)");
+              const re = new RegExp("### " + escaped + "\\s*\\n+([\\s\\S]*?)(?=\\n### |$)");
               const m = body.match(re);
               return m ? m[1].trim() : null;
             }
@@ -69,14 +75,18 @@ jobs:
 
             const labelsToAdd = [];
 
-            const areaValue = fieldValue("Area");
-            const matchedArea = areaValue
-              ? AREA_MAP.find(([prefix]) => areaValue.startsWith(prefix))
-              : null;
-            labelsToAdd.push(matchedArea ? matchedArea[1] : "needs triage");
+            // Area can be multi-select: apply every area whose prefix appears
+            // anywhere in the block (handles a cross-cutting issue like a CLI
+            // that's genuinely both area:backend and area:apps, e.g. #110).
+            // "Not sure" only matters when nothing real matched.
+            const areaValue = fieldBlock("Area");
+            const matchedAreas = areaValue
+              ? AREA_MAP.filter(([prefix]) => areaValue.includes(prefix)).map(([, label]) => label)
+              : [];
+            labelsToAdd.push(...(matchedAreas.length ? matchedAreas : ["needs triage"]));
 
             for (const q of PRIORITY_QUESTIONS) {
-              const value = fieldValue(q.heading);
+              const value = fieldBlock(q.heading);
               if (!value) continue;
               const matched = q.map.find(([prefix]) => value.startsWith(prefix));
               if (matched) {

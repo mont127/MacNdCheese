@@ -50,6 +50,19 @@ jobs:
           TAG="nightly-$(date +'%Y%m%d')-$(git rev-parse --short HEAD)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Delete previous nightly prereleases
+        # Keep only the one we're about to publish — otherwise these accumulate
+        # forever, one per commit to main. Deletes both the release and its tag.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq '.[] | select(.tagName | startswith("nightly-")) | .tagName' \
+          | while read -r old_tag; do
+              echo "Deleting old nightly release: $old_tag"
+              gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done
+
       - name: Publish prerelease
         uses: softprops/action-gh-release@v2
         with:
