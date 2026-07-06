@@ -16,6 +16,11 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: List available Xcode/SDK versions (diagnostic)
+        run: |
+          ls /Applications | grep -i Xcode || true
+          xcodebuild -version
+          xcodebuild -showsdks
       - name: swift build
         run: swift build --package-path Sources
 
