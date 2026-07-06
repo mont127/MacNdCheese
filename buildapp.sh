@@ -1,4 +1,3 @@
-bash -s -- arm64 <<'EOF'
 #!/bin/bash
 set -eu
 
@@ -50,14 +49,32 @@ ls -la assets/MacNCheese.icns
 echo ""
 echo "Building Swift executable (release) for $TARGET_ARCH..."
 
+# Build and emit Swift const-values (Xcode's SWIFT_ENABLE_EMIT_CONST_VALUES) so the
+# appintentsmetadataprocessor step below can extract Siri/Shortcuts phrase templates.
+# See install.sh, which this was ported from — that script only ever builds native,
+# so it can get away with using `uname -m` for the target triple. Here we must use
+# TARGET_ARCH instead, since this script cross-builds x86_64/universal on arm64 CI
+# runners; `uname -m` would silently produce the wrong triple in that case.
+CONST_FILE="$(pwd)/.build/MacNCheese.swiftconstvalues"
+mkdir -p "$(dirname "$CONST_FILE")"
+
+PROTOCOLS_FILE="$(mktemp).json"
+cat > "$PROTOCOLS_FILE" << 'PROTO_EOF'
+["AnyResolverProviding","AppEntity","AppEnum","AppExtension","AppIntent","AppIntentsPackage","AppShortcutProviding","AppShortcutsProvider","AppUnionValue","AppUnionValueCasesProviding","DynamicOptionsProvider","EntityQuery","ExtensionPointDefining","IntentValueQuery","Resolver","TransientEntity","_AssistantIntentsProvider","_GenerativeFunctionExtractable","_IntentValueRepresentable"]
+PROTO_EOF
+
 pushd Sources >/dev/null
 
-swift build -c release $SWIFT_ARCH_ARGS 2>&1
+swift build -c release $SWIFT_ARCH_ARGS \
+    -Xswiftc -emit-const-values-path -Xswiftc "$CONST_FILE" \
+    -Xswiftc -Xfrontend -Xswiftc -const-gather-protocols-file \
+    -Xswiftc -Xfrontend -Xswiftc "$PROTOCOLS_FILE" 2>&1
 SWIFT_BIN="$(swift build -c release $SWIFT_ARCH_ARGS --show-bin-path)/MacNCheese"
 
 echo "Binary: $SWIFT_BIN"
 
 popd >/dev/null
+rm -f "$PROTOCOLS_FILE"
 
 echo ""
 echo "Creating .app bundle..."
@@ -97,6 +114,47 @@ for img in Steam.png Wine.png Setting.png Add.png icon.png; do
         cp "$img" "$RESOURCES/$img"
     fi
 done
+
+# Extract App Intents metadata so Siri/Apple Intelligence can discover shortcuts.
+# App Intents definitions don't vary by CPU arch, so for a universal build one
+# representative triple (arm64) is enough — this only affects Siri phrase
+# discovery, not the binary itself.
+case "$TARGET_ARCH" in
+  universal) INTENTS_ARCH="arm64" ;;
+  *) INTENTS_ARCH="$TARGET_ARCH" ;;
+esac
+
+PROCESSOR=$(xcrun --find appintentsmetadataprocessor 2>/dev/null || echo "")
+if [ -n "$PROCESSOR" ]; then
+    echo "Extracting App Intents metadata..."
+    TOOLCHAIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
+    SDK=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+    XCODE_BUILD=$(xcodebuild -version 2>/dev/null | grep "Build version" | awk '{print $3}')
+
+    SOURCES_LIST=$(mktemp)
+    CONST_VALS_LIST=$(mktemp)
+
+    find Sources -name "*.swift" > "$SOURCES_LIST"
+    echo "$CONST_FILE" > "$CONST_VALS_LIST"
+
+    "$PROCESSOR" \
+        --toolchain-dir "$TOOLCHAIN" \
+        --module-name MacNCheese \
+        --output "$RESOURCES" \
+        --sdk-root "$SDK" \
+        --xcode-version "$XCODE_BUILD" \
+        --platform-family macOS \
+        --deployment-target 14.0 \
+        --target-triple "${INTENTS_ARCH}-apple-macosx14.0" \
+        --source-file-list "$SOURCES_LIST" \
+        --swift-const-vals-list "$CONST_VALS_LIST" \
+        --no-app-shortcuts-localization \
+        2>&1 || echo "Warning: App Intents metadata extraction failed — Siri phrases may not work."
+
+    rm -f "$SOURCES_LIST" "$CONST_VALS_LIST"
+else
+    echo "Warning: appintentsmetadataprocessor not found — install Xcode for Siri support."
+fi
 
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -255,4 +313,3 @@ ls -la "${APP_NAME}.dmg"
 echo ""
 echo "App:  $APP_ROOT"
 echo "DMG:  ${APP_NAME}.dmg"
-EOF

@@ -46,11 +46,10 @@ jobs:
         if: matrix.arch == 'x86_64'
         run: sudo softwareupdate --install-rosetta --agree-to-license
 
-      - name: Make build script executable
-        run: chmod +x .github/scripts/build-macos.sh
-
       - name: Build DMG
-        run: .github/scripts/build-macos.sh ${{ matrix.arch }}
+        run: |
+          chmod +x buildapp.sh
+          bash buildapp.sh ${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

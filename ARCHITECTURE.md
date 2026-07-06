@@ -44,8 +44,17 @@ Three scripts, three different jobs — they are not interchangeable:
   `backend_server.py` + `installer.sh` + `vendor/gamepolicyctl`, installs to
   `/Applications/MacNdCheese Launcher.app`, and codesigns it. Run this to test a change.
 - **`buildapp.sh [arm64|x86_64|universal]`** — release builder. Same bundling, but outputs into
-  `build/MacNCheese.app` and packages a distributable `.dmg`. `.github/scripts/build-macos.sh` is
-  effectively this script, run by `.github/workflows/build-universal.yml` to cut releases.
+  `build/MacNCheese.app` and packages a distributable `.dmg`. Also extracts App Intents metadata
+  (Siri/Shortcuts), same as `install.sh`. Two workflows call this directly (no more separate
+  `.github/scripts/build-macos.sh` copy — that used to drift out of sync with this script, which
+  is how the official prebuilt DMGs ended up missing the Epic logo and Game Mode support that
+  source builds via `install.sh` had; see #81):
+  - `.github/workflows/build-universal.yml` — `workflow_dispatch`, builds arm64 and x86_64 as two
+    separate DMGs.
+  - `.github/workflows/nightly.yml` — runs on every push to `main`, builds one true universal
+    (`buildapp.sh universal`, arm64+x86_64 in one binary via `lipo`) DMG and publishes it as a
+    GitHub prerelease. See #104.
+
   `.github/workflows/ci.yml` is a separate, lighter workflow: a plain `swift build` (no icon, no
   signing, no `.dmg`) plus syntax checks on `backend_server.py` and the shell scripts, run on
   every PR to fail fast on build breaks.
