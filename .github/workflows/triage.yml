@@ -1,0 +1,110 @@
+name: Issue auto-triage
+
+# Reads the structured Area / impact fields from the issue forms in
+# .github/ISSUE_TEMPLATE/ and applies an area:* label (or "needs triage" if
+# the area is missing/unclear) plus a priority label where the template asks
+# a priority-relevant question. Deterministic — reads form answers, doesn't
+# guess from free text. The type label (Bug/Incoherence/Feat QoL/Feat
+# Compatibility/Help) is already applied by GitHub itself from each
+# template's `labels:` frontmatter, so this workflow doesn't touch that.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+
+            // Captures everything between a "### <heading>" line and the next
+            // "### " heading (or end of body), not just the first line. Area is a
+            // multi-select dropdown, and GitHub's exact rendering of multiple
+            // selections (comma-joined on one line vs. one per line) isn't worth
+            // depending on — grabbing the whole block and matching by substring
+            // below works either way.
+            function fieldBlock(heading) {
+              const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const re = new RegExp("### " + escaped + "\\s*\\n+([\\s\\S]*?)(?=\\n### |$)");
+              const m = body.match(re);
+              return m ? m[1].trim() : null;
+            }
+
+            const AREA_MAP = [
+              ["Backend", "area:backend"],
+              ["Apps", "area:apps"],
+              ["Steam", "area:steam"],
+              ["Epic Games", "area:epic"],
+              ["UI / Settings", "area:ui"],
+              ["Release", "area:release"],
+              ["CI / build tooling", "area:ci"],
+              ["Documentation", "area:docs"],
+            ];
+
+            const PRIORITY_QUESTIONS = [
+              {
+                heading: "Does this stop you from installing, launching, or playing a game at all?",
+                map: [
+                  ["Yes", "High priority"],
+                  ["Partially", "Medium priority"],
+                  ["No", "Low priority"],
+                ],
+              },
+              {
+                heading: "Does this actively confuse/mislead users, or is it a smaller inconsistency?",
+                map: [
+                  ["Actively confuses", "Medium priority"],
+                  ["Minor inconsistency", "Low priority"],
+                ],
+              },
+              {
+                heading: "How big a change is this?",
+                map: [
+                  ["Small", "Low priority"],
+                  ["Bigger", "Medium priority"],
+                ],
+              },
+            ];
+
+            const labelsToAdd = [];
+
+            // Area can be multi-select: apply every area whose prefix appears
+            // anywhere in the block (handles a cross-cutting issue like a CLI
+            // that's genuinely both area:backend and area:apps, e.g. #110).
+            // "Not sure" only matters when nothing real matched.
+            const areaValue = fieldBlock("Area");
+            const matchedAreas = areaValue
+              ? AREA_MAP.filter(([prefix]) => areaValue.includes(prefix)).map(([, label]) => label)
+              : [];
+            labelsToAdd.push(...(matchedAreas.length ? matchedAreas : ["needs triage"]));
+
+            for (const q of PRIORITY_QUESTIONS) {
+              const value = fieldBlock(q.heading);
+              if (!value) continue;
+              const matched = q.map.find(([prefix]) => value.startsWith(prefix));
+              if (matched) {
+                labelsToAdd.push(matched[1]);
+              }
+              break;
+            }
+
+            const existing = new Set(
+              (context.payload.issue.labels || []).map((l) => l.name)
+            );
+            const toApply = labelsToAdd.filter((l) => !existing.has(l));
+
+            if (toApply.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: toApply,
+              });
+            }

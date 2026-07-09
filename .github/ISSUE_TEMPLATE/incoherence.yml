@@ -1,0 +1,54 @@
+name: "Incoherence"
+description: Something in the app (or its docs) contradicts itself or doesn't add up
+title: "Incoherence: "
+labels: ["Incoherence"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For when two things about MacNCheese disagree with each other — two UI controls that
+        contradict, docs that don't match what the app actually does, duplicated options, etc.
+        This is not for something that's simply broken — use the Bug template for that.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part(s) of the app is this in? Pick more than one if it genuinely spans areas. Pick "Not sure" if none of them fit and a maintainer will route it.
+      multiple: true
+      options:
+        - "Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)"
+        - "Apps (.exe/.msi support, bottles)"
+        - "Steam"
+        - "Epic Games"
+        - "UI / Settings"
+        - "Release (packaging, DMG, codesigning)"
+        - "CI / build tooling"
+        - "Documentation"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Does this actively confuse/mislead users, or is it a smaller inconsistency?
+      description: This drives the priority label.
+      options:
+        - "Actively confuses or misleads users"
+        - "Minor inconsistency"
+    validations:
+      required: true
+
+  - type: textarea
+    id: whats-incoherent
+    attributes:
+      label: What's incoherent?
+      description: What are the two contradicting things, and where did you see them?
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot, if it helps

@@ -18,7 +18,7 @@ Fixing bugs and edge cases.
 Better game exe detection.
 Making Intel support clearer and safer.
 Improving error messages so users can self fix.
-UI cleanup for Simplified UI and Dev UI modes.
+UI cleanup and consistency in Settings and the launch sheet.
 Docs and wiki pages.
 
 Please avoid.
@@ -30,43 +30,61 @@ Anything that downloads unknown binaries without a pinned source.
 
 You need.
 macOS.
-Python 3.
-Homebrew.
-Wine installed via Homebrew.
-Qt libraries via PyQt6.
+Xcode (for the Swift toolchain, codesign, iconutil). xcode-select --install at minimum.
+Homebrew and Wine, only once you want to test actual game-launching flows end to end.
 
 Clone.
 git clone https://github.com/mont127/MacNdCheese
 cd MacNdCheese
 
-Install python deps.
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+Build and install for local testing.
+bash install.sh
 
-Run.
-python3 MacNCheese.py
+This builds the Swift app in release mode, bundles backend_server.py alongside it, and installs
+straight into /Applications/MacNdCheese Launcher.app, then codesigns it. Re-run it after every
+change you want to test. It is the fast local loop, no .dmg involved.
+
+backend_server.py only uses the Python standard library, so there is nothing to pip install to
+build or run the app. requirements.txt (PyQt6, pyobjc, pypresence) belongs to
+MacNdCheeseARM-OLDER.py, a legacy pre-SwiftUI prototype kept for reference. It is not part of
+the current build.
+
+To produce a distributable .dmg instead (this is what CI runs).
+bash buildapp.sh arm64
+Or x86_64, or universal.
+
+Do not run installer.sh directly during development. install.sh and buildapp.sh both copy it
+into the built app's Contents/Resources. It is meant to be run BY the app at runtime, to install
+Wine, DXVK, DXMT and so on for end users, not by you as a dev script.
+
+See ARCHITECTURE.md for how the Swift UI and the Python backend talk to each other, and for a
+map of which file owns what.
 
 ## Testing
 
-There is no formal test suite yet.
-So you must test manually.
+CI (.github/workflows/ci.yml) runs on every PR and catches build breaks: it does a Swift debug
+build and syntax-checks backend_server.py, install.sh, buildapp.sh and installer.sh. It does not
+test actual app behavior (Wine, Steam, game launching, etc.) — there is no automated test suite
+for that yet, tracked in #103. Until then you must test those flows manually.
 
 Before you open a pull request. verify at least these flows.
 App opens and UI renders.
-Simplified UI toggle works.
-Dev UI toggle works.
 Install tools works or fails with a readable log.
 Install wine works or fails with a readable log.
-DXVK build 64 works.
-DXVK build 32 works.
-Mesa install works and creates ~/mesa/x64 with expected dlls.
+DXVK (Best Compatibility) works for at least one game. This downloads prebuilt DLLs now, there
+is no DXVK build step anymore.
+DXMT (Balanced) works for at least one game.
+D3DMetal (Best Performance) works for at least one game.
 Prefix init works.
 Steam install works.
 Steam launch works.
 Scan games finds installed titles.
 Launch game works for at least one title.
 Log output is readable and saved where expected.
+
+Mesa has been removed as a backend (the unified engine covers DXMT, DXVK and D3DMetal), so it is
+no longer part of this checklist. VKD3D-Proton (D3D12) is still selectable but is not part of
+backend auto-detection yet; test it directly if your change touches it.
 
 If your change touches a specific backend. test that backend with at least one real game.
 

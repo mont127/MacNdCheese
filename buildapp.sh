@@ -1,4 +1,3 @@
-bash -s -- arm64 <<'EOF'
 #!/bin/bash
 set -eu
 
@@ -46,23 +45,44 @@ sips -z 1024 1024 icon.png --out assets/icon.iconset/icon_512x512@2x.png 2>/dev/
 
 iconutil -c icns assets/icon.iconset -o assets/MacNCheese.icns
 ls -la assets/MacNCheese.icns
+# Built fresh from icon.png every run — do NOT fall back to any committed .icns
+# file. A previous version of this script shipped the stale root-level
+# icon.icns (an old logo) instead of the one it had just built here.
 
 echo ""
 echo "Building Swift executable (release) for $TARGET_ARCH..."
 
+# Build and emit Swift const-values (Xcode's SWIFT_ENABLE_EMIT_CONST_VALUES) so the
+# appintentsmetadataprocessor step below can extract Siri/Shortcuts phrase templates.
+# See install.sh, which this was ported from — that script only ever builds native,
+# so it can get away with using `uname -m` for the target triple. Here we must use
+# TARGET_ARCH instead, since this script cross-builds x86_64/universal on arm64 CI
+# runners; `uname -m` would silently produce the wrong triple in that case.
+CONST_FILE="$(pwd)/.build/MacNCheese.swiftconstvalues"
+mkdir -p "$(dirname "$CONST_FILE")"
+
+PROTOCOLS_FILE="$(mktemp).json"
+cat > "$PROTOCOLS_FILE" << 'PROTO_EOF'
+["AnyResolverProviding","AppEntity","AppEnum","AppExtension","AppIntent","AppIntentsPackage","AppShortcutProviding","AppShortcutsProvider","AppUnionValue","AppUnionValueCasesProviding","DynamicOptionsProvider","EntityQuery","ExtensionPointDefining","IntentValueQuery","Resolver","TransientEntity","_AssistantIntentsProvider","_GenerativeFunctionExtractable","_IntentValueRepresentable"]
+PROTO_EOF
+
 pushd Sources >/dev/null
 
-swift build -c release $SWIFT_ARCH_ARGS 2>&1
+swift build -c release $SWIFT_ARCH_ARGS \
+    -Xswiftc -emit-const-values-path -Xswiftc "$CONST_FILE" \
+    -Xswiftc -Xfrontend -Xswiftc -const-gather-protocols-file \
+    -Xswiftc -Xfrontend -Xswiftc "$PROTOCOLS_FILE" 2>&1
 SWIFT_BIN="$(swift build -c release $SWIFT_ARCH_ARGS --show-bin-path)/MacNCheese"
 
 echo "Binary: $SWIFT_BIN"
 
 popd >/dev/null
+rm -f "$PROTOCOLS_FILE"
 
 echo ""
 echo "Creating .app bundle..."
 
-APP_ROOT="build/MacNCheese.app"
+APP_ROOT="build/MacNdCheese Launcher.app"
 CONTENTS="$APP_ROOT/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -71,12 +91,12 @@ mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$SWIFT_BIN" "$MACOS/MacNCheese"
 
-if [ ! -f icon.icns ]; then
-  echo "ERROR: icon.icns not found"
+if [ ! -f assets/MacNCheese.icns ]; then
+  echo "ERROR: assets/MacNCheese.icns not found (icon build step above should have created it)"
   exit 1
 fi
 
-cp icon.icns "$RESOURCES/MacNCheese.icns"
+cp assets/MacNCheese.icns "$RESOURCES/MacNCheese.icns"
 cp backend_server.py "$RESOURCES/backend_server.py"
 cp installer.sh "$RESOURCES/installer.sh"
 chmod +x "$RESOURCES/installer.sh"
@@ -98,115 +118,55 @@ for img in Steam.png Wine.png Setting.png Add.png icon.png; do
     fi
 done
 
-cat > "$CONTENTS/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>MacNCheese</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.marcel.macncheese</string>
-    <key>CFBundleName</key>
-    <string>MacNCheese</string>
-    <key>CFBundleDisplayName</key>
-    <string>MacNCheese</string>
-    <key>CFBundleVersion</key>
-    <string>10.0.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>10.0.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleIconFile</key>
-    <string>MacNCheese</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSSupportsAutomaticGraphicsSwitching</key>
-    <true/>
-    <key>LSApplicationCategoryType</key>
-    <string>public.app-category.utilities</string>
-    <key>UTImportedTypeDeclarations</key>
-    <array>
-        <dict>
-            <key>UTTypeIdentifier</key>
-            <string>com.microsoft.windows-executable</string>
-            <key>UTTypeDescription</key>
-            <string>Windows Executable</string>
-            <key>UTTypeConformsTo</key>
-            <array>
-                <string>public.unix-executable</string>
-                <string>public.data</string>
-            </array>
-            <key>UTTypeTagSpecification</key>
-            <dict>
-                <key>public.filename-extension</key>
-                <array>
-                    <string>exe</string>
-                </array>
-                <key>public.mime-type</key>
-                <array>
-                    <string>application/x-msdownload</string>
-                </array>
-            </dict>
-        </dict>
-        <dict>
-            <key>UTTypeIdentifier</key>
-            <string>com.microsoft.windows-installer</string>
-            <key>UTTypeDescription</key>
-            <string>Windows Installer Package</string>
-            <key>UTTypeConformsTo</key>
-            <array>
-                <string>public.data</string>
-            </array>
-            <key>UTTypeTagSpecification</key>
-            <dict>
-                <key>public.filename-extension</key>
-                <array>
-                    <string>msi</string>
-                </array>
-                <key>public.mime-type</key>
-                <array>
-                    <string>application/x-msi</string>
-                </array>
-            </dict>
-        </dict>
-    </array>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>Windows Executable</string>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-            <key>LSHandlerRank</key>
-            <string>Alternate</string>
-            <key>LSItemContentTypes</key>
-            <array>
-                <string>com.microsoft.windows-executable</string>
-            </array>
-        </dict>
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>Windows Installer Package</string>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-            <key>LSHandlerRank</key>
-            <string>Alternate</string>
-            <key>LSItemContentTypes</key>
-            <array>
-                <string>com.microsoft.windows-installer</string>
-            </array>
-        </dict>
-    </array>
-</dict>
-</plist>
-PLIST
+# Extract App Intents metadata so Siri/Apple Intelligence can discover shortcuts.
+# App Intents definitions don't vary by CPU arch, so for a universal build one
+# representative triple (arm64) is enough — this only affects Siri phrase
+# discovery, not the binary itself.
+case "$TARGET_ARCH" in
+  universal) INTENTS_ARCH="arm64" ;;
+  *) INTENTS_ARCH="$TARGET_ARCH" ;;
+esac
 
-echo "Info.plist written"
+PROCESSOR=$(xcrun --find appintentsmetadataprocessor 2>/dev/null || echo "")
+if [ -n "$PROCESSOR" ]; then
+    echo "Extracting App Intents metadata..."
+    TOOLCHAIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
+    SDK=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+    XCODE_BUILD=$(xcodebuild -version 2>/dev/null | grep "Build version" | awk '{print $3}')
+
+    SOURCES_LIST=$(mktemp)
+    CONST_VALS_LIST=$(mktemp)
+
+    find Sources -name "*.swift" > "$SOURCES_LIST"
+    echo "$CONST_FILE" > "$CONST_VALS_LIST"
+
+    "$PROCESSOR" \
+        --toolchain-dir "$TOOLCHAIN" \
+        --module-name MacNCheese \
+        --output "$RESOURCES" \
+        --sdk-root "$SDK" \
+        --xcode-version "$XCODE_BUILD" \
+        --platform-family macOS \
+        --deployment-target 14.0 \
+        --target-triple "${INTENTS_ARCH}-apple-macosx14.0" \
+        --source-file-list "$SOURCES_LIST" \
+        --swift-const-vals-list "$CONST_VALS_LIST" \
+        --no-app-shortcuts-localization \
+        2>&1 || echo "Warning: App Intents metadata extraction failed — Siri phrases may not work."
+
+    rm -f "$SOURCES_LIST" "$CONST_VALS_LIST"
+else
+    echo "Warning: appintentsmetadataprocessor not found — install Xcode for Siri support."
+fi
+
+# Use the real Info.plist (same one install.sh uses) instead of a separately
+# hand-maintained copy — this script used to hardcode its own, which drifted
+# out of sync with the actual app name/category/URL scheme/Spotlight config in
+# Sources/Info.plist (this is what was shipping the stale "MacNCheese" name
+# instead of the current "MacNdCheese Launcher").
+cp Sources/Info.plist "$CONTENTS/Info.plist"
+
+echo "Info.plist copied from Sources/Info.plist"
 
 echo ""
 echo "Signing..."
@@ -240,7 +200,7 @@ cp -R "$APP_ROOT" build/dmg_staging/
 ln -s /Applications build/dmg_staging/Applications
 
 hdiutil create \
-    -volname MacNCheese \
+    -volname "MacNdCheese Launcher" \
     -srcfolder build/dmg_staging \
     -ov \
     -format UDZO \
@@ -255,4 +215,3 @@ ls -la "${APP_NAME}.dmg"
 echo ""
 echo "App:  $APP_ROOT"
 echo "DMG:  ${APP_NAME}.dmg"
-EOF

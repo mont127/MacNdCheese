@@ -1,0 +1,94 @@
+name: Nightly universal build
+
+# One universal (arm64 + x86_64 in one binary) .dmg per commit to main, published
+# as a GitHub prerelease. This is separate from build-universal.yml, which is the
+# manually-triggered, matrix (separate arm64/intel artifacts) release process.
+# See #104: today's releases only ever shipped a native-arch build; buildapp.sh's
+# `universal` case was already there but had never actually been wired into CI —
+# worse, buildapp.sh itself silently ignored its architecture argument (see the
+# fix in that script), so even running it by hand never really produced one.
+#
+# Automatic trigger is disabled for now (PR #111 review, 2026-07-09): mont127
+# asked to hold off on automatic nightly builds until v11 ships, in part because
+# of an open question about whether/how GPTK can be bundled given Apple's Game
+# Porting Toolkit license (non-commercial-use redistribution terms) — see the
+# PR discussion. Re-add the `push` trigger below once that's resolved and v11
+# has shipped. workflow_dispatch is left in place so a maintainer can still run
+# this by hand in the meantime.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-universal
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build universal .dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest available Xcode
+        # See the same step in ci.yml / build-universal.yml.
+        run: |
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null \
+            | sed 's#.*/Xcode_##; s/\.app$//' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
+          if [ -n "$LATEST" ]; then
+            sudo xcode-select -s "/Applications/Xcode_${LATEST}.app"
+          fi
+          xcodebuild -version
+
+      - name: Build universal DMG
+        run: |
+          chmod +x buildapp.sh
+          bash buildapp.sh universal
+
+      - name: Compute tag and release notes
+        id: tag
+        run: |
+          TAG="nightly-$(date +'%Y%m%d')-$(git rev-parse --short HEAD)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Not using generate_release_notes here: it diffs against the "previous
+          # release", but the step below deletes the previous nightly before this
+          # one publishes, so there's usually nothing relevant for it to diff
+          # against — it was falling back to unrelated, much older history
+          # instead of "what changed since yesterday's nightly."
+          {
+            echo "notes<<NOTES_EOF"
+            echo "Automated nightly build, universal (arm64 + x86_64) .dmg."
+            echo ""
+            echo "Built from $(git rev-parse --short HEAD): $(git log -1 --pretty=%s)"
+            echo ""
+            echo "https://github.com/${GITHUB_REPOSITORY}/commit/$(git rev-parse HEAD)"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Delete previous nightly prereleases
+        # Keep only the one we're about to publish — otherwise these accumulate
+        # forever, one per commit to main. Deletes both the release and its tag.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq '.[] | select(.tagName | startswith("nightly-")) | .tagName' \
+          | while read -r old_tag; do
+              echo "Deleting old nightly release: $old_tag"
+              gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Nightly ${{ steps.tag.outputs.tag }}
+          prerelease: true
+          body: ${{ steps.tag.outputs.notes }}
+          files: MacNCheese-universal.dmg

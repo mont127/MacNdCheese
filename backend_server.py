@@ -6749,7 +6749,7 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
     return {"job_id": job_id}
 
 
-def _defualt_inpit_info() -> Dict[str, Any]:
+def _default_input_info() -> Dict[str, Any]:
     # Bradar this function look at the microfone of the mac and if it is potato quality we warn the user bradar
     infu = {"name": "", "rate": 0, "transport": "", "warn": False, "message": "", "suggest": ""}
     try:
@@ -6816,12 +6816,12 @@ def _defualt_inpit_info() -> Dict[str, Any]:
     return infu
 
 
-def cmd_chek_audio_inpit(params: Dict[str, Any]) -> Any:
+def cmd_check_audio_input(params: Dict[str, Any]) -> Any:
     # Bradar the app is asking how is the microfone so we go and check it bradar
-    return _defualt_inpit_info()
+    return _default_input_info()
 
 
-def cmd_open_sund_setings(params: Dict[str, Any]) -> Any:
+def cmd_open_sound_settings(params: Dict[str, Any]) -> Any:
     # Bradar we open the sound setting for the user so he can change the microfone bradar very nice
     try:
         subprocess.run(["open", "x-apple.systempreferences:com.apple.Sound-Settings.extension"], timeout=10)
@@ -6859,8 +6859,8 @@ COMMANDS: Dict[str, Any] = {
     "detect_exes": cmd_detect_exes,
     "list_backends": cmd_list_backends,
     "get_components_status": cmd_get_components_status,
-    "check_audio_input": cmd_chek_audio_inpit,
-    "open_sound_settings": cmd_open_sund_setings,
+    "check_audio_input": cmd_check_audio_input,
+    "open_sound_settings": cmd_open_sound_settings,
     "detect_wine": cmd_detect_wine,
     "get_update_info": cmd_get_update_info,
     "check_app_update": cmd_check_app_update,

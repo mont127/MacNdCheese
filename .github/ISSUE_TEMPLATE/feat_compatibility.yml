@@ -1,0 +1,52 @@
+name: "Compatibility feature"
+description: Expand what games, launchers, or architectures MacNCheese supports
+title: "Feat Compatibility: "
+labels: ["Feat Compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For new launcher support (Amazon, Android, iPad...), new architectures, or new backend
+        engines. For improvements to things that already work, use "Quality of Life feature" instead.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part(s) of the app does this touch? Pick more than one if it genuinely spans areas. Pick "Not sure" if none of them fit and a maintainer will route it.
+      multiple: true
+      options:
+        - "Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)"
+        - "Apps (.exe/.msi support, bottles)"
+        - "Steam"
+        - "Epic Games"
+        - "UI / Settings"
+        - "Release (packaging, DMG, codesigning)"
+        - "CI / build tooling"
+        - "Documentation"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: How big a change is this?
+      description: This drives the priority label.
+      options:
+        - "Small / easy addition"
+        - "Bigger feature, or scope isn't clear yet"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What should MacNCheese support that it doesn't today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach, if you have one
