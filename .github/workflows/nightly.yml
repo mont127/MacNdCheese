@@ -7,10 +7,16 @@ name: Nightly universal build
 # `universal` case was already there but had never actually been wired into CI —
 # worse, buildapp.sh itself silently ignored its architecture argument (see the
 # fix in that script), so even running it by hand never really produced one.
+#
+# Automatic trigger is disabled for now (PR #111 review, 2026-07-09): mont127
+# asked to hold off on automatic nightly builds until v11 ships, in part because
+# of an open question about whether/how GPTK can be bundled given Apple's Game
+# Porting Toolkit license (non-commercial-use redistribution terms) — see the
+# PR discussion. Re-add the `push` trigger below once that's resolved and v11
+# has shipped. workflow_dispatch is left in place so a maintainer can still run
+# this by hand in the meantime.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
