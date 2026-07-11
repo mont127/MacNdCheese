@@ -141,7 +141,9 @@ final class WineVersionGate: ObservableObject {
 /// mid-update (games/Steam launch off it), so we block the UI til it finishs — matches
 /// the "this runs once per update" expectaton.
 struct WineUpdateOverlay: View {
-    @EnvironmentObject var wineGate: WineVersionGate
+    // passed explicitly (NOT @EnvironmentObject) — overlay content doesnt reliably inherit
+    // environmentObjects on macOS 26 SwiftUI, which trapped at first render / launch crash.
+    @ObservedObject var wineGate: WineVersionGate
 
     var body: some View {
         if wineGate.updating {

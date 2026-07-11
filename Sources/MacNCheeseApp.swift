@@ -185,8 +185,7 @@ struct MacNCheeseApp: App {
                 .environmentObject(announcements)
                 .environmentObject(updateChecker)
                 .environmentObject(loc)
-                .environmentObject(wineGate)
-                .overlay { WineUpdateOverlay() }
+                .overlay { WineUpdateOverlay(wineGate: wineGate) }
                 .onAppear {
                     backend.start()
                     announcements.check()
