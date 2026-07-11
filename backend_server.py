@@ -2180,6 +2180,7 @@ def cmd_scan_apps(params: Dict[str, Any]) -> Any:
     excluded_roots = [
         (drive_c / "windows"),
         (drive_c / "Program Files (x86)" / "Steam"),
+        (drive_c / "Program Files" / "Steam"),   # fresh fast-boot prefixes land Steam here
         (drive_c / "Program Files" / "Epic Games"),
     ]
 
@@ -2775,8 +2776,7 @@ def _commonredist_hasrun_reg_cmds(prefix: str, wine: str) -> str:
     script (Microsoft .NET Framework)". pre-settin the keys makes steam SKIP them.
     safe: those runtimes r already present (wine builtins / the .NET reg keys) n the
     installers never actualy work under wine anyway. (proven on World War 3 / .NET 4.6.2)"""
-    shared = (Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam" /
-              "steamapps" / "common" / "Steamworks Shared")
+    shared = _steam_dir(prefix) / "steamapps" / "common" / "Steamworks Shared"
     if not shared.is_dir():
         return ""
     seen = set()
@@ -3703,15 +3703,14 @@ def _steam_is_alive() -> bool:
         ps = subprocess.check_output(["ps", "-axo", "command"], text=True)
     except Exception:
         return False
-    return any("Program Files (x86)\\Steam\\steam.exe" in line for line in ps.splitlines())
+    return any("\\Steam\\steam.exe" in line for line in ps.splitlines())  # x86 OR non-x86 Steam
 
 
 def _wait_steam_ready(prefix: str, cap_s: int = 240) -> tuple:
     """Poll until Steam is authenticated ([Logged On] in connection_log.txt) and
     steamwebhelper is up. Returns (ready: bool, status: str). Lifted from the
     proven pre-no-shim readiness poll."""
-    connection_log = (Path(prefix) / "drive_c" / "Program Files (x86)" /
-                      "Steam" / "logs" / "connection_log.txt")
+    connection_log = _steam_dir(prefix) / "logs" / "connection_log.txt"
 
     def _check() -> tuple:
         if not _steam_is_alive():
