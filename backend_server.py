@@ -2982,6 +2982,47 @@ def _stage_syswow64(prefix: str) -> int:
     return staged
 
 
+def _ensure_progfiles_x86(prefix: str) -> None:
+    """Set the WoW64 ProgramFilesDir (x86) registry keys so 32-bit installers (SteamSetup, redists)
+    land in 'Program Files (x86)' like on real Windows, insted of the 64-bit 'Program Files'. the
+    fast wineboot (MNC_SKIP_WOW64_INSTALL) skips the wine.inf step that writes these, so on a fresh
+    prefix a 32-bit installer's $PROGRAMFILES falls back to the 64-bit dir (thats why Steam landed in
+    'Program Files' not '(x86)'). idempotent: no-op once the key is present (proper-booted / already
+    -fixed prefixes have it). See steamsetup-installer-wine-overlay."""
+    try:
+        if '"ProgramFilesDir (x86)"' in (Path(prefix) / "system.reg").read_text(errors="ignore"):
+            return
+    except Exception:
+        pass
+    wine = _find_wine()
+    if not wine:
+        return
+    try:
+        (Path(prefix) / "drive_c" / "Program Files (x86)").mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    env = _wine_env(prefix)
+    dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    cv = r"HKLM\Software\Microsoft\Windows\CurrentVersion"
+    wow = r"HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion"
+    keys = [
+        (cv,  "ProgramFilesDir (x86)", r"C:\Program Files (x86)"),
+        (cv,  "CommonFilesDir (x86)",  r"C:\Program Files (x86)\Common Files"),
+        (wow, "ProgramFilesDir",       r"C:\Program Files (x86)"),
+        (wow, "ProgramFilesDir (x86)", r"C:\Program Files (x86)"),
+        (wow, "CommonFilesDir",        r"C:\Program Files (x86)\Common Files"),
+    ]
+    lines = "\n".join(
+        f'{shlex.quote(wine)} reg add "{k}" /v "{v}" /t REG_SZ /d {shlex.quote(d)} /f >/dev/null 2>&1'
+        for k, v, d in keys)
+    sh = f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n" + lines
+    try:
+        subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh], env=env, timeout=120)
+        log("_ensure_progfiles_x86: set ProgramFilesDir (x86) so 32-bit installers use Program Files (x86)")
+    except Exception as exc:
+        log(f"_ensure_progfiles_x86 failed: {exc}")
+
+
 def _prehack22_wine() -> str:
     """Loader for the PRE-HACK22 wine (stock gs.base swap), used ONLY to run WoW64 redist
     installers (vc_redist / VulkanRT / Rockstar-Games-Launcher + Social-Club Burn bundles /
@@ -3028,6 +3069,7 @@ def _run_installer_prehack22(prefix: str, cmd_after_wine: List[str],
     # so a fast-booted bottle (empty syswow64) makes 32-bit installers die c0000135. give it a real
     # 32-bit subsystem first (fast clonefile, idempotent). THIS is why "Run Installer" was failing.
     _stage_syswow64(prefix)
+    _ensure_progfiles_x86(prefix)
     out = open(log_path, "w") if log_path else subprocess.DEVNULL
     iw = _prehack22_wine()
     if iw:
@@ -3949,6 +3991,7 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
         # subsystem now (fast clonefile) so 32-bit installers (SteamSetup + redists) run on this
         # fresh bottle insted of dying c0000135 on the pre-HACK22 installer wine.
         _stage_syswow64(path_str)
+        _ensure_progfiles_x86(path_str)
     else:
         log("Wine not found, skipping wineboot initialization")
 
