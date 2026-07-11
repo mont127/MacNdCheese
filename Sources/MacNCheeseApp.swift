@@ -175,6 +175,7 @@ struct MacNCheeseApp: App {
     @StateObject private var announcements = AnnouncementChecker()
     @StateObject private var updateChecker = UpdateChecker()
     @StateObject private var loc = LocalizationManager.shared
+    @StateObject private var wineGate = WineVersionGate()
     @State private var urlHandler: MacNCheeseURLHandler?
 
     var body: some Scene {
@@ -184,10 +185,15 @@ struct MacNCheeseApp: App {
                 .environmentObject(announcements)
                 .environmentObject(updateChecker)
                 .environmentObject(loc)
+                .environmentObject(wineGate)
+                .overlay { WineUpdateOverlay() }
                 .onAppear {
                     backend.start()
                     announcements.check()
                     updateChecker.check(autoInstallWith: backend)
+                    // Launch-time wine version gate: if the on-disk wine is older than this
+                    // app version, re-sync it (blockin overlay) then stamp the marker file.
+                    wineGate.check(with: backend)
 
                     let handler = MacNCheeseURLHandler(backend: backend)
                     urlHandler = handler

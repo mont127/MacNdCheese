@@ -266,6 +266,9 @@ struct OnboardingView: View {
             .padding(.horizontal, 28)
 
             Button {
+                // Wine was just (re)installed at the current app version -> stamp the gate
+                // marker so the launch-time WineVersionGate wont redundantly re-run it next launch.
+                if !installer.failed { WineVersionGate.stampInstalled() }
                 inSteamStep = true
             } label: {
                 Text(installer.done ? L("Continue") : L("Installing…"))

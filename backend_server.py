@@ -2881,6 +2881,158 @@ def _steam_is_running() -> bool:
         return False
 
 
+def _prehack22_wine() -> str:
+    """Loader for the PRE-HACK22 wine (stock gs.base swap), used ONLY to run WoW64 redist
+    installers (vc_redist / VulkanRT / Rockstar-Games-Launcher + Social-Club Burn bundles /
+    .NET) that fault-storm at ~100% CPU forEVER under the unified wines HACK22 gs.base
+    rewrite -- HACK22 breaks the WoW64 32<->64 transition so those 32-bit Burn engines jump
+    to garbage n spin ("stuck on installer script"). the pre-HACK22 wine runs them clean.
+    Steam + the actual games keep the unified HACK22 wine. See winemono-32bit-hack22-rootcause."""
+    cands = []
+    ov = os.environ.get("MNC_INSTALLER_WINE", "").strip()
+    if ov:
+        cands.append(Path(ov))
+    cands += [
+        PORTABLE_DIR / "wine-installer" / "wine",                                 # overlay clone (install_wine_installer)
+        PORTABLE_DIR / "wine-installer" / "tools" / "wine" / "wine",              # overlay clone (direct loader)
+        PORTABLE_DIR / "wine-installer" / "build64" / "tools" / "wine" / "wine",  # bundled build-tree (older shape)
+        PORTABLE_DIR / "wine-installer" / "bt" / "wine",
+        Path("/Volumes/ASAFE/D3DMETALWINEDEV/wt-pre-hack22/build64/tools/wine/wine"),  # dev worktree
+    ]
+    for c in cands:
+        try:
+            if c.exists():
+                return str(c)
+        except Exception:
+            continue
+    return ""
+
+
+def _run_installer_prehack22(prefix: str, cmd_after_wine: List[str],
+                             backend: str = "d3dmetal",
+                             log_path: Optional[str] = None) -> subprocess.Popen:
+    """Launch a WoW64/32-bit installer (SteamSetup, generic .exe/.msi installers)
+    via the PRE-HACK22 wine. Steams NSIS stub -- n other 32-bit NSIS/Burn installer
+    stubs -- jump to garbage n fault-storm at 100% CPU under the unified wines HACK22
+    gs.base rewrite (it breaks the WoW64 32<->64 transition). from the UI that looks
+    like the installer never launchs: the stub faults BEFOR it ever opens a window,
+    n with output to /dev/null it writes no logs eithr. the pre-HACK22 wine runs them
+    clean, same as the redist pre-install path (_run_installscript_redists). uses
+    arch-x86_64 + an in-shell DYLD re-export becuse arch strips DYLD_*. wine output is
+    teed to log_path so "Run Installer" isnt a silent black box. Falls back to the
+    unified wine only when the pre-HACK22 wine isnt bundled (may then fault-storm)."""
+    env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
+    env["WINEDEBUG"] = "-all,+err"  # errors only: bounded log but catchs real crashs / missing DLLs
+    out = open(log_path, "w") if log_path else subprocess.DEVNULL
+    iw = _prehack22_wine()
+    if iw:
+        dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+        tail = " ".join(shlex.quote(a) for a in cmd_after_wine)
+        sh = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
+              f"exec {shlex.quote(iw)} {tail}")
+        log(f"installer (pre-HACK22 wine): {cmd_after_wine}")
+        return subprocess.Popen(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh],
+                                env=env, stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    # no pre-HACK22 overlay -> Wine Stable is a normal (no-HACK22) wine that also runs
+    # 32-bit NSIS/Burn installers clean; use it before falling back to the storming unified wine.
+    stable = _find_wine_stable()
+    if stable:
+        log(f"installer: no pre-HACK22 overlay -> Wine Stable ({stable})")
+        return subprocess.Popen([stable] + list(cmd_after_wine), env=env,
+                                stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    wine = _find_wine()
+    if not wine:
+        raise FileNotFoundError("Wine not found")
+    log("installer: no pre-HACK22 overlay + no Wine Stable -> unified wine (32-bit NSIS/Burn MAY fault-storm)")
+    return subprocess.Popen([wine] + list(cmd_after_wine), env=env,
+                            stdout=out, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+
+
+def _run_installscript_redists(prefix: str, game_dir: str, backend: str) -> None:
+    """Actualy INSTALL a Steam games install-script redists (VC++ / Vulkan RT / Rockstar
+    Launcher / Social Club / .NET) via the PRE-HACK22 wine, THEN set their per-redist
+    has-run keys so Steam skips its OWN run of them. Steam fires these WoW64/Burn installers
+    under our HACK22 wine where they spin at 100% CPU forever + wedge the launch on "Running
+    install script"; the pre-HACK22 wine finishs them clean. Idempotent -- a redist whos
+    has-run value is allready set on disk is skipd. No-op if no installscript.vdf or the
+    pre-HACK22 wine isnt present. See winemono-32bit-hack22-rootcause."""
+    iw = _prehack22_wine()
+    if not iw:
+        return
+    gd = Path(game_dir)
+    # installscript.vdf sits at the game root; steam-shared redists ship per-redist ones too
+    vdfs = list(gd.glob("installscript*.vdf"))
+    for extra in ("Redistributables", "_CommonRedist"):
+        vdfs += list((gd / extra).rglob("installscript*.vdf")) if (gd / extra).is_dir() else []
+    if not vdfs:
+        return
+    try:
+        sysreg = (Path(prefix) / "system.reg").read_text(errors="ignore")
+    except Exception:
+        sysreg = ""
+    # a labeld sub-block: "<label>" { "HasRunKey" "<regpath>" ... "process 1" "<exe>" "command 1" "<args>" }
+    # HasRunKey is allways the 1st field so [^{}] stays inside the block (matchs the existing
+    # _commonredist parser). we then read process/command from the same blocks tail.
+    block_re = re.compile(r'"([^"]+)"\s*\{[^{}]*?"HasRunKey"\s+"([^"]+)"',
+                          re.IGNORECASE | re.DOTALL)
+    def _field(t, name):
+        m = re.search(r'"' + name + r'"\s+"([^"]*)"', t, re.IGNORECASE)
+        return m.group(1) if m else None
+    env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
+    env["WINEDEBUG"] = "-all"
+    dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    handled = 0
+    for vdf in sorted(set(vdfs)):
+        try:
+            txt = vdf.read_text(errors="ignore")
+        except Exception:
+            continue
+        if "hasrunkey" not in txt.lower():
+            continue
+        for m in block_re.finditer(txt):
+            label, key = m.group(1), m.group(2)
+            tail = txt[m.end():m.end() + 900]
+            proc = _field(tail, "process 1")
+            if not proc:
+                continue
+            cmd_args = _field(tail, "command 1") or ""
+            key = key.replace("\\\\", "\\").replace("HKEY_LOCAL_MACHINE", "HKLM")
+            # idempotent: already-done redists have the has-run value set on disk
+            if f'"{label}"=dword:00000001' in sysreg:
+                continue
+            unixpath = proc.replace("\\\\", "\\").replace("%INSTALLDIR%", str(gd)).replace("\\", "/")
+            if not Path(unixpath).exists():
+                continue
+            log(f"redist pre-install (pre-HACK22): {Path(unixpath).name} {cmd_args}".rstrip())
+            sh = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
+                  f"{shlex.quote(iw)} {shlex.quote(unixpath)} {cmd_args} >/dev/null 2>&1")
+            try:
+                subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh],
+                               env=env, timeout=900)
+            except Exception as exc:
+                log(f"redist {Path(unixpath).name} run failed: {exc}")
+            # steam.exe reads the Wow6432Node view -> set BOTH so it skips its storming run
+            variants = {key}
+            if "\\Software\\" in key and "Wow6432Node" not in key:
+                variants.add(key.replace("\\Software\\", "\\Software\\Wow6432Node\\", 1))
+            for kp in variants:
+                rc = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
+                      f"{shlex.quote(iw)} reg add {shlex.quote(kp)} /v {shlex.quote(label)} "
+                      f"/t REG_DWORD /d 1 /f >/dev/null 2>&1")
+                try:
+                    subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", rc],
+                                   env=env, timeout=60)
+                except Exception:
+                    pass
+            handled += 1
+    if handled:
+        log(f"redist pre-install: finishd {handled} install-script redist(s) via pre-HACK22 "
+            f"wine so Steam wont fault-storm on them")
+
+
 def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str, Any],
                          params: Dict[str, Any]) -> Any:
     """Launch a game through the unified wine; the loader routes its d3d to the
@@ -2895,6 +3047,16 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     debug = bool(params.get("debug", bottle_cfg.get("debug", False)))
     steam_mode = params.get("steam_mode", "silent")
     is_steam_bottle = bottle_cfg.get("launcher_type", "steam") == "steam"
+    # Bradar pre-instal the games install-script redists (VC++/Vulkan RT/Rockstar Launcher/
+    # Social Club/.NET) via the pre-HACK22 wine BEFORE steam runs its own install-script.
+    # steam fires them under our HACK22 wine where the 32-bit Burn bundles fault-storm at
+    # 100% CPU forever ("stuck on installer script"); this finishs them clean + sets the
+    # has-run keys so steam skips its storming run. idempotent (skips already-done ones).
+    if is_steam_bottle:
+        try:
+            _run_installscript_redists(str(prefix), str(exe_path.parent), backend)
+        except Exception as exc:
+            log(f"redist pre-install skipped: {exc}")
     if steam_mode != "none" and is_steam_bottle:
         # Bradar if steam is already up we DONT kill/relaunch it (the old code always ran
         # _launch_steam_unified which does a "wineserver -k" so it was killin n re-bootstrappin
@@ -3561,15 +3723,9 @@ def _download_and_run_steam_setup(prefix: str, wine: str, setup_path: Optional[s
                 log("Downloading SteamSetup.exe...")
                 urllib.request.urlretrieve(STEAM_SETUP_URL, str(exe))
                 log("SteamSetup.exe downloaded.")
-        env = _wine_env(prefix)
-        log(f"Launching SteamSetup.exe in {prefix}")
-        proc = subprocess.Popen(
-            [wine, str(exe)],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        logf = str(Path(prefix) / "mnc-installer.log")
+        log(f"Launching SteamSetup.exe in {prefix} (pre-HACK22 wine so the NSIS stub wont fault-storm; log {logf})")
+        proc = _run_installer_prehack22(prefix, [str(exe)], "d3dmetal", log_path=logf)
         _setup_proc = proc
     except Exception as exc:
         log(f"Warning: failed to run SteamSetup: {exc}")
@@ -3834,7 +3990,7 @@ def _macncheese_wine_pids(extra_substrings: Optional[List[str]] = None) -> List[
     whose command line references our portable deps dir (wine, wineserver,
     preloaders, gstreamer helpers — they all run from there) or any of the
     given extra substrings (e.g. a specific prefix path). Matching on OUR
-    paths means other Wine installs (CrossOver/Whisky/...) are never touched.
+    paths means other third-party Wine installs are never touched.
     The backend itself and the app are excluded."""
     pats = [str(PORTABLE_DIR)] + [s for s in (extra_substrings or []) if s]
     me, parent = os.getpid(), os.getppid()
@@ -3860,7 +4016,7 @@ def _macncheese_wine_pids(extra_substrings: Optional[List[str]] = None) -> List[
                 continue
             # Windows-argv processes ("C:\..." / "Z:\...") are invisible to the
             # cmdline match — resolve their REAL executable instead. Other Wine
-            # installs (CrossOver/Whisky) resolve to THEIR paths, so the
+            # third-party Wine installs resolve to THEIR paths, so the
             # never-touch guarantee holds.
             if len(cmdline) > 2 and cmdline[1] == ":" and cmdline[2] == "\\":
                 exe = _pid_executable(pid)
@@ -4122,23 +4278,20 @@ def cmd_run_exe(params: Dict[str, Any]) -> Any:
     exe_path = Path(exe)
     if not exe_path.exists():
         raise FileNotFoundError(f"File not found: {exe}")
-    wine = _find_wine()
-    if not wine:
-        raise FileNotFoundError("Wine not found")
-    env = _wine_env(prefix)
     arg_parts = shlex.split(args) if args else []
     if exe_path.suffix.lower() == ".msi":
         # Windows Installer packages are run through msiexec.
-        cmd_list = [wine, "msiexec", "/i", str(exe_path)] + arg_parts
+        tail = ["msiexec", "/i", str(exe_path)] + arg_parts
     else:
-        cmd_list = [wine, str(exe_path)] + arg_parts
-    log(f"run_exe: {cmd_list}")
-    proc = subprocess.Popen(
-        cmd_list, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+        tail = [str(exe_path)] + arg_parts
+    # Installers run on the PRE-HACK22 wine: 32-bit NSIS/Burn stubs (SteamSetup n
+    # friends) jump to garbage n fault-storm at 100% CPU under the unified HACK22 wine,
+    # so from the UI they look like they never launch + write no logs. tee wine output
+    # to a log in the bottle so "Run Installer" isnt a silent black box.
+    logf = str(Path(prefix) / "mnc-installer.log")
+    proc = _run_installer_prehack22(str(prefix), tail, "d3dmetal", log_path=logf)
     _running_games[proc.pid] = proc
+    log(f"run_exe: {tail} -> pid {proc.pid}; log {logf}")
     return {"pid": proc.pid}
 
 

@@ -2151,6 +2151,7 @@ quick_setup() {
   install_portable_tools
   install_portable_wine
   install_wine_unified
+  install_wine_installer
   install_dxmt
 }
 
@@ -2273,6 +2274,60 @@ install_wine_unified() {
   echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
 }
 
+install_wine_installer() {
+  # The "installer wine": a clone of deps/wine-unified with ONLY the PRE-HACK22 ntdll trio
+  # (unix ntdll.so + both PE ntdll.dll) swapped in. 32-bit NSIS/Burn installers (SteamSetup,
+  # vc_redist, Rockstar Launcher, Social-Club .NET) jump to garbage n fault-storm at 100% CPU
+  # forever under the unified wines HACK22 ntdll, but run clean on the pre-HACK22 ntdll. Everthing
+  # else (kernelbase/wow64/loaders, still unified + signed) is byte-identical, so an APFS clone
+  # costs ~0 disk. the backend (_prehack22_wine / _run_installer_prehack22) runs installers on this
+  # while Steam + the games stay on the unified wine. See the SteamSetup / rdr2-rgl installer notes.
+  echo "Step: Installing installer wine (pre-HACK22 ntdll overlay)..."
+  local uni dst ph c
+  uni="${PORTABLE_DIR}/wine-unified"
+  dst="${PORTABLE_DIR}/wine-installer"
+  if [ ! -e "$uni/dlls/ntdll/ntdll.so" ]; then
+    echo "install_wine_installer: deps/wine-unified missing -> run install_wine_unified first" >&2
+    return 1
+  fi
+  # locate the pre-HACK22 ntdll trio: env override, bundled payload, then the dev worktree
+  ph=""
+  for c in "${WINE_INSTALLER_NTDLL_SRC:-}" \
+           "${PORTABLE_DIR}/wine-installer-payload" \
+           "${RESOURCES_DIR:-}/wine-installer-payload" \
+           "/Volumes/ASAFE/D3DMETALWINEDEV/wt-pre-hack22/build64"; do
+    [ -n "$c" ] && [ -e "$c/dlls/ntdll/ntdll.so" ] && { ph="$c"; break; }
+  done
+  if [ -z "$ph" ]; then
+    echo "install_wine_installer: no pre-HACK22 ntdll payload found; skipping." >&2
+    echo "  (installers will fall back to Wine Stable / unified in the backend)" >&2
+    return 0
+  fi
+  echo "  cloning $uni -> $dst"
+  rm -rf "$dst"
+  if cp -c -R "$uni" "$dst" 2>/dev/null; then
+    echo "  (APFS clonefile: ~0 extra disk)"
+  else
+    cp -R "$uni" "$dst" || { echo "install_wine_installer: clone failed" >&2; return 1; }
+  fi
+  echo "  swapping pre-HACK22 ntdll trio from $ph"
+  cp "$ph/dlls/ntdll/ntdll.so"                 "$dst/dlls/ntdll/ntdll.so"
+  cp "$ph/dlls/ntdll/x86_64-windows/ntdll.dll" "$dst/dlls/ntdll/x86_64-windows/ntdll.dll"
+  cp "$ph/dlls/ntdll/i386-windows/ntdll.dll"   "$dst/dlls/ntdll/i386-windows/ntdll.dll"
+  chmod +x "$dst/dlls/ntdll/ntdll.so" 2>/dev/null || true
+  xattr -dr com.apple.quarantine "$dst" 2>/dev/null || true
+  # cp -c preserves the loaders COW-signature; re-sign anyway so the non-APFS full-copy path keeps
+  # the allow-jit / disable-executable-page-protection entitlements (else a SEPARATE 32-bit W^X
+  # SIGSEGV storm). cp -c inodes are independent so this does NOT touch deps/wine-unified.
+  sign_unified_wine "$dst"
+  echo "install_wine_installer: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
+}
+
+uninstall_wine_installer() {
+  rm -rf "${PORTABLE_DIR}/wine-installer"
+  echo "uninstall_wine_installer: removed"
+}
+
 stage_unified_d3d_pack() {
   # copy the d3d DLL pack the unified loader routes to into deps/wine-unified/mnc-d3d
   # source order: env, Resources next to us, the dev steam prefix system32
@@ -2335,6 +2390,12 @@ case "$ACTION" in
     ;;
   uninstall_wine_unified)
     uninstall_wine_unified
+    ;;
+  install_wine_installer)
+    install_wine_installer
+    ;;
+  uninstall_wine_installer)
+    uninstall_wine_installer
     ;;
   uninstall_wine)
     uninstall_wine
