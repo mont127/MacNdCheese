@@ -2890,6 +2890,72 @@ def _steam_is_running() -> bool:
         return False
 
 
+def _stage_syswow64(prefix: str) -> int:
+    """Give the prefix a REAL 32-bit system dir (syswow64) by clonin the wine builds i386 PE
+    builtins into it. new bottles r booted with MNC_SKIP_WOW64_INSTALL=1 (fast: ~10s vs ~5min)
+    which SKIPs the slow i386 Wow64Install, so syswow64 stays EMPTY. the unified wines HACK ntdll
+    papers over that (it resolvs 32-bit builtins from the lib dir), but the pre-HACK22 installer
+    overlay wine (n Wine Stable) have NO such hack -> a 32-bit installer (SteamSetup, vc_redist,
+    Rockstar Launcher, Social-Club ...) dies 'could not load kernel32.dll, status c0000135' befor
+    it ever opens a window. clonin the i386 dlls here (APFS clonefile = ~1s, ~0 disk) gives a
+    working 32-bit subsystem WITHOUT the slow full wineboot (which crawls / wedges on the i386
+    rundll32 under Rosetta - it can sit for 5min+ writin nothing). idempotent: no-op once syswow64
+    is populated. returns the count staged (0 if allready set up or no source build).
+    See steamsetup-installer-wine-overlay + wineboot-slow-i386-wow64."""
+    sw = Path(prefix) / "drive_c" / "windows" / "syswow64"
+    # the load-bearing 32-bit bootstrap dlls. a raw count is NOT a safe "done" signal: an interrupted
+    # copy (a cross-volume REAL copy on /Volumes, a >timeout stall, or app-quit mid-stage) can leave a
+    # partial dir that a count check passes while kernel32/ntdll/user32 r still missing -> c0000135
+    # forever (kernel32 lands ~220th, user32 ~455th in glob order). so key off the actual bootstrap
+    # dlls + a completion marker written ONLY after a verified-full copy.
+    crit = ("kernel32.dll", "ntdll.dll", "kernelbase.dll", "user32.dll")
+    marker = sw / ".mnc_syswow64_ok"
+    try:
+        crit_ok = all((sw / d).is_file() for d in crit)
+        # done if a prior stage completed (marker) OR wine full-booted the prefix itself (all
+        # bootstrap dlls + a near-full set ~624). adopt a full-booted prefix by writin the marker so
+        # we dont needlessly re-clone it.
+        if crit_ok and (marker.is_file() or len(list(sw.glob("*.dll"))) >= 580):
+            if not marker.is_file():
+                try: marker.write_text("adopted")
+                except Exception: pass
+            return 0
+    except Exception:
+        pass
+    bt = _unified_build_dir()
+    if not bt or not (bt / "dlls").is_dir():
+        log("_stage_syswow64: no unified build to source i386 builtins from; skippin")
+        return 0
+    sw.mkdir(parents=True, exist_ok=True)
+    # clone the i386 PE builtins into syswow64: dlls/*/i386-windows (kernel32/ntdll/kernelbase/...)
+    # AND programs/*/i386-windows (msiexec.exe, rundll32.exe, regsvr32.exe -- needed by 32-bit .msi
+    # packages n tool-spawnin installers). cp -c = APFS clonefile (instant, ~0 disk); plain cp
+    # fallback covers a prefix on a diffrent volume than deps. count ONLY successful copies so the
+    # log/return isnt inflated by failures. (the overlay wine loads its pre-HACK22 UNIX ntdll.so
+    # from its own build tree -- the i386 PE ntdll here carries no HACK22, so no fault-storm.)
+    q_bt = shlex.quote(str(bt)); q_sw = shlex.quote(str(sw))
+    shcmd = (f'shopt -s nullglob; c=0; '
+             f'for f in {q_bt}/dlls/*/i386-windows/*.dll {q_bt}/dlls/*/i386-windows/*.exe '
+             f'{q_bt}/programs/*/i386-windows/*.exe {q_bt}/programs/*/i386-windows/*.dll; do '
+             f'if cp -c "$f" {q_sw}/ 2>/dev/null || cp "$f" {q_sw}/ 2>/dev/null; then c=$((c+1)); fi; '
+             f'done; printf %s "$c"')
+    try:
+        r = subprocess.run(["/bin/bash", "-c", shcmd], capture_output=True, text=True, timeout=300)
+        staged = int((r.stdout or "0").strip() or "0")
+    except Exception as exc:
+        log(f"_stage_syswow64 failed: {exc}")
+        return 0
+    # mark complete ONLY if the bootstrap dlls actually landed -> a partial/interrupted copy leaves
+    # no marker n self-heals by re-stagin on the next call insted of cachin a broken dir forever.
+    if all((sw / d).is_file() for d in crit):
+        try: marker.write_text(str(staged))
+        except Exception: pass
+    else:
+        log(f"_stage_syswow64: WARNING staged {staged} but bootstrap dlls missing -> will re-stage next call")
+    log(f"_stage_syswow64: cloned {staged} i386 builtins into syswow64 (32-bit subsystem for installers)")
+    return staged
+
+
 def _prehack22_wine() -> str:
     """Loader for the PRE-HACK22 wine (stock gs.base swap), used ONLY to run WoW64 redist
     installers (vc_redist / VulkanRT / Rockstar-Games-Launcher + Social-Club Burn bundles /
@@ -2932,6 +2998,10 @@ def _run_installer_prehack22(prefix: str, cmd_after_wine: List[str],
     unified wine only when the pre-HACK22 wine isnt bundled (may then fault-storm)."""
     env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
     env["WINEDEBUG"] = "-all,+err"  # errors only: bounded log but catchs real crashs / missing DLLs
+    # the pre-HACK22 overlay wine (n the Wine-Stable fallback) have no MNC_SKIP_WOW64_INSTALL hack,
+    # so a fast-booted bottle (empty syswow64) makes 32-bit installers die c0000135. give it a real
+    # 32-bit subsystem first (fast clonefile, idempotent). THIS is why "Run Installer" was failing.
+    _stage_syswow64(prefix)
     out = open(log_path, "w") if log_path else subprocess.DEVNULL
     iw = _prehack22_wine()
     if iw:
@@ -2992,6 +3062,7 @@ def _run_installscript_redists(prefix: str, game_dir: str, backend: str) -> None
         return m.group(1) if m else None
     env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
     env["WINEDEBUG"] = "-all"
+    _stage_syswow64(prefix)  # 32-bit subsystem so the pre-HACK22 wine can run these 32-bit redists
     dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
     handled = 0
     for vdf in sorted(set(vdfs)):
@@ -3728,9 +3799,25 @@ def _download_and_run_steam_setup(prefix: str, wine: str, setup_path: Optional[s
             log(f"Using provided SteamSetup.exe: {exe}")
         else:
             exe = Path(tempfile.gettempdir()) / "SteamSetup.exe"
-            if not exe.exists():
+            if not exe.exists() or exe.stat().st_size < 1_000_000:
                 log("Downloading SteamSetup.exe...")
-                urllib.request.urlretrieve(STEAM_SETUP_URL, str(exe))
+                # macOS system Python ships no CA bundle -> urlretrieve dies SSL
+                # CERTIFICATE_VERIFY_FAILED (the user hit this on create-bottle). curl uses the
+                # macOS trust store, so try it first; fall back to an unverified urllib context.
+                dl_ok = False
+                try:
+                    rc = subprocess.run(["/usr/bin/curl", "-fsSL", "-o", str(exe), STEAM_SETUP_URL],
+                                        capture_output=True, timeout=300).returncode
+                    dl_ok = (rc == 0 and exe.exists() and exe.stat().st_size > 1_000_000)
+                except Exception as cexc:
+                    log(f"curl download failed: {cexc}")
+                if not dl_ok:
+                    import ssl as _ssl
+                    noverify = _ssl.create_default_context()
+                    noverify.check_hostname = False
+                    noverify.verify_mode = _ssl.CERT_NONE
+                    with urllib.request.urlopen(STEAM_SETUP_URL, context=noverify, timeout=300) as resp:
+                        exe.write_bytes(resp.read())
                 log("SteamSetup.exe downloaded.")
         logf = str(Path(prefix) / "mnc-installer.log")
         log(f"Launching SteamSetup.exe in {prefix} (pre-HACK22 wine so the NSIS stub wont fault-storm; log {logf})")
@@ -3799,6 +3886,10 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
             )
         except Exception as exc:
             log(f"wineboot failed: {exc}")
+        # the fast wineboot skips the i386 Wow64Install -> empty syswow64. stage the 32-bit
+        # subsystem now (fast clonefile) so 32-bit installers (SteamSetup + redists) run on this
+        # fresh bottle insted of dying c0000135 on the pre-HACK22 installer wine.
+        _stage_syswow64(path_str)
     else:
         log("Wine not found, skipping wineboot initialization")
 
@@ -4320,7 +4411,6 @@ def cmd_uninstall_app(params: Dict[str, Any]) -> Any:
     wine = _find_wine()
     if not wine:
         raise FileNotFoundError("Wine not found")
-    env = _wine_env(prefix)
 
     exe_path = Path(exe)
     app_dir = exe_path.parent
@@ -4348,19 +4438,19 @@ def cmd_uninstall_app(params: Dict[str, Any]) -> Any:
             break
 
     if uninstaller:
-        cmd_list = [wine, str(uninstaller)]
+        tail = [str(uninstaller)]
         method = "uninstaller"
     else:
         # No bundled uninstaller — open Wine's Add/Remove Programs dialog.
-        cmd_list = [wine, "uninstaller"]
+        tail = ["uninstaller"]
         method = "control_panel"
 
-    log(f"uninstall_app ({method}): {cmd_list}")
-    proc = subprocess.Popen(
-        cmd_list, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    # uninstallers r the same 32-bit NSIS/Burn class as installers, so run them on the pre-HACK22
+    # wine (which also stages the 32-bit subsystem) insted of the unified HACK22 wine they'd
+    # fault-storm on. output tees to a log so an uninstall isnt a silent black box.
+    logf = str(Path(prefix) / "mnc-uninstall.log")
+    log(f"uninstall_app ({method}): {tail}")
+    proc = _run_installer_prehack22(str(prefix), tail, "d3dmetal", log_path=logf)
     _running_games[proc.pid] = proc
     return {"pid": proc.pid, "method": method}
 

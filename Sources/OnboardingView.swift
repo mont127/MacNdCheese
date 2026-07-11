@@ -401,6 +401,15 @@ struct OnboardingView: View {
         add(s?.hasTools ?? false, "install_tools")
         add(s?.hasWineStable ?? false, "install_wine")
         add(s?.hasWineUnified ?? false, "install_wine_unified")
+        // build the pre-HACK22 installer overlay + stage the bundled freetype whenever we set up the
+        // unified wine (fresh box). without the overlay, 32-bit installers (SteamSetup / vc_redist /
+        // RGL) fall back to the storming unified wine; without mnc-fonts, no-Homebrew boxes hit the
+        // "cannot find the FreeType font library" error. both r cheap (clonefile / tiny copy) n run
+        // after install_wine_unified (the overlay clones it). onboarding is the ONLY fresh-box path,
+        // so if these arent here a fresh install ships without them (the version gate only fires on
+        // a LATER app-version bump).
+        add(s?.hasWineUnified ?? false, "install_wine_installer")
+        add(s?.hasWineUnified ?? false, "stage_mnc_fonts")
         if installEverything {
             add(s?.hasWineStaging ?? false, "install_wine_staging")
         }
