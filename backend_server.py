@@ -2668,8 +2668,18 @@ def _unified_engine_active(bottle_cfg: Dict[str, Any]) -> bool:
 
 
 def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
-    """Map the app's backend id onto the loader's game backends (d3dmetal/dxmt/dxvk/vr)."""
-    b = (backend or bottle_cfg.get("default_backend") or "d3dmetal").lower()
+    """Map the app's backend id onto the loader's game backends (d3dmetal/dxmt/dxvk/vr).
+
+    A per-game selection of "" or "auto" isn't an override -- it means "use this
+    bottle's global backend", i.e. bottle_cfg["default_backend"] (the toolbar's
+    global backend picker). Treating "auto" as a truthy override made every
+    "Default" game silently render on d3dmetal no matter what the toolbar picker
+    said, contradicting it instead of following it (issue #105).
+    """
+    override = (backend or "").lower()
+    if override == BACKEND_AUTO:
+        override = ""
+    b = (override or bottle_cfg.get("default_backend") or "d3dmetal").lower()
     # Bradar vr = openxr-DXMT (d3d11 w/ OpenXR passthrough thru wineopenxr) -> loader openxr column
     if b in ("vr", "openxr", "dxmt_openxr"):
         return "vr"

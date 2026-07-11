@@ -31,11 +31,21 @@ struct ContentView: View {
 
     // Bradar global backend picker for the toolbar -- sets the whole bottles default_backend
     // so EVERY game in it render thru the chosen backend (the per-game launch sheet can still
-    // override one game). VR = the openxr-DXMT stack (wineopenxr bridge + x86_64 monado runtime).
+    // override one game, unless its own selector is left on "Default"). VR = the openxr-DXMT
+    // stack (wineopenxr bridge + x86_64 monado runtime).
+    private static let toolbarBackendIds: Set<String> = ["d3dmetal3", "dxmt", "dxvk", "vr"]
+
     @ViewBuilder private var globalBackendPicker: some View {
         if !showStore, backend.activePrefix != nil, activeBottle?.isEpicBottle != true {
             Picker(selection: Binding(
-                get: { activeBottle?.defaultBackend ?? "d3dmetal3" },
+                get: {
+                    // Bottles created before this backend id existed (or ones still
+                    // storing the per-game "auto" sentinel) don't match any tag below,
+                    // which made SwiftUI render the picker blank. Fall back to a real
+                    // default instead — a pop-up button must always show a selection.
+                    let stored = activeBottle?.defaultBackend ?? "d3dmetal3"
+                    return Self.toolbarBackendIds.contains(stored) ? stored : "d3dmetal3"
+                },
                 set: { newVal in
                     guard let prefix = backend.activePrefix else { return }
                     Task { await backend.setBottleConfig(path: prefix, values: ["default_backend": newVal]) }

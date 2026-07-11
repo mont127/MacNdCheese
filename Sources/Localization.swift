@@ -210,7 +210,7 @@ enum Localization {
         "No Steam": "不使用 Steam",
         "Silent: background Steam (no window) — best for Steamworks games like cs2. Open: full Steam UI. No Steam: don't launch Steam — best for standalone UE5/Unity games where background Steam interferes.": "静默：Steam 在后台运行（无窗口），适合 cs2 等 Steamworks 游戏。打开：显示完整 Steam 界面。不使用 Steam：不启动 Steam，适合后台 Steam 会干扰的独立 UE5/Unity 游戏。",
         "Play": "开始游戏",
-        "Auto (recommended)": "自动（推荐）",
+        "Default (uses global backend)": "默认（使用全局后端）",
         "Wine Devel (OpenGL games)": "Wine Devel（OpenGL 游戏）",
         "DXMT (Balanced)": "DXMT（均衡）",
         "DXMT + OpenXR (VR, monofunc)": "DXMT + OpenXR（VR，monofunc）",

@@ -608,7 +608,7 @@ struct GameLaunchSheet: View {
 
     private func engineLabel(_ b: GraphicsBackend) -> String {
         switch b.backendId {
-        case "auto":          return L("Auto (recommended)")
+        case "auto":          return L("Default (uses global backend)")
         case "wine_devel":    return L("Wine Devel (OpenGL games)")
         case "dxmt":          return L("DXMT (Balanced)")
         case "vr", "dxmt_openxr": return L("VR (OpenXR)")

@@ -478,7 +478,10 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func createBottle(name: String, path: String? = nil, launcherType: String = "steam", defaultBackend: String = "auto", steamSetupPath: String? = nil) async {
+    // Bradar "auto" isnt a meaningful GLOBAL backend (theres nothing above it to defer
+    // to) -- it only makes sense as the per-game override. New bottles need a concrete
+    // default so the toolbar's global backend picker never opens on a blank selection.
+    func createBottle(name: String, path: String? = nil, launcherType: String = "steam", defaultBackend: String = "d3dmetal3", steamSetupPath: String? = nil) async {
         do {
             var params: [String: Any] = [
                 "name": name,
