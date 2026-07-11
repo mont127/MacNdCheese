@@ -1985,7 +1985,7 @@ def cmd_scan_games(params: Dict[str, Any]) -> Any:
         return _scan_legendary_games(prefix_str)
 
     prefix = Path(prefix_str).expanduser().resolve()
-    steam_dir = prefix / "drive_c" / "Program Files (x86)" / "Steam"
+    steam_dir = _steam_dir(prefix)
 
     games: List[Dict[str, Any]] = []
 
@@ -2506,7 +2506,7 @@ def _ensure_steam_sdl_resolvable(prefix: str) -> None:
     SDL3/SDL2 into the prefix's system32 so the bare-name load resolves for every
     game. Idempotent; a game shipping its own SDL in its exe dir still wins."""
     try:
-        steam_root = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
+        steam_root = _steam_dir(prefix)
         sys32 = Path(prefix) / "drive_c" / "windows" / "system32"
         if not sys32.is_dir():
             return
@@ -2812,11 +2812,27 @@ def _commonredist_hasrun_reg_cmds(prefix: str, wine: str) -> str:
             + "\n".join(lines) + "\n")
 
 
+def _steam_dir(prefix) -> Path:
+    """The Steam install dir in a prefix. Prefer the canonical 32-bit 'Program Files (x86)\\Steam',
+    but fall back to 'Program Files\\Steam': a 32-bit installer (SteamSetup) on a fast-booted prefix
+    -- which lacks the full WoW64 ProgramFiles(x86) redirection -- lands Steam in the 64-bit 'Program
+    Files' insted, so the launcher must look in BOTH or it "cant detect Steam" right after a
+    successful install. Returns whichever actually has steam.exe; defaults to the (x86) path."""
+    dc = Path(prefix).expanduser() / "drive_c"
+    x86 = dc / "Program Files (x86)" / "Steam"
+    noarch = dc / "Program Files" / "Steam"
+    if (x86 / "steam.exe").exists():
+        return x86
+    if (noarch / "steam.exe").exists():
+        return noarch
+    return x86
+
+
 def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
     """Launch Steam through the unified wine so its CEF renders via DXMT."""
     global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
     bt = _unified_build_dir()
-    steam_dir = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
+    steam_dir = _steam_dir(prefix)
     steam_exe = steam_dir / "steam.exe"
     if not steam_exe.exists():
         raise FileNotFoundError(f"Steam is not installed in this prefix.\nExpected: {steam_exe}")
@@ -3573,7 +3589,7 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
     elif launcher_exe:
         log(f"Custom launcher_exe '{launcher_exe}' not found, falling back to Steam")
 
-    steam_dir = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
+    steam_dir = _steam_dir(prefix)
     steam_exe = steam_dir / "steam.exe"
 
     if not steam_exe.exists():
@@ -3846,6 +3862,25 @@ def cmd_get_setup_pid(_params: Dict[str, Any]) -> Any:
     global _setup_proc
     running = _setup_proc is not None and _setup_proc.poll() is None
     return {"running": running}
+
+
+def cmd_steam_install_status(params: Dict[str, Any]) -> Any:
+    """Drives the "Installing Steam…" loading screen. installed = steam.exe present (checks BOTH
+    Program Files (x86)\\Steam AND Program Files\\Steam via _steam_dir, since a 32-bit installer on a
+    fast-booted prefix lands Steam in the non-x86 dir). running = a SteamSetup install proc is still
+    alive. The UI polls this: show the overlay til installed, or drop it if it stops runnin unfinishd."""
+    prefix = params.get("prefix")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+    installed = (_steam_dir(prefix) / "steam.exe").exists()
+    running = False
+    try:
+        out = subprocess.run(["pgrep", "-f", "SteamSetup"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+        running = bool(out)
+    except Exception:
+        pass
+    return {"installed": installed, "running": running}
 
 
 def cmd_create_bottle(params: Dict[str, Any]) -> Any:
@@ -5504,7 +5539,7 @@ def cmd_diagnose_cheese(params: Dict[str, Any]) -> Any:
                     smoke_actions,
                 ))
 
-    steam_dir = prefix_path / "drive_c" / "Program Files (x86)" / "Steam"
+    steam_dir = _steam_dir(prefix_path)
     if steam_dir.exists():
         _add_repair(
             repairs,
@@ -6010,7 +6045,7 @@ def cmd_run_cheese_repair(params: Dict[str, Any]) -> Any:
                 _job_append(job, f"Copied {copied} Wine Stable runtime file(s) into the selected prefix.")
 
             elif action == "clear_steam_caches":
-                steam_dir = Path(prefix).expanduser() / "drive_c" / "Program Files (x86)" / "Steam"
+                steam_dir = _steam_dir(prefix)
                 targets = [
                     steam_dir / "config" / "htmlcache",
                     steam_dir / "appcache" / "httpcache",
@@ -7137,6 +7172,7 @@ COMMANDS: Dict[str, Any] = {
     "get_running_games": cmd_get_running_games,
     "get_steam_running": cmd_get_steam_running,
     "get_setup_pid": cmd_get_setup_pid,
+    "steam_install_status": cmd_steam_install_status,
     "reorder_bottles": cmd_reorder_bottles,
     "launch_launcher": cmd_launch_launcher,
     "get_exe_icon": cmd_get_exe_icon,

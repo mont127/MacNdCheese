@@ -349,6 +349,11 @@ final class BackendClient: ObservableObject {
     @Published var epicAuthURL: URL? = nil
 
     @Published var steamRunning = false
+    /// True while a SteamSetup install is in progress -> ContentView shows the "Installing Steam…"
+    /// loading overlay. The SteamSetup GUI wizard doesnt surface under wine so the install runs
+    /// SILENT (/S); this is how the user knows its actualy workin. Set by watchSteamInstall.
+    @Published var steamInstalling = false
+    @Published var steamInstallStep = ""
     private var steamPollTask: Task<Void, Never>?
 
     func launchLauncher(prefix: String) async {
@@ -386,6 +391,41 @@ final class BackendClient: ObservableObject {
         }
         startSteamPolling()
         focusWineWindow()
+    }
+
+    /// Show the "Installing Steam…" loading screen + poll steam_install_status until steam.exe lands.
+    /// SteamSetup runs silent (/S) becuse its GUI wizard doesnt reliably surface under wine, so
+    /// without this the user has no idea an install is happenin. Clears on success, on
+    /// ran-then-stopped-without-steam.exe (likely failed), or a ~3min timeout.
+    func watchSteamInstall(prefix: String) {
+        steamInstalling = true
+        steamInstallStep = L("Preparing…")
+        Task { @MainActor in
+            var sawRunning = false
+            var idleAfterRun = 0
+            for _ in 0..<120 {   // ~120 * 1.5s = 180s cap
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                let s = (try? await self.send(cmd: "steam_install_status",
+                                              params: ["prefix": prefix])) as? [String: Any]
+                let installed = (s?["installed"] as? Bool) ?? false
+                let running = (s?["running"] as? Bool) ?? false
+                if installed {
+                    steamInstallStep = L("Steam installed ✓")
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    steamInstalling = false
+                    await loadBottles()
+                    return
+                }
+                if running {
+                    sawRunning = true; idleAfterRun = 0
+                    steamInstallStep = L("Installing Steam…")
+                } else if sawRunning {
+                    idleAfterRun += 1
+                    if idleAfterRun >= 4 { break }   // ran then stopped w/o steam.exe -> give up
+                }
+            }
+            steamInstalling = false
+        }
     }
 
     func startSteamPolling() {
@@ -451,6 +491,10 @@ final class BackendClient: ObservableObject {
             await loadBottles()
             if launcherType == "steam" {
                 pollAndFocusSetup()
+                // steam bottles auto-run SteamSetup silently -> show the "Installing Steam…" screen.
+                if let p = bottles.first(where: { $0.name == name })?.path {
+                    watchSteamInstall(prefix: p)
+                }
             }
         } catch {
             lastError = String(format: L("Failed to create bottle: %@"), error.localizedDescription)
@@ -539,6 +583,8 @@ final class BackendClient: ObservableObject {
     func runExe(prefix: String, exe: String, args: String = "") async {
         do {
             _ = try await send(cmd: "run_exe", params: ["prefix": prefix, "exe": exe, "args": args])
+            // SteamSetup installs silently (no wizard window under wine) -> show the loading screen.
+            if exe.lowercased().hasSuffix("steamsetup.exe") { watchSteamInstall(prefix: prefix) }
         } catch {
             lastError = String(format: L("Failed to run exe: %@"), error.localizedDescription)
         }

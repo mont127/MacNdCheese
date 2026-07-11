@@ -257,6 +257,17 @@ struct ContentView: View {
                     .zIndex(100)
             }
         }
+        // "Installing Steam…" loading screen — SteamSetup installs silently (its wizard doesnt
+        // surface under wine), so this is how the user knows the install is runnin. step is passed
+        // as a plain value (NOT @EnvironmentObject) since overlay content doesnt inherit those here.
+        .overlay {
+            if backend.steamInstalling {
+                SteamInstallOverlay(step: backend.steamInstallStep)
+                    .transition(.opacity)
+                    .zIndex(120)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: backend.steamInstalling)
         .searchable(text: $searchText, placement: .toolbar, prompt: showStore ? L("Search showcase") : L("Search games"))
         .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
             showCreateBottle = true
