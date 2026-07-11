@@ -192,7 +192,9 @@ struct GameGridView: View {
         panel.allowedContentTypes = [.exe]
         panel.canChooseFiles = true
         if panel.runModal() == .OK, let url = panel.url, let prefix = backend.activePrefix {
-            Task { await backend.launchGame(prefix: prefix, exe: url.path) }
+            // installers -> run_exe -> pre-HACK22 installer-wine overlay, NOT the unified HACK22
+            // wine (which fault-storms on 32-bit NSIS/Burn installers like SteamSetup).
+            Task { await backend.runExe(prefix: prefix, exe: url.path) }
         }
     }
 
