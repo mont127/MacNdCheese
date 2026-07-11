@@ -3119,6 +3119,19 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     chosen backend while Steam stays on DXMT."""
     bt = _unified_build_dir()
     exe_path = Path(exe)
+    # SteamSetup.exe is a 32-bit NSIS stub that fault-storms on the unified HACK22 wine -> a Play
+    # would spin forever with NO window (the storm is the HACK22 WINE, not the d3dmetal/dxmt backend,
+    # so switchin backend wouldnt help at all). route it to the pre-HACK22 installer wine + /S so
+    # Steam installs silently (the GUI wizard doesnt reliably surface under wine); a later Play then
+    # finds steam.exe n launchs it via DXMT. this is why "Play on a steam bottle w/o Steam" did
+    # nothing + logd backend=d3dmetal.
+    if exe_path.name.lower() == "steamsetup.exe":
+        tail = [str(exe_path)] + (shlex.split(args) if args else ["/S"])
+        logf = str(Path(prefix) / "mnc-installer.log")
+        proc = _run_installer_prehack22(str(prefix), tail, "d3dmetal", log_path=logf)
+        _running_games[proc.pid] = proc
+        log(f"launch: SteamSetup.exe routed to pre-HACK22 installer wine (silent); log {logf}")
+        return {"pid": proc.pid}
     _stage_unified_dlls(str(prefix))
     _stage_unified_mf(str(prefix))
     _ensure_steam_sdl_resolvable(str(prefix))
@@ -3821,7 +3834,9 @@ def _download_and_run_steam_setup(prefix: str, wine: str, setup_path: Optional[s
                 log("SteamSetup.exe downloaded.")
         logf = str(Path(prefix) / "mnc-installer.log")
         log(f"Launching SteamSetup.exe in {prefix} (pre-HACK22 wine so the NSIS stub wont fault-storm; log {logf})")
-        proc = _run_installer_prehack22(prefix, [str(exe)], "d3dmetal", log_path=logf)
+        # /S = silent install (the SteamSetup GUI wizard doesnt reliably surface under wine); this
+        # lands steam.exe so a later Play launchs Steam via DXMT.
+        proc = _run_installer_prehack22(prefix, [str(exe), "/S"], "d3dmetal", log_path=logf)
         _setup_proc = proc
     except Exception as exc:
         log(f"Warning: failed to run SteamSetup: {exc}")
