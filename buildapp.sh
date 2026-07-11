@@ -101,6 +101,11 @@ cp backend_server.py "$RESOURCES/backend_server.py"
 cp installer.sh "$RESOURCES/installer.sh"
 chmod +x "$RESOURCES/installer.sh"
 cp Epic.svg "$RESOURCES/Epic.svg"
+# macndcheese/mnc are plain scripts, dereferenced (not symlinked) into the
+# bundle so the codesign step below signs two real files, same as installer.sh.
+cp macndcheese "$RESOURCES/macndcheese"
+cp macndcheese "$RESOURCES/mnc"
+chmod +x "$RESOURCES/macndcheese" "$RESOURCES/mnc"
 
 # Bundle Apple's gamepolicyctl so the backend can force macOS Game Mode on for
 # launched Wine games without requiring Xcode. It only links OS frameworks, so

@@ -1,0 +1,1081 @@
+#!/usr/bin/env python3
+"""macndcheese CLI -- an interactive terminal client for the MacNdCheese backend.
+
+MacNdCheese is a SwiftUI app talkin to backend_server.py over a line-JSON protocol:
+one  {"id": N, "cmd": name, ..params}  per line goes IN, one
+     {"id": N, "ok": true, "data": ..}  (or {"ok": false, "error": ..})  per line comes OUT.
+
+run it with NO args + you get an interactive shell (a REPL) that keeps ONE backend alive
+the hole session -- so state sticks around: launch steam, then `status` sees it, `bottles
+kill` stops it, + you `use` a bottle once insted of retypin its long path. run it WITH a
+subcommand + it does that one thing + exits (handy for scriptin).
+
+  ./macndcheese                          # interactive shell
+  ./macndcheese bottles list             # one-shot
+  ./macndcheese launch "Half-Life"       # launch by name, returns right away
+  ./macndcheese launch "Half-Life" --logs  # ..and stream its log until control-c
+  ./macndcheese raw scan_games prefix=/path/to/Bottle
+"""
+from __future__ import annotations
+import argparse
+import atexit
+import itertools
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))  # realpath, not abspath -- follows the mnc symlink
+BACKEND = os.path.join(HERE, "backend_server.py")
+HISTFILE = os.path.expanduser("~/.mnc_history")
+GENERAL_LOG_PATH = os.path.expanduser("~/Library/Logs/MacNCheese/macncheese.log")
+PATH_BIN_DIR = "/usr/local/bin"
+
+# ---- tiny ansi paint (only when we're a real terminal) --------------------------
+_TTY = sys.stdout.isatty()
+_BOLD, _DIM, _RED, _GRN, _YEL, _CYN = "1", "2", "31", "32", "33", "36"
+
+
+def _paint(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _TTY else text
+
+
+# ---- the backend pipe -----------------------------------------------------------
+class BackendError(RuntimeError):
+    """raised when the backend anwsers ok=false."""
+
+
+class Backend:
+    """spawns backend_server.py once + does request/reply, allways matchin our OWN id
+    back out of the stream (scan_games/scan_apps run on a worker so there replys can
+    land out of order -- we cant just take the next line)."""
+
+    def __init__(self, verbose: bool = False) -> None:
+        if not os.path.exists(BACKEND):
+            sys.exit(f"cant find backend_server.py next to the cli (looked in {HERE})")
+        self._nextid = itertools.count(1)
+        errto = None if verbose else subprocess.DEVNULL  # backend logs -> stderr, hide em
+        self._proc = subprocess.Popen(
+            [sys.executable, BACKEND],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errto,
+            text=True, bufsize=1, cwd=HERE,
+        )
+
+    def call(self, cmd: str, params: "dict | None" = None):
+        if self._proc.poll() is not None:
+            raise BackendError("the backend has died -- restart the shell")
+        rid = next(self._nextid)
+        req = {"id": rid, "cmd": cmd}
+        if params:
+            req.update(params)
+        assert self._proc.stdin and self._proc.stdout
+        self._proc.stdin.write(json.dumps(req) + "\n")
+        self._proc.stdin.flush()
+        while True:
+            raw = self._proc.stdout.readline()
+            if not raw:
+                raise BackendError("backend closed the pipe befor replyin (it may of crashd -- try --verbose)")
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                resp = json.loads(raw)
+            except json.JSONDecodeError:
+                continue  # not our json -- skip
+            if resp.get("id") != rid:
+                continue  # a diffrent commands reply -- keep readin
+            if resp.get("ok"):
+                return resp.get("data")
+            raise BackendError(resp.get("error") or "unknown backend error")
+
+    def close(self) -> None:
+        try:
+            if self._proc.stdin:
+                self._proc.stdin.close()   # eof lets the backend main loop end cleanly
+            self._proc.wait(timeout=5)
+        except Exception:
+            self._proc.kill()
+
+
+# ---- shell state (persists accross commands in the REPL) ------------------------
+class State:
+    def __init__(self) -> None:
+        self.prefix: "str | None" = None   # the currently-selected bottle path
+        self.name: "str | None" = None     # ..and its name (for the prompt)
+        self.bottles: list = []            # last-fetched bottle list, so `use N` works
+
+
+# ---- generic helpers --------------------------------------------------------------------
+def _known_cmds() -> "list[str]":
+    """scrape the cmd_* names outa backend_server.py so the list cant drift."""
+    try:
+        with open(BACKEND, encoding="utf-8", errors="ignore") as fh:
+            src = fh.read()
+    except OSError:
+        return []
+    return sorted(set(re.findall(r"^def cmd_([a-z0-9_]+)", src, re.M)))
+
+
+def _emit(data, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(data, indent=2, default=str))
+    elif data is None:
+        print(_paint("ok", _GRN))
+    elif isinstance(data, (dict, list)):
+        print(json.dumps(data, indent=2, default=str))
+    else:
+        print(data)
+
+
+def _parse_kv(pairs: "list[str]") -> dict:
+    """key=value tokens -> params. values get json-parsed when they can (true/200/[..]),
+    otherwise kept as a plain string."""
+    out: dict = {}
+    for tok in pairs:
+        if "=" not in tok:
+            raise BackendError(f"bad param {tok!r} -- expektd key=value")
+        key, val = tok.split("=", 1)
+        try:
+            out[key] = json.loads(val)
+        except json.JSONDecodeError:
+            out[key] = val
+    return out
+
+
+def _print_kv(pairs) -> None:
+    """pairs: an iterable of (label, value). left-aligned two-column block, no deps."""
+    pairs = list(pairs)
+    if not pairs:
+        print(_paint("Nothing to show.", _DIM))
+        return
+    width = max(len(str(k)) for k, _ in pairs)
+    for k, v in pairs:
+        print(f"  {str(k).ljust(width)}  {v}")
+
+
+def _print_table(headers, rows) -> None:
+    """rows: an iterable of tuples, same length as headers. plain columns, no deps."""
+    rows = list(rows)
+    if not rows:
+        print(_paint("Nothing to show.", _DIM))
+        return
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+
+    def fmt(row):
+        return "  ".join(str(c).ljust(w) for c, w in zip(row, widths))
+
+    print(_paint(fmt(headers), _BOLD))
+    for row in rows:
+        print(fmt(row))
+
+
+def _pid_alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return True
+
+
+def _tail_log(path: str, pid) -> None:
+    """poll-tail a log file until control-c or the process exits. no external `tail`,
+    just a plain readline loop -- keeps this stdlib-only and identical on any macOS python."""
+    deadline = time.time() + 3.0
+    while not os.path.exists(path) and time.time() < deadline:
+        time.sleep(0.1)
+    if not os.path.exists(path):
+        print(f"Log file never appeared ({path}) -- it may have failed to start.")
+        return
+    print(_paint(f"Streaming {path} -- control-c to detach (it keeps running):", _DIM))
+    try:
+        with open(path, "r", errors="ignore") as f:
+            f.seek(0, os.SEEK_END)
+            last_check = time.time()
+            while True:
+                line = f.readline()
+                if line:
+                    print(line, end="")
+                    continue
+                if pid and time.time() - last_check > 1.0:
+                    last_check = time.time()
+                    if not _pid_alive(pid):
+                        for rest in f:
+                            print(rest, end="")
+                        print(_paint("[exited]", _DIM))
+                        return
+                time.sleep(0.2)
+    except KeyboardInterrupt:
+        print()
+        print(f"Detached -- it keeps running (PID {pid}).")
+
+
+# ---- bottle + game resolution -----------------------------------------------------
+def _all_bottles(backend: "Backend", state: State) -> list:
+    if not state.bottles:
+        state.bottles = backend.call("list_bottles") or []
+    return state.bottles
+
+
+def _resolve_bottle(token: str, backend: "Backend", state: State) -> dict:
+    """name-or-path -> a bottle dict with at least {path, name}. an exact-case name
+    match wins outright (so `Epic` and `epic` are each unambiguous on their own even
+    if both bottles exist); only fall back to a case-insensitive match, then a
+    literal path on disk, then a clear error."""
+    bottles = _all_bottles(backend, state)
+    exact_case = [b for b in bottles if b.get("name", "") == token]
+    if len(exact_case) == 1:
+        return exact_case[0]
+    matches = exact_case or [b for b in bottles if b.get("name", "").lower() == token.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        lines = "\n".join(f"  {b.get('name')}  {b.get('path')}" for b in matches)
+        raise BackendError(f"more than one bottle named {token!r}:\n{lines}\nuse the exact path instead")
+    expanded = os.path.expanduser(token)
+    if os.path.isdir(expanded):
+        path = os.path.abspath(expanded)
+        existing = next((b for b in bottles if b.get("path") == path), None)
+        return existing or {"path": path, "name": token}
+    names = ", ".join(b.get("name", "?") for b in bottles) or "none yet"
+    raise BackendError(f"no bottle named {token!r} -- known bottles: {names}")
+
+
+def _bottle_arg(ns, backend: "Backend", state: State) -> dict:
+    """the bottle a command should use: the name/path given (positional or --bottle),
+    else the one you `use`d in the shell, else a clear error."""
+    token = getattr(ns, "bottle", None)
+    if token:
+        return _resolve_bottle(token, backend, state)
+    if state.prefix:
+        return {"path": state.prefix, "name": state.name}
+    raise BackendError("no bottle selected -- pass a name, or in the shell run `use <n>` first")
+
+
+def _games_in(backend: "Backend", prefix: str) -> list:
+    return backend.call("scan_games", {"prefix": prefix}) or []
+
+
+def _resolve_game(token: str, backend: "Backend", state: State, ns):
+    """find a game by name: in --bottle if given, else across every bottle. an
+    exact-case match wins outright, then a case-insensitive exact match, then a
+    substring match -- each tier only kicks in if the one before found nothing.
+    returns (game, bottle), or (None, None) if nothing matched (the caller falls
+    back to treating the token as a raw exe path)."""
+    explicit = getattr(ns, "bottle", None)
+    bottles = [_resolve_bottle(explicit, backend, state)] if explicit else _all_bottles(backend, state)
+
+    lower = token.lower()
+    exact_case, exact_ci, sub = [], [], []
+    for b in bottles:
+        for g in _games_in(backend, b["path"]):
+            name = g.get("name", "")
+            if name == token:
+                exact_case.append((g, b))
+            elif name.lower() == lower:
+                exact_ci.append((g, b))
+            elif lower in name.lower():
+                sub.append((g, b))
+
+    hits = exact_case or exact_ci or sub
+    if not hits:
+        return None, None
+    if len(hits) > 1:
+        lines = "\n".join(f"  {g.get('name')}  (in {b.get('name')})" for g, b in hits)
+        raise BackendError(f"more than one game matches {token!r}:\n{lines}\npass --bottle to narrow it down")
+    return hits[0]
+
+
+def _select(state: State, backend: "Backend", token: str) -> None:
+    """`use N` or `use <name>` -- point the shell at a bottle."""
+    if not state.bottles:
+        state.bottles = backend.call("list_bottles") or []
+    chosen = None
+    if token.isdigit() and int(token) < len(state.bottles):
+        chosen = state.bottles[int(token)]
+    else:
+        for b in state.bottles:
+            if b.get("name", "").lower() == token.lower():
+                chosen = b
+                break
+    if not chosen:
+        print(_paint(f"No bottle {token!r} -- try `bottles` to see the numbered list.", _RED))
+        return
+    state.prefix, state.name = chosen.get("path"), chosen.get("name")
+    print(f"Using {_paint(state.name or '?', _YEL)}  {_paint(state.prefix or '', _DIM)}")
+
+
+def _show_bottles(data, state: State) -> None:
+    """print bottles as a numbered list + remember it so `use N` can pick one."""
+    state.bottles = data if isinstance(data, list) else []
+    if not state.bottles:
+        print(_paint("No bottles yet.", _DIM))
+        return
+    for i, b in enumerate(state.bottles):
+        star = _paint("*", _GRN) if b.get("path") == state.prefix else " "
+        name = _paint(b.get("name", "?"), _BOLD)
+        be = _paint(b.get("default_backend", "auto"), _CYN)
+        print(f" {star}[{i}] {name}  ({be})  {_paint(b.get('path', ''), _DIM)}")
+
+
+def _coerce_value(raw: str):
+    """cli text -> a python value for settings set: true/false and 1/0 -> bool
+    (every known boolean bottle setting is genuinely a bool, not a number), then
+    int, then float, else keep it as a plain string."""
+    low = raw.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if raw in ("1", "0"):
+        return raw == "1"
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
+# ---- command handlers --------------------------------------------------------------
+def _do_status(ns, backend: "Backend", state: State) -> None:
+    status = backend.call("get_status")
+    components = backend.call("get_components_status")
+    running = backend.call("get_running_games") or []
+    if ns.as_json:
+        _emit({"status": status, "components": components, "running_count": len(running)}, True)
+        return
+    _print_kv([
+        ("Wine found", "yes" if status.get("wine_found") else "no"),
+        ("Wine path", status.get("wine_path") or ""),
+        ("Wine version", components.get("wine_version") or ""),
+        ("DXVK", "yes" if status.get("has_dxvk") else "no"),
+        ("Mesa", "yes" if status.get("has_mesa") else "no"),
+        ("Games running", str(len(running))),
+    ])
+
+
+def _do_bottles_list(ns, backend: "Backend", state: State) -> None:
+    data = backend.call("list_bottles")
+    if ns.as_json:
+        _emit(data, True)
+    else:
+        _show_bottles(data, state)
+
+
+def _do_bottles_create(ns, backend: "Backend", state: State) -> None:
+    print(f"Creating bottle {ns.name}... (running wineboot, this can take a few seconds)")
+    params = {"name": ns.name, "launcher_type": ns.launcher, "default_backend": ns.backend}
+    if ns.path:
+        params["path"] = ns.path
+    if ns.steam_setup:
+        params["steam_setup_path"] = ns.steam_setup
+    result = backend.call("create_bottle", params)
+    print(f"Created at {result.get('path')}.")
+    if ns.launcher in ("steam", "epic"):
+        print(f"{ns.launcher.capitalize()} setup continues in the background -- "
+              f"check `status` or `bottles info {ns.name}` shortly.")
+
+
+def _do_bottles_delete(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    if not ns.yes:
+        if not sys.stdin.isatty():
+            raise BackendError("refusing to delete without --yes in a non-interactive shell")
+        prompt = f'This permanently deletes "{bottle.get("name")}" at {bottle["path"]}. Continue? [y/N] '
+        if input(prompt).strip().lower() not in ("y", "yes"):
+            print("Cancelled.")
+            return
+    backend.call("delete_bottle", {"path": bottle["path"]})
+    print(f"Deleted {bottle.get('name')}.")
+
+
+def _do_bottles_info(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    data = backend.call("get_bottle_config", {"path": bottle["path"]})
+    if ns.as_json:
+        _emit(data, True)
+    else:
+        _print_kv(sorted(data.items()))
+
+
+def _do_bottles_move(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    result = backend.call("move_bottle", {"path": bottle["path"], "destination_parent": ns.destination})
+    if result.get("unchanged"):
+        print("Already there.")
+    else:
+        print(f"Moved to {result.get('path')}.")
+
+
+def _do_bottles_init(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    backend.call("init_prefix", {"prefix": bottle["path"]})
+    print("Done.")
+
+
+def _do_bottles_clean(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    backend.call("clean_prefix", {"prefix": bottle["path"]})
+    print("Done.")
+
+
+def _do_bottles_kill(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    result = backend.call("kill_wineserver", {"prefix": bottle["path"]})
+    killed, remaining = result.get("force_killed", 0), result.get("remaining", 0)
+    print(f"Killed {killed} process(es).")
+    if remaining:
+        print(f"{remaining} still running -- try again, or check Activity Monitor.")
+
+
+def _do_bottles_folder(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    backend.call("open_prefix_folder", {"prefix": bottle["path"]})
+    print("Opened.")
+
+
+def _do_bottles_winecfg(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    backend.call("open_winecfg", {"prefix": bottle["path"]})
+    print("Opened.")
+
+
+def _do_bottles_steam(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    params = {
+        "prefix": bottle["path"], "backend": ns.backend, "silent": ns.silent,
+        "wait_ready": ns.wait, "ready_cap_s": ns.wait_cap,
+    }
+    result = backend.call("launch_steam", params)
+    if result.get("already_running"):
+        print(f"Steam is already running (PID {result.get('pid')}).")
+    else:
+        print(f"Steam launched (PID {result.get('pid')}).")
+
+
+def _do_engines_list(ns, backend: "Backend", state: State) -> None:
+    data = backend.call("list_backends")
+    if ns.as_json:
+        _emit(data, True)
+        return
+    auto = data.get("auto_resolved", "")
+    rows = []
+    for b in data.get("backends", []):
+        label = b.get("label", "") + (" (default)" if b.get("id") == auto else "")
+        rows.append((b.get("id", ""), label, "yes" if b.get("available") else "no"))
+    _print_table(("id", "label", "available"), rows)
+
+
+def _do_engines_status(ns, backend: "Backend", state: State) -> None:
+    components = backend.call("get_components_status")
+    wine = backend.call("detect_wine") or {}
+    if ns.as_json:
+        _emit({"components": components, "wine": wine}, True)
+        return
+    print(_paint("Components:", _BOLD))
+    _print_kv(sorted(components.items()))
+    print()
+    print(_paint("Wine builds:", _BOLD))
+    rows = [(w.get("id", ""), "yes" if w.get("installed") else "no", w.get("version") or "", w.get("path") or "")
+            for w in wine.get("variants", [])]
+    _print_table(("id", "installed", "version", "path"), rows)
+
+
+def _do_list_games(ns, backend: "Backend", state: State) -> None:
+    if not ns.bottle and not state.prefix:
+        raise BackendError("--bottle is required for `list games` -- see `bottles list` for names")
+    bottle = _bottle_arg(ns, backend, state)
+    data = _games_in(backend, bottle["path"])
+    if ns.as_json:
+        _emit(data, True)
+        return
+    show_update = any("update_available" in g for g in data)
+    headers = ["name", "appid", "installed"] + (["update"] if show_update else []) + ["exe"]
+    rows = []
+    for g in data:
+        row = [g.get("name", ""), g.get("appid", ""), "yes" if g.get("is_installed", True) else "no"]
+        if show_update:
+            row.append("yes" if g.get("update_available") else "")
+        row.append(g.get("exe") or "")
+        rows.append(tuple(row))
+    _print_table(tuple(headers), rows)
+
+
+def _do_list_apps(ns, backend: "Backend", state: State) -> None:
+    if not ns.bottle and not state.prefix:
+        raise BackendError("--bottle is required for `list apps` -- see `bottles list` for names")
+    bottle = _bottle_arg(ns, backend, state)
+    data = backend.call("scan_apps", {"prefix": bottle["path"]})
+    if ns.as_json:
+        _emit(data, True)
+        return
+    _print_table(("name", "exe"), [(a.get("name", ""), a.get("exe") or "") for a in data])
+
+
+def _do_list_running(ns, backend: "Backend", state: State) -> None:
+    data = backend.call("get_running_games") or []
+    if ns.as_json:
+        _emit(data, True)
+        return
+    if not data:
+        print(_paint("Nothing running.", _DIM))
+        return
+    _print_table(("pid",), [(g.get("pid"),) for g in data])
+    print(_paint("PID only -- the backend doesn't report which bottle or game each belongs to.", _DIM))
+
+
+def _game_config_overlay(backend: "Backend", bottle: dict, game: dict, ns) -> dict:
+    """replicates Sources/MacNCheeseURLHandler.swift's launch dispatch: a stored
+    per-game override wins over the default, and an explicit cli flag wins over that."""
+    cfg = backend.call("get_game_config", {"prefix": bottle["path"], "appid": game.get("appid", "")}) or {}
+    msync = cfg.get("msync", True)
+    return {
+        "backend": ns.backend or cfg.get("backend", "auto"),
+        "esync": False if msync else cfg.get("esync", True),
+        "msync": msync,
+        "retina_mode": cfg.get("retina_mode", False),
+        "metal_hud": cfg.get("metal_hud", False),
+        "custom_env": cfg.get("custom_env", ""),
+        "args": ns.args or cfg.get("args", ""),
+        "exe": cfg.get("exe") or game.get("exe"),
+    }
+
+
+def _do_launch(ns, backend: "Backend", state: State) -> None:
+    target = ns.target
+    game, bottle = _resolve_game(target, backend, state, ns)
+
+    if game is not None:
+        overlay = _game_config_overlay(backend, bottle, game, ns)
+        name = game.get("name", target)
+        if game.get("epic_app_name"):
+            kind = "epic"
+            result = backend.call("legendary_launch_game", {
+                "app_name": game["epic_app_name"], "prefix": bottle["path"],
+                "backend": overlay["backend"], "retina_mode": overlay["retina_mode"],
+                "metal_hud": overlay["metal_hud"], "esync": overlay["esync"], "msync": overlay["msync"],
+                "custom_env": overlay["custom_env"], "game_name": name,
+            })
+        else:
+            kind = "game"
+            exe = overlay["exe"]
+            if not exe:
+                raise BackendError(f"{name} has no known executable -- check `list games`")
+            result = backend.call("launch_game", {
+                "prefix": bottle["path"], "exe": exe, "args": overlay["args"], "backend": overlay["backend"],
+                "install_dir": game.get("install_dir", ""), "retina_mode": overlay["retina_mode"],
+                "metal_hud": overlay["metal_hud"], "esync": overlay["esync"], "msync": overlay["msync"],
+                "steam_appid": game.get("appid", ""), "game_name": name, "steam_mode": "silent",
+            })
+    else:
+        path = os.path.expanduser(target)
+        if not (os.path.isfile(path) or target.lower().endswith((".exe", ".msi"))):
+            raise BackendError(f"no game named {target!r}, and {target!r} is not an existing exe path")
+        kind = "exe"
+        bottle = _bottle_arg(ns, backend, state)
+        name = os.path.basename(path)
+        result = backend.call("run_exe", {"prefix": bottle["path"], "exe": path, "args": ns.args or ""})
+
+    if result.get("already_running"):
+        print(f"{name} is already running (PID {result.get('pid')}).")
+        return
+
+    tail = f", backend {result['backend']}" if result.get("backend") else ""
+    print(f"Launched {name} (PID {result.get('pid')}{tail}).")
+
+    log_path = result.get("log_path")
+    if kind == "exe":
+        # run_exe never returns a log_path, and there's nothing useful to stream
+        # for an arbitrary installer/utility -- say so and stop, --logs or not.
+        if ns.logs:
+            print(f"No log is exposed for a raw exe launch -- check {GENERAL_LOG_PATH} if something looks wrong.")
+        return
+
+    if not ns.logs:
+        if log_path:
+            print(f"Run again with --logs to stream {log_path}")
+        return
+
+    if not log_path:
+        print("No per-game log for Epic launches -- streaming the general backend log instead.")
+        log_path = GENERAL_LOG_PATH
+    _tail_log(log_path, result.get("pid"))
+
+
+def _do_uninstall(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    result = backend.call("uninstall_app", {"prefix": bottle["path"], "exe": os.path.expanduser(ns.exe)})
+    print(f"Started the {result.get('method', 'uninstaller')} (PID {result.get('pid')}).")
+
+
+def _do_settings_get(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    data = backend.call("get_bottle_config", {"path": bottle["path"]})
+    if ns.key:
+        if ns.key not in data:
+            raise BackendError(f"no such key {ns.key!r} -- known keys: {', '.join(sorted(data.keys()))}")
+        _emit(data[ns.key], ns.as_json)
+        return
+    if ns.as_json:
+        _emit(data, True)
+    else:
+        _print_kv(sorted(data.items()))
+
+
+def _do_settings_set(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    data = backend.call("set_bottle_config", {"path": bottle["path"], ns.key: _coerce_value(ns.value)})
+    print(f"{ns.key} = {data.get(ns.key)!r}")
+
+
+# Direct legendary_* calls only -- Epic is the only launcher wired into the backend
+# today. Amazon (PR #98) and any future Steam-launcher-management get their own
+# command group later, mirroring this one by hand -- not a shared abstraction now
+# for a backend surface that doesn't exist yet.
+def _do_epic_status(ns, backend: "Backend", state: State) -> None:
+    data = backend.call("legendary_status")
+    if ns.as_json:
+        _emit(data, True)
+        return
+    note = " (installing now)" if data.get("installing") else ""
+    print(f"Legendary installed: {'yes' if data.get('installed') else 'no'}{note}")
+
+
+def _do_epic_login(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    url = backend.call("legendary_get_auth_url").get("url", "")
+    print(f"Open this in a browser, sign in, then copy the authorizationCode value:\n  {url}")
+    code = input("Paste the code: ").strip()
+    if not code:
+        raise BackendError("no code entered")
+    result = backend.call("legendary_auth", {"prefix": bottle["path"], "code": code})
+    if result.get("ok"):
+        print(f"Signed in as {result.get('display_name', '')}.")
+    else:
+        raise BackendError(result.get("error") or "sign-in failed")
+
+
+def _do_epic_install(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    result = backend.call("legendary_install_game", {"app_name": ns.app, "prefix": bottle["path"]})
+    if result.get("queued"):
+        print(f"Queued (position {result.get('position')}). Check `epic downloads` for progress.")
+    else:
+        print("Already installing.")
+
+
+def _do_epic_downloads(ns, backend: "Backend", state: State) -> None:
+    data = backend.call("legendary_all_downloads") or {}
+    if ns.as_json:
+        _emit(data, True)
+        return
+    if not data:
+        print(_paint("No downloads in progress.", _DIM))
+        return
+    rows = []
+    for app, info in data.items():
+        label = "paused" if info.get("paused") else ("queued" if info.get("queued") else "downloading")
+        rows.append((app, label, f"{info.get('progress', 0):.0f}%"))
+    _print_table(("app", "state", "progress"), rows)
+
+
+def _do_epic_cancel(ns, backend: "Backend", state: State) -> None:
+    backend.call("legendary_cancel_install", {"app_name": ns.app})
+    print("Cancelled.")
+
+
+def _do_epic_pause(ns, backend: "Backend", state: State) -> None:
+    backend.call("legendary_pause_install", {"app_name": ns.app})
+    print("Paused.")
+
+
+def _do_epic_resume(ns, backend: "Backend", state: State) -> None:
+    params = {"app_name": ns.app}
+    if ns.bottle:
+        params["prefix"] = _resolve_bottle(ns.bottle, backend, state)["path"]
+    backend.call("legendary_resume_install", params)
+    print("Resumed.")
+
+
+def _do_setup(ns, backend: "Backend", state: State) -> None:
+    target = os.path.realpath(os.path.join(HERE, "macndcheese"))
+    print(f"Linking {PATH_BIN_DIR}/macndcheese and {PATH_BIN_DIR}/mnc to {target}")
+    try:
+        os.makedirs(PATH_BIN_DIR, exist_ok=True)
+        for link_name in ("macndcheese", "mnc"):
+            link_path = os.path.join(PATH_BIN_DIR, link_name)
+            if os.path.islink(link_path) or os.path.exists(link_path):
+                os.remove(link_path)
+            os.symlink(target, link_path)
+        print("Done. Open a new terminal window so your shell picks it up.")
+    except PermissionError:
+        print(f"{PATH_BIN_DIR} isn't writable. Run this instead:")
+        print(f"  sudo ln -sf {shlex.quote(target)} {PATH_BIN_DIR}/macndcheese")
+        print(f"  sudo ln -sf {shlex.quote(target)} {PATH_BIN_DIR}/mnc")
+
+
+def _do_commands(ns, backend: "Backend", state: State) -> None:
+    cmds = _known_cmds()
+    print(f"{len(cmds)} backend commands -- reach any with `raw <name> key=value ..`\n")
+    print("  " + "\n  ".join(cmds))
+
+
+def _do_raw(ns, backend: "Backend", state: State) -> None:
+    _emit(backend.call(ns.cmd, _parse_kv(ns.kv)), ns.as_json)
+
+
+def _help_handler(parser: argparse.ArgumentParser):
+    def handler(ns, backend, state):
+        parser.print_help()
+    return handler
+
+
+# ---- the argparse parser (shared by one-shot + the REPL) ------------------------
+def _add_bottle_positional(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("bottle", nargs="?", help="bottle name or path (defaults to the selected one)")
+
+
+def _add_bottle_flag(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--bottle", metavar="name", help="bottle name or path (defaults to the selected one)")
+
+
+GROUP_VERBS = {
+    "bottles": ["list", "create", "delete", "info", "move", "init", "clean", "kill", "folder", "winecfg", "steam"],
+    "engines": ["list", "status"],
+    "list": ["games", "apps", "running"],
+    "settings": ["get", "set"],
+    "epic": ["status", "login", "install", "downloads", "cancel", "pause", "resume"],
+}
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    prog = os.path.basename(sys.argv[0]) or "macndcheese"
+    ap = argparse.ArgumentParser(prog=prog, add_help=True,
+                                  description="Terminal client for the MacNdCheese backend.")
+    ap.add_argument("--verbose", action="store_true", help="show the backend's own log messages")
+    ap.add_argument("--json", action="store_true", dest="as_json", help="print the raw json reply")
+    sub = ap.add_subparsers(dest="what")  # not required -- no subcommand means the interactive shell
+
+    sp = sub.add_parser("status", help="backend, wine, and running-game status")
+    sp.set_defaults(_handler=_do_status)
+
+    # ---- bottles ----
+    bp = sub.add_parser("bottles", help="manage wine bottles")
+    bp.set_defaults(_handler=_do_bottles_list)  # bare `bottles` = list, for compatibility
+    bsub = bp.add_subparsers(dest="bottles_verb")
+
+    sp = bsub.add_parser("list", help="list bottles")
+    sp.set_defaults(_handler=_do_bottles_list)
+
+    sp = bsub.add_parser("create", help="create a bottle")
+    sp.add_argument("name")
+    sp.add_argument("--launcher", choices=("steam", "epic", "none"), default="steam",
+                     help="how games are managed in this bottle")
+    sp.add_argument("--backend", default="auto", metavar="name", help="default graphics backend")
+    sp.add_argument("--path", metavar="dir", help="a custom parent directory")
+    sp.add_argument("--steam-setup", metavar="file", dest="steam_setup",
+                     help="a local SteamSetup.exe instead of downloading one")
+    sp.set_defaults(_handler=_do_bottles_create)
+
+    sp = bsub.add_parser("delete", help="permanently delete a bottle")
+    _add_bottle_positional(sp)
+    sp.add_argument("--yes", "-y", action="store_true", help="skip the confirmation prompt")
+    sp.set_defaults(_handler=_do_bottles_delete)
+
+    sp = bsub.add_parser("info", help="show a bottle's settings")
+    _add_bottle_positional(sp)
+    sp.set_defaults(_handler=_do_bottles_info)
+
+    sp = bsub.add_parser("move", help="move a bottle to a new folder")
+    _add_bottle_positional(sp)
+    sp.add_argument("destination", metavar="folder")
+    sp.set_defaults(_handler=_do_bottles_move)
+
+    sp = bsub.add_parser("init", help="reinitialize the wine prefix")
+    _add_bottle_positional(sp)
+    sp.set_defaults(_handler=_do_bottles_init)
+
+    sp = bsub.add_parser("clean", help="same as init today, kept as a distinct backend command")
+    _add_bottle_positional(sp)
+    sp.set_defaults(_handler=_do_bottles_clean)
+
+    sp = bsub.add_parser("kill", help="stop everything running in the bottle")
+    _add_bottle_positional(sp)
+    sp.set_defaults(_handler=_do_bottles_kill)
+
+    sp = bsub.add_parser("folder", help="reveal the bottle folder in Finder")
+    _add_bottle_positional(sp)
+    sp.set_defaults(_handler=_do_bottles_folder)
+
+    sp = bsub.add_parser("winecfg", help="open winecfg for the bottle")
+    _add_bottle_positional(sp)
+    sp.set_defaults(_handler=_do_bottles_winecfg)
+
+    sp = bsub.add_parser("steam", help="start steam inside the bottle")
+    _add_bottle_positional(sp)
+    sp.add_argument("--backend", default="auto", metavar="name")
+    sp.add_argument("--silent", action="store_true", help="start steam minimized, with no window")
+    sp.add_argument("--wait", action="store_true", help="wait until steam has logged on")
+    sp.add_argument("--wait-cap", type=int, default=240, metavar="seconds", dest="wait_cap")
+    sp.set_defaults(_handler=_do_bottles_steam)
+
+    # ---- engines ----
+    ep = sub.add_parser("engines", help="graphics backends and installed components")
+    ep.set_defaults(_handler=_help_handler(ep))
+    esub = ep.add_subparsers(dest="engines_verb")
+
+    sp = esub.add_parser("list", help="graphics backends (dxvk, d3dmetal, ...)")
+    sp.set_defaults(_handler=_do_engines_list)
+
+    sp = esub.add_parser("status", help="installed components and wine builds")
+    sp.set_defaults(_handler=_do_engines_status)
+
+    # ---- list ----
+    lp = sub.add_parser("list", help="list games, apps, or running processes")
+    lp.set_defaults(_handler=_help_handler(lp))
+    lsub = lp.add_subparsers(dest="list_verb")
+
+    sp = lsub.add_parser("games", help="games in a bottle")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_list_games)
+
+    sp = lsub.add_parser("apps", help="installed windows apps in a bottle")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_list_apps)
+
+    sp = lsub.add_parser("running", help="games running right now")
+    sp.set_defaults(_handler=_do_list_running)
+
+    # ---- launch ----
+    sp = sub.add_parser("launch", help="launch a game by name, or a raw exe path")
+    sp.add_argument("target", help="a game name, or an exe/msi path")
+    _add_bottle_flag(sp)
+    sp.add_argument("--args", default="", help="extra arguments for the exe")
+    sp.add_argument("--backend", metavar="name", help="graphics backend override")
+    sp.add_argument("--logs", action="store_true", help="stream this launch's log until you press control-c")
+    sp.set_defaults(_handler=_do_launch)
+
+    # ---- uninstall ----
+    sp = sub.add_parser("uninstall", help="uninstall a windows app")
+    sp.add_argument("exe")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_uninstall)
+
+    # ---- settings ----
+    sep = sub.add_parser("settings", help="read or change a bottle's settings")
+    sep.set_defaults(_handler=_help_handler(sep))
+    ssub = sep.add_subparsers(dest="settings_verb")
+
+    sp = ssub.add_parser("get", help="show a bottle's settings")
+    _add_bottle_flag(sp)
+    sp.add_argument("key", nargs="?")
+    sp.set_defaults(_handler=_do_settings_get)
+
+    sp = ssub.add_parser("set", help="change one setting")
+    _add_bottle_flag(sp)
+    sp.add_argument("key")
+    sp.add_argument("value")
+    sp.set_defaults(_handler=_do_settings_set)
+
+    # ---- epic ----
+    eip = sub.add_parser("epic", help="manage epic games, via legendary")
+    eip.set_defaults(_handler=_help_handler(eip))
+    eisub = eip.add_subparsers(dest="epic_verb")
+
+    sp = eisub.add_parser("status", help="whether legendary is installed")
+    sp.set_defaults(_handler=_do_epic_status)
+
+    sp = eisub.add_parser("login", help="sign in to epic games")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_epic_login)
+
+    sp = eisub.add_parser("install", help="install an epic game")
+    sp.add_argument("app")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_epic_install)
+
+    sp = eisub.add_parser("downloads", help="active and queued epic downloads")
+    sp.set_defaults(_handler=_do_epic_downloads)
+
+    sp = eisub.add_parser("cancel", help="cancel an epic download")
+    sp.add_argument("app")
+    sp.set_defaults(_handler=_do_epic_cancel)
+
+    sp = eisub.add_parser("pause", help="pause an epic download")
+    sp.add_argument("app")
+    sp.set_defaults(_handler=_do_epic_pause)
+
+    sp = eisub.add_parser("resume", help="resume an epic download")
+    sp.add_argument("app")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_epic_resume)
+
+    # ---- setup / commands / raw ----
+    sp = sub.add_parser("setup", help="put macndcheese and mnc on your path")
+    sp.set_defaults(_handler=_do_setup)
+
+    sp = sub.add_parser("commands", help="print every raw backend command you can call")
+    sp.set_defaults(_handler=_do_commands)
+
+    sp = sub.add_parser("raw", help="call any backend command directly: raw cmd key=value ..")
+    sp.add_argument("cmd")
+    sp.add_argument("kv", nargs="*")
+    sp.set_defaults(_handler=_do_raw)
+
+    return ap
+
+
+def execute(ns, backend: Backend, state: State) -> None:
+    """run one parsed command against the backend. shared by one-shot mode and the repl."""
+    handler = getattr(ns, "_handler", None)
+    if handler is None:
+        return
+    handler(ns, backend, state)
+
+
+# ---- the interactive shell ------------------------------------------------------
+_REPL_HELP = """commands:
+  status                     backend, wine, and running status
+  bottles [verb]             list/create/delete/info/move/init/clean/kill/folder/winecfg/steam
+  engines list|status        graphics backends and installed components
+  list games|apps|running    what's in a bottle, or what's running
+  launch <target> [--logs]   start a game by name, or an exe path
+  uninstall <exe>            remove a windows app
+  settings get|set           read or change a bottle's settings
+  epic <verb>                sign in, install, and manage epic games
+  setup                      put macndcheese and mnc on your path
+  use <n|name>                pick a bottle for later
+  raw CMD key=value ..       call any backend command directly
+  commands                   list every raw backend command
+  help                       this               clear   wipe the screen         exit / quit   leave
+tip: `use 0` once, then most commands work on that bottle without --bottle."""
+
+
+def _install_readline(state: State, subcmds: "list[str]") -> None:
+    try:
+        import readline
+    except ImportError:
+        return
+    try:
+        readline.read_history_file(HISTFILE)
+    except OSError:
+        pass
+    atexit.register(lambda: _save_history(readline))
+    words = subcmds + ["use", "help", "clear", "exit", "quit"]
+    raw_cmds = _known_cmds()
+
+    def complete(text, i):
+        line = readline.get_line_buffer()
+        toks = line.split()
+        at_first = not toks or (len(toks) == 1 and not line.endswith(" "))
+        at_second = len(toks) == 1 and line.endswith(" ") or (len(toks) == 2 and not line.endswith(" "))
+        if at_first:
+            opts = [w for w in words if w.startswith(text)]
+        elif toks[0] == "raw":
+            opts = [c for c in raw_cmds if c.startswith(text)]
+        elif toks[0] == "use":
+            opts = [b.get("name", "") for b in state.bottles if b.get("name", "").startswith(text)]
+        elif toks[0] in GROUP_VERBS and at_second:
+            opts = [v for v in GROUP_VERBS[toks[0]] if v.startswith(text)]
+        else:
+            opts = []
+        return opts[i] if i < len(opts) else None
+
+    readline.set_completer(complete)
+    readline.set_completer_delims(" \t")
+    # macOS system python ships libedit, not gnu readline -- the bind syntax differs
+    if "libedit" in (getattr(readline, "__doc__", "") or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+
+
+def _save_history(readline) -> None:
+    try:
+        readline.set_history_length(1000)
+        readline.write_history_file(HISTFILE)
+    except OSError:
+        pass
+
+
+def repl(parser: argparse.ArgumentParser, backend: Backend, state: State) -> None:
+    subcmds = list(parser._subparsers._group_actions[0].choices.keys()) if parser._subparsers else []
+    _install_readline(state, subcmds)
+    print(_paint("macndcheese shell", _BOLD) + _paint("  --  type `help`, or `commands` for the raw list, `exit` to leave", _DIM))
+    while True:
+        tag = f"[{state.name}]" if state.name else ""
+        try:
+            line = input(f"mnc{tag}> ").strip()
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt:
+            print("  (control-c -- type `exit` to leave)")
+            continue
+        if not line:
+            continue
+        try:
+            toks = shlex.split(line)
+        except ValueError as exc:
+            print(_paint(f"parse error: {exc}", _RED))
+            continue
+        head = toks[0]
+        if head in ("exit", "quit", "q"):
+            break
+        if head in ("help", "?"):
+            print(_REPL_HELP)
+            continue
+        if head == "clear":
+            os.system("clear")
+            continue
+        if head == "use":
+            if len(toks) < 2:
+                print(_paint("usage: use <number|name>", _RED))
+            else:
+                try:
+                    _select(state, backend, toks[1])
+                except BackendError as exc:
+                    print(_paint(f"error: {exc}", _RED))
+            continue
+        # everything else goes thru the same argparse the one-shot mode uses
+        try:
+            ns = parser.parse_args(toks)
+        except SystemExit:
+            continue  # argparse allready printed the usage/error
+        if getattr(ns, "what", None) is None:
+            continue
+        try:
+            execute(ns, backend, state)
+        except BackendError as exc:
+            print(_paint(f"error: {exc}", _RED))
+
+
+def main() -> None:
+    parser = _build_parser()
+    ns = parser.parse_args()
+    interactive = getattr(ns, "what", None) is None
+    backend = Backend(verbose=ns.verbose)
+    try:
+        if interactive:
+            repl(parser, backend, State())
+        else:
+            execute(ns, backend, State())
+    except BackendError as exc:
+        sys.exit(f"error: {exc}")
+    finally:
+        backend.close()
+
+
+if __name__ == "__main__":
+    main()

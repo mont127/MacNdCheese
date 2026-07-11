@@ -196,6 +196,27 @@ wine "YourGame.exe"
 
 ---
 
+## CLI
+
+For anyone who'd rather use the terminal: `macndcheese` (or the shorter `mnc`) launches games, manages bottles and engines, and handles Epic sign-in and installs, all without opening the app window.
+
+The app links `macndcheese`/`mnc` onto PATH automatically the first time it runs. From a source checkout, run `./macndcheese setup` instead (or `sudo ln -s` the printed command if `/usr/local/bin` isn't writable).
+
+```
+macndcheese bottles list
+macndcheese launch "Half-Life"                # launches, returns right away
+macndcheese launch "Half-Life" --logs          # ..and streams its log until control-c
+macndcheese epic install <app>
+```
+
+Top-level commands: `status`, `bottles`, `engines`, `list`, `launch`, `uninstall`, `settings`, `epic`, `setup`. Run `macndcheese --help` or `macndcheese <command> --help` for the full list of flags.
+
+Run `macndcheese` with no arguments for an interactive shell that keeps one backend connection open across commands, with history and tab completion.
+
+`macndcheese commands` lists every command the backend understands, and `macndcheese raw <command> key=value ..` calls any of them directly — the same escape hatch the guided commands above are built on.
+
+---
+
 ## 👥 Contributors
 
 [![Contributors](https://contrib.rocks/image?repo=mont127/MacNdCheese)](https://github.com/mont127/MacNdCheese/graphs/contributors)
