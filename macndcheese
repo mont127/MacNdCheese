@@ -106,6 +106,15 @@ class State:
         self.prefix: "str | None" = None   # the currently-selected bottle path
         self.name: "str | None" = None     # ..and its name (for the prompt)
         self.bottles: list = []            # last-fetched bottle list, so `use N` works
+        # pids from a launch_game/legendary_launch_game call this run made. the
+        # backend clears discord presence, releases game mode, and reverts
+        # per-launch dll patches from daemon threads that watch these pids and
+        # only run once the process exits -- but those threads die the instant
+        # the backend itself is torn down. a one-shot cli command would normally
+        # do that right after `launch` returns, well before a real game exits,
+        # so main() keeps the backend alive (detached, not blocking the shell)
+        # until every pid here is gone. see _detach_and_wait.
+        self.keep_alive_pids: set = set()
 
 
 # ---- generic helpers --------------------------------------------------------------------
@@ -185,6 +194,38 @@ def _pid_alive(pid) -> bool:
         return False
     except Exception:
         return True
+
+
+def _detach_and_wait(backend: "Backend", pids: set) -> None:
+    """Give the shell back immediately, but keep the backend process running
+    in the background until every launched pid has exited -- otherwise its
+    own cleanup threads (discord presence, game mode, dll-patch revert) get
+    killed mid-wait the moment this cli command exits. Forks so the terminal
+    isn't blocked; the child fully detaches, then just closes the backend's
+    input once there's nothing left to wait for, letting it shut down (and
+    finish that cleanup) on its own."""
+    try:
+        child_pid = os.fork()
+    except OSError:
+        backend.close()  # can't fork -- closing now is better than leaking the process
+        return
+    if child_pid > 0:
+        return  # parent: hand the terminal straight back
+
+    # child: detach fully so it isn't tied to the terminal or shell job control.
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    try:
+        while any(_pid_alive(pid) for pid in pids):
+            time.sleep(1.0)
+        time.sleep(2.0)  # let the backend's own watcher threads notice and finish
+        if backend._proc.stdin:
+            backend._proc.stdin.close()  # eof -- the backend shuts itself down cleanly
+    except Exception:
+        pass
+    os._exit(0)
 
 
 def _tail_log(path: str, pid) -> None:
@@ -593,6 +634,12 @@ def _do_launch(ns, backend: "Backend", state: State) -> None:
 
     tail = f", backend {result['backend']}" if result.get("backend") else ""
     print(f"Launched {name} (PID {result.get('pid')}{tail}).")
+
+    if kind in ("game", "epic") and result.get("pid"):
+        # the backend clears discord presence / game mode / dll patches for this
+        # pid from a thread that needs the backend process to stay alive -- see
+        # State.keep_alive_pids and _detach_and_wait.
+        state.keep_alive_pids.add(result["pid"])
 
     log_path = result.get("log_path")
     if kind == "exe":
@@ -1066,15 +1113,19 @@ def main() -> None:
     ns = parser.parse_args()
     interactive = getattr(ns, "what", None) is None
     backend = Backend(verbose=ns.verbose)
+    state = State()
     try:
         if interactive:
-            repl(parser, backend, State())
+            repl(parser, backend, state)
         else:
-            execute(ns, backend, State())
+            execute(ns, backend, state)
     except BackendError as exc:
         sys.exit(f"error: {exc}")
     finally:
-        backend.close()
+        if state.keep_alive_pids:
+            _detach_and_wait(backend, state.keep_alive_pids)
+        else:
+            backend.close()
 
 
 if __name__ == "__main__":
