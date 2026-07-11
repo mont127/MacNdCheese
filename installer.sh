@@ -2152,6 +2152,7 @@ quick_setup() {
   install_portable_wine
   install_wine_unified
   install_wine_installer
+  stage_mnc_fonts
   install_dxmt
 }
 
@@ -2328,6 +2329,24 @@ uninstall_wine_installer() {
   echo "uninstall_wine_installer: removed"
 }
 
+stage_mnc_fonts() {
+  # Bundled x86_64 freetype/fontconfig closure -> deps/mnc-fonts so the backend's DYLD_FALLBACK
+  # resolves libfreetype on boxes WITHOUT Homebrew (else "Wine cannot find the FreeType font
+  # library" + fontless games). Sourced from the bundled Resources/mnc-fonts.
+  local dst src
+  dst="${PORTABLE_DIR}/mnc-fonts"
+  for src in "${MNC_FONTS_SRC:-}" "${RESOURCES_DIR:-}/mnc-fonts" "$(dirname "$0")/mnc-fonts"; do
+    if [ -n "$src" ] && [ -f "$src/libfreetype.6.dylib" ]; then
+      rm -rf "$dst"; mkdir -p "$dst"
+      cp -R "$src"/*.dylib "$dst"/ 2>/dev/null
+      xattr -dr com.apple.quarantine "$dst" 2>/dev/null || true
+      echo "stage_mnc_fonts: staged $(ls "$dst"/*.dylib 2>/dev/null | wc -l | tr -d ' ') font libs -> deps/mnc-fonts"
+      return 0
+    fi
+  done
+  echo "stage_mnc_fonts: no bundled mnc-fonts found (no-Homebrew boxes may hit the FreeType error)"
+}
+
 stage_unified_d3d_pack() {
   # copy the d3d DLL pack the unified loader routes to into deps/wine-unified/mnc-d3d
   # source order: env, Resources next to us, the dev steam prefix system32
@@ -2396,6 +2415,9 @@ case "$ACTION" in
     ;;
   uninstall_wine_installer)
     uninstall_wine_installer
+    ;;
+  stage_mnc_fonts)
+    stage_mnc_fonts
     ;;
   uninstall_wine)
     uninstall_wine

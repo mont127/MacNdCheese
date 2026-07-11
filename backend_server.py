@@ -632,7 +632,10 @@ def _wine_env(prefix: str) -> Dict[str, str]:
         "/usr/local/lib", "/usr/local/opt/freetype/lib",
         "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib",
         "/usr/local/opt/glib/lib", "/usr/local/opt/gettext/lib",
-        "/usr/local/opt/sdl2/lib", "/usr/lib",
+        "/usr/local/opt/sdl2/lib",
+        # bundled freetype/fontconfig fallback for no-Homebrew boxes (see _unified_env / mnc-fonts)
+        str(PORTABLE_DIR / "mnc-fonts"),
+        "/usr/lib",
     ])
 
     return env
@@ -2695,7 +2698,13 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     dyld = ":".join([str(nd), gst_lib, "/usr/local/lib", "/usr/local/opt/freetype/lib",
                      "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib",
                      "/usr/local/opt/sdl2/lib", "/usr/local/opt/glib/lib",
-                     "/usr/local/opt/gettext/lib", "/usr/lib"])
+                     "/usr/local/opt/gettext/lib",
+                     # bundled x86_64 freetype/fontconfig closure so boxes WITHOUT Homebrew still
+                     # resolve libfreetype (else "Wine cannot find the FreeType font library" +
+                     # fontless games). DYLD_FALLBACK matches by leaf name when the Homebrew abs
+                     # paths above are absent. After Homebrew so existing dev setups are unchanged.
+                     str(PORTABLE_DIR / "mnc-fonts"),
+                     "/usr/lib"])
     env.update({
         "WINEPREFIX": str(prefix),
         "WINEMSYNC": "1",
@@ -6902,7 +6911,7 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
     return {"job_id": job_id}
 
 
-def _default_input_info() -> Dict[str, Any]:
+def _defualt_inpit_info() -> Dict[str, Any]:
     # Bradar this function look at the microfone of the mac and if it is potato quality we warn the user bradar
     infu = {"name": "", "rate": 0, "transport": "", "warn": False, "message": "", "suggest": ""}
     try:
@@ -6969,12 +6978,12 @@ def _default_input_info() -> Dict[str, Any]:
     return infu
 
 
-def cmd_check_audio_input(params: Dict[str, Any]) -> Any:
+def cmd_chek_audio_inpit(params: Dict[str, Any]) -> Any:
     # Bradar the app is asking how is the microfone so we go and check it bradar
-    return _default_input_info()
+    return _defualt_inpit_info()
 
 
-def cmd_open_sound_settings(params: Dict[str, Any]) -> Any:
+def cmd_open_sund_setings(params: Dict[str, Any]) -> Any:
     # Bradar we open the sound setting for the user so he can change the microfone bradar very nice
     try:
         subprocess.run(["open", "x-apple.systempreferences:com.apple.Sound-Settings.extension"], timeout=10)
@@ -7012,8 +7021,8 @@ COMMANDS: Dict[str, Any] = {
     "detect_exes": cmd_detect_exes,
     "list_backends": cmd_list_backends,
     "get_components_status": cmd_get_components_status,
-    "check_audio_input": cmd_check_audio_input,
-    "open_sound_settings": cmd_open_sound_settings,
+    "check_audio_input": cmd_chek_audio_inpit,
+    "open_sound_settings": cmd_open_sund_setings,
     "detect_wine": cmd_detect_wine,
     "get_update_info": cmd_get_update_info,
     "check_app_update": cmd_check_app_update,
