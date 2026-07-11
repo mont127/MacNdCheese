@@ -2871,9 +2871,15 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         f"rm -rf appcache 2>/dev/null\n"
         f"rm -f logs/* dumps/*.dmp 2>/dev/null\n"
         f"find userdata -type d -name GPUCache -prune -exec rm -rf {{}} + 2>/dev/null\n"
-        # Bradar steam.cfg freeze the client self-updater -- stop the ~4.5min manifest-download
-        # churn every launch + stop it re-copyin/re-enablin the 32-bit service we disable below
-        f"[ -f steam.cfg ] || printf 'BootStrapperInhibitAll=Enable\\nBootStrapperForceSelfUpdate=disable\\n' > steam.cfg\n"
+        # steam.cfg used to freeze the client self-updater (BootStrapperInhibitAll) to skip the
+        # manifest-download churn every launch. That freeze bricks EVERY install the moment Valve
+        # makes a client update mandatory (July 2026): the bootstrap logs "Suppressing Steam
+        # update" and dead-ends -- a silent ~100%-CPU fault storm under the unified wine, a quiet
+        # exit under stock wine. Never write the freeze again, and delete OUR old freeze-file so
+        # affected installs self-heal on next launch (a user-authored steam.cfg without our
+        # marker is left alone). The service re-enable steam.cfg also guarded against is already
+        # re-disabled on every launch by the reg add below.
+        f"grep -q 'BootStrapperInhibitAll' steam.cfg 2>/dev/null && rm -f steam.cfg\n"
         # Bradar make steam SKIP the hang-prone .NET/VC++/DirectX redist install-scripts by
         # pre-settin their has-run keys (else e.g. World War 3 wedges forever on "Running
         # install script (Microsoft .NET Framework)" coz the NDP462 bootstrapper never exits)
