@@ -2667,6 +2667,20 @@ def _unified_engine_active(bottle_cfg: Dict[str, Any]) -> bool:
     return bottle_cfg.get("engine", "unified") != "classic" and _unified_available()
 
 
+def _classic_default_backend(bottle_cfg: Dict[str, Any]) -> Optional[str]:
+    """Map the bottle's global default_backend (the toolbar picker's id) onto a
+    concrete classic-engine backend id, or None if it isn't a concrete choice
+    (unset, or itself "auto" -- nothing above the bottle level to defer to)."""
+    raw = str(bottle_cfg.get("default_backend") or "").lower()
+    if not raw or raw == BACKEND_AUTO:
+        return None
+    if raw in ("vr", "openxr"):
+        return BACKEND_DXMT_OPENXR
+    if raw in (BACKEND_DXMT, BACKEND_DXVK, BACKEND_D3DMETAL3, BACKEND_DXMT_OPENXR):
+        return raw
+    return None
+
+
 def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
     """Map the app's backend id onto the loader's game backends (d3dmetal/dxmt/dxvk/vr).
 
@@ -3312,8 +3326,18 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
         return _launch_game_unified(prefix, exe, args, bottle_cfg, params)
 
     if not backend or backend == BACKEND_AUTO:
-        backend = _resolve_auto_backend(exe)
-        log(f"Auto backend resolved for {Path(exe).name}: {backend} (game_type={_detect_game_type(exe)})")
+        # Bradar same contract as the unified path (issue #105): a game left on
+        # "Default" defers to the bottle's global backend (the toolbar picker)
+        # before falling back to game-type heuristics. Previously this branch
+        # ignored default_backend entirely, so the toolbar picker had zero
+        # effect on any game whenever Unified Steam engine was turned off.
+        global_backend = _classic_default_backend(bottle_cfg)
+        if global_backend:
+            backend = global_backend
+            log(f"Auto backend deferred to bottle's global backend for {Path(exe).name}: {backend}")
+        else:
+            backend = _resolve_auto_backend(exe)
+            log(f"Auto backend resolved for {Path(exe).name}: {backend} (game_type={_detect_game_type(exe)})")
     else:
         log(f"Resolved graphics backend: {backend}")
 
