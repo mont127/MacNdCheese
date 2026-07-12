@@ -108,7 +108,12 @@ final class WineVersionGate: ObservableObject {
             offset = progress.totalLines
             if !progress.current.isEmpty { currentStep = progress.current }
             if progress.done {
-                if !progress.failed { Self.stampInstalled() }
+                // Stamp the marker as long as the CRITICAL wine is present afterwards. Requiring the
+                // WHOLE job to succeed (!progress.failed) meant one non-critical action failing —
+                // e.g. install_dxmt's GitHub download timing out — left the marker UNWRITTEN, so the
+                // gate re-ran the full wine update on EVERY launch. Now a non-critical failure no
+                // longer forces that loop; only a genuinely-missing wine stays unstamped to retry.
+                if Self.wineInstalled { Self.stampInstalled() }
                 await backend.loadStatus()
                 finish(fail: progress.failed, note: progress.failed ? L("Wine update failed.") : "")
                 return

@@ -1029,6 +1029,15 @@ install_dxmt() {
     exit 1
   fi
 
+  # idempotent: skip the GitHub re-download if DXMT is allready installed. otherwise the wine
+  # version-gate re-downloads DXMT on every version bump, n a slow/rate-limited GitHub makes the
+  # WHOLE update FAIL -> the version marker never gets stamped -> the gate re-updates wine on EVERY
+  # launch. force a fresh pull with MNC_FORCE_DXMT=1.
+  if [ "${MNC_FORCE_DXMT:-0}" != "1" ] && [ -f "$DXMT_DIR/d3d11.dll" ] && [ -f "$DXMT_DIR/dxgi.dll" ]; then
+    echo "install_dxmt: DXMT allready present at $DXMT_DIR -- skipping re-download"
+    return 0
+  fi
+
   mkdir -p "$DXMT_DIR"
   archive="$WORK_DIR/dxmt.tar.gz"
   unpack_dir="$WORK_DIR/dxmt"
