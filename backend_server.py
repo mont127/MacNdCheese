@@ -7627,27 +7627,50 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         raise RuntimeError("Legendary is not installed")
 
     prefix_expanded = str(Path(prefix).expanduser().resolve())
+    bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
+    unified = _unified_engine_active(bottle_cfg)
 
-    # Find the best Wine binary (backend-aware)
-    wine_bin = _backend_wine_binary(backend, "") or _find_wine_for_bottle("auto")
-    if not wine_bin:
-        raise RuntimeError("No Wine binary found")
+    if unified:
+        # Same engine Steam/manual launches use (issue #122). Epic titles were stuck on
+        # the pre-unified classic path: no D3D DLL staging, no MNC_GAME_BACKEND, no
+        # WINE_MAC_GL_CONTEXT_CLAMP -> Unity/OpenGL games (Among Us) crashed on load.
+        bt = _unified_build_dir()
+        _stage_unified_dlls(prefix_expanded)
+        _stage_unified_mf(prefix_expanded)
+        game_backend = _unified_game_backend(bottle_cfg, backend)
+        env = _unified_env(prefix_expanded, game_backend, metal_hud,
+                            gst_debug=("5" if verbose_debug else "3"))
+        # bt/wine, not bt/loader/wine -- the loader-style path can't find the build nls
+        wine_bin = str(bt / "wine")
+    else:
+        # Classic fallback (unified wine not installed, or bottle engine="classic").
+        # Resolve "auto"/"" the same way cmd_launch_game does (issue #105) instead of
+        # leaving it unresolved for _apply_backend_env's if/elif chain to silently ignore.
+        if not backend or backend == BACKEND_AUTO:
+            backend = _classic_default_backend(bottle_cfg) or _resolve_auto_backend(None)
+        wine_bin = _backend_wine_binary(backend, "") or _find_wine_for_bottle("auto")
+        if not wine_bin:
+            raise RuntimeError("No Wine binary found")
+        env = _wine_env(prefix_expanded)
+        env = _apply_backend_env(env, backend, verbose_debug)
+        if metal_hud:
+            env["MTL_HUD_ENABLED"] = "1"
 
-    # Build the same environment as a normal Wine launch
-    env = _wine_env(prefix_expanded)
-    env = _apply_backend_env(env, backend, verbose_debug)
     env = _apply_sync_env(env, esync, msync)
-    if metal_hud:
-        env["MTL_HUD_ENABLED"] = "1"
     for line in (custom_env_str or "").splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             env[k.strip()] = v.strip()
 
     # Always apply retina regedit (handles both on and off states)
-    threading.Thread(
-        target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
-    ).start()
+    if unified:
+        threading.Thread(
+            target=_apply_retina_unified, args=(bt, wine_bin, env, retina_mode), daemon=True
+        ).start()
+    else:
+        threading.Thread(
+            target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
+        ).start()
 
     # Inject per-bottle legendary config path into the Wine environment
     env["LEGENDARY_CONFIG_PATH"] = str(_legendary_config_dir(prefix))
@@ -7673,11 +7696,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
 
     # MacNCheese-level Discord presence for Epic launches. Prefer the real
     # title passed from the UI; fall back to the Epic app_name (codename).
-    try:
-        _epic_cfg = _load_bottles().get(_resolve_key(prefix), {})
-    except Exception:
-        _epic_cfg = {}
-    if _epic_cfg.get("discord_rpc", True):
+    if bottle_cfg.get("discord_rpc", True):
         _discord_presence_for_launch(proc, "", params.get("game_name", "") or app_name)
 
     return {"pid": proc.pid}
@@ -7701,27 +7720,50 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
         raise RuntimeError("Nile is not installed")
 
     prefix_expanded = str(Path(prefix).expanduser().resolve())
+    bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
+    unified = _unified_engine_active(bottle_cfg)
 
-    # Find the best Wine binary (backend-aware)
-    wine_bin = _backend_wine_binary(backend, "") or _find_wine_for_bottle("auto")
-    if not wine_bin:
-        raise RuntimeError("No Wine binary found")
+    if unified:
+        # Same engine Steam/manual launches use (issue #122). Amazon titles were stuck on
+        # the pre-unified classic path: no D3D DLL staging, no MNC_GAME_BACKEND, no
+        # WINE_MAC_GL_CONTEXT_CLAMP -> Unity/OpenGL games crashed on load.
+        bt = _unified_build_dir()
+        _stage_unified_dlls(prefix_expanded)
+        _stage_unified_mf(prefix_expanded)
+        game_backend = _unified_game_backend(bottle_cfg, backend)
+        env = _unified_env(prefix_expanded, game_backend, metal_hud,
+                            gst_debug=("5" if verbose_debug else "3"))
+        # bt/wine, not bt/loader/wine -- the loader-style path can't find the build nls
+        wine_bin = str(bt / "wine")
+    else:
+        # Classic fallback (unified wine not installed, or bottle engine="classic").
+        # Resolve "auto"/"" the same way cmd_launch_game does (issue #105) instead of
+        # leaving it unresolved for _apply_backend_env's if/elif chain to silently ignore.
+        if not backend or backend == BACKEND_AUTO:
+            backend = _classic_default_backend(bottle_cfg) or _resolve_auto_backend(None)
+        wine_bin = _backend_wine_binary(backend, "") or _find_wine_for_bottle("auto")
+        if not wine_bin:
+            raise RuntimeError("No Wine binary found")
+        env = _wine_env(prefix_expanded)
+        env = _apply_backend_env(env, backend, verbose_debug)
+        if metal_hud:
+            env["MTL_HUD_ENABLED"] = "1"
 
-    # Build the same environment as a normal Wine launch
-    env = _wine_env(prefix_expanded)
-    env = _apply_backend_env(env, backend, verbose_debug)
     env = _apply_sync_env(env, esync, msync)
-    if metal_hud:
-        env["MTL_HUD_ENABLED"] = "1"
     for line in (custom_env_str or "").splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             env[k.strip()] = v.strip()
 
     # Always apply retina regedit (handles both on and off states)
-    threading.Thread(
-        target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
-    ).start()
+    if unified:
+        threading.Thread(
+            target=_apply_retina_unified, args=(bt, wine_bin, env, retina_mode), daemon=True
+        ).start()
+    else:
+        threading.Thread(
+            target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
+        ).start()
 
     # Inject per-bottle nile config path into the Wine environment
     env["NILE_CONFIG_PATH"] = str(_nile_config_dir(prefix))
@@ -7745,11 +7787,7 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
 
     # MacNCheese-level Discord presence for Amazon launches. Prefer the real
     # title passed from the UI; fall back to the Amazon id.
-    try:
-        _amazon_cfg = _load_bottles().get(_resolve_key(prefix), {})
-    except Exception:
-        _amazon_cfg = {}
-    if _amazon_cfg.get("discord_rpc", True):
+    if bottle_cfg.get("discord_rpc", True):
         _discord_presence_for_launch(proc, "", params.get("game_name", "") or amazon_id)
 
     return {"pid": proc.pid}
