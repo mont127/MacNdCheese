@@ -2840,46 +2840,98 @@ def _steam_dir(prefix) -> Path:
 
 _STEAM_SEED_EXCLUDES = ["steamapps/", "userdata/", "config/", "logs/", "dumps/",
                         "appcache/", ".crash", "ssfn*", "*.log"]
+# a COMPLETE Steam client has all of these -- used to reject a half-built template + validate a source
+_STEAM_CLIENT_CRIT = ("steamclient.dll", "steamclient64.dll", "steam.exe")
+_STEAM_CLIENT_CRIT_DIRS = ("bin", "steamui", "clientui")
+_steam_tmpl_lock = threading.Lock()
+
+
+def _steam_client_complete(d: Path) -> bool:
+    """True if d holds a COMPLETE Steam client (not a half-finished/interrupted rsync). Guards the
+    template cache so an interrupted build never poisons every future seeded bottle."""
+    try:
+        return (all((d / f).is_file() for f in _STEAM_CLIENT_CRIT)
+                and all((d / s).is_dir() for s in _STEAM_CLIENT_CRIT_DIRS))
+    except Exception:
+        return False
+
+
+def _steam_source_crashing(d: Path) -> bool:
+    """True if the Steam dir d shows a crash storm -- dont build the template from a broken client."""
+    try:
+        if (d / ".crash").exists():
+            return True
+        dmp = d / "dumps"
+        if dmp.is_dir() and sum(f.stat().st_size for f in dmp.glob("*.dmp") if f.is_file()) > 5_000_000:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _steam_client_template() -> Optional[Path]:
-    """Cached CLEAN Steam client (no games / userdata / login) used to SEED fresh bottles, because
-    the Steam bootstrapper's first-run download is BROKEN under our wine: it fault-storms at 100% CPU
-    on the unified HACK22 wine (steam.exe is a 32-bit downloader), and on the pre-HACK22 wine it dies
-    'failed to initialize update status ui, or create initial window'. Built ONCE via rsync (w/
-    excludes) from the first prefix that already has a full client (steamclient.dll). Cached in
-    deps/steam-client so seeding a new bottle is a ~instant same-volume APFS clone. Returns the
-    template dir, or None when theres no source client to build from. See steamsetup notes."""
+    """Cached CLEAN Steam client (no games / userdata / login) used to SEED fresh bottles, because the
+    Steam bootstrapper's first-run download is BROKEN under our wine (32-bit HACK22 storm on the
+    unified wine; 'failed to create updater window' on the pre-HACK22 wine). Built ONCE via rsync (w/
+    excludes) from a working prefixs full client. Cached in deps/steam-client so seeding a new bottle
+    is a ~instant same-volume clone. Marker-guarded (never caches a HALF-built client -> steamclient.dll
+    copies before the big steamui/bin subtrees, so a presence check alone would cache a partial build),
+    lock-serialized (concurrent create+launch cant clobber each other mid-rsync), + picks the NEWEST
+    healthy source. Returns the template dir, or None when theres no source. See steamsetup notes."""
     cache = PORTABLE_DIR / "steam-client"
-    if (cache / "steamclient.dll").exists():
+    marker = cache / ".mnc_steam_client_ok"
+    if marker.is_file() and _steam_client_complete(cache):
         return cache
-    src = None
-    try:
-        cands = list(_load_prefixes())
-    except Exception:
-        cands = []
-    for pfx in cands:
-        for sub in ("Program Files (x86)", "Program Files"):
-            d = Path(pfx) / "drive_c" / sub / "Steam"
-            if (d / "steamclient.dll").exists():
-                src = d
-                break
-        if src:
-            break
-    if not src:
-        return None
-    cache.mkdir(parents=True, exist_ok=True)
-    log(f"_steam_client_template: building cached clean Steam client from {src} (one-time, ~1.4G)")
-    cmd = ["rsync", "-a", "--delete"]
-    for ex in _STEAM_SEED_EXCLUDES:
-        cmd += ["--exclude", ex]
-    cmd += [str(src) + "/", str(cache) + "/"]
-    try:
-        subprocess.run(cmd, timeout=1800)
-    except Exception as exc:
-        log(f"_steam_client_template: build failed: {exc}")
-        return None
-    return cache if (cache / "steamclient.dll").exists() else None
+    if _steam_client_complete(cache):            # complete but unmarked (older build) -> adopt
+        try: marker.write_text("adopted")
+        except Exception: pass
+        return cache
+    with _steam_tmpl_lock:
+        if _steam_client_complete(cache):        # another thread just built it
+            if not marker.is_file():
+                try: marker.write_text("adopted")
+                except Exception: pass
+            return cache
+        # pick the HEALTHIEST source: a COMPLETE, non-crashing client with the NEWEST steamclient.dll
+        best = None
+        best_mt = -1.0
+        try:
+            cands = list(_load_prefixes())
+        except Exception:
+            cands = []
+        for pfx in cands:
+            for sub in ("Program Files (x86)", "Program Files"):
+                d = Path(pfx) / "drive_c" / sub / "Steam"
+                sc = d / "steamclient.dll"
+                if not (sc.is_file() and _steam_client_complete(d)) or _steam_source_crashing(d):
+                    continue
+                try:
+                    mt = sc.stat().st_mtime
+                except Exception:
+                    mt = 0.0
+                if mt > best_mt:
+                    best_mt = mt
+                    best = d
+        if not best:
+            return None
+        cache.mkdir(parents=True, exist_ok=True)
+        log(f"_steam_client_template: building cached clean Steam client from {best} (one-time, ~1.4G)")
+        cmd = ["rsync", "-a", "--delete"]
+        for ex in _STEAM_SEED_EXCLUDES:
+            cmd += ["--exclude", ex]
+        cmd += [str(best) + "/", str(cache) + "/"]
+        try:
+            r = subprocess.run(cmd, timeout=1800)
+        except Exception as exc:
+            log(f"_steam_client_template: build failed: {exc}")
+            return None
+        # only cache a VERIFIED-complete build (rc 24 = source file vanished mid-copy, tolerable)
+        if r.returncode not in (0, 24) or not _steam_client_complete(cache):
+            log(f"_steam_client_template: incomplete build (rc={r.returncode}) -> not caching")
+            return None
+        try: marker.write_text("built")
+        except Exception: pass
+        return cache
 
 
 def _seed_steam_client(prefix: str) -> bool:
@@ -2916,6 +2968,29 @@ def _seed_steam_client(prefix: str) -> bool:
     return ok
 
 
+def _reseed_steam_client(prefix: str) -> bool:
+    """REPAIR a present-but-corrupt Steam client (crash-looping) by rsyncing the clean template OVER
+    it with --checksum (refreshes even same-size-but-corrupt files, which a plain size+mtime rsync
+    would SKIP -- the steamtest client had a same-size steamclient.dll), NO --delete so
+    steamapps/userdata/config/login survive. This is the manual steamtest fix, automated; it
+    deliberately SKIPS the presence gate that _seed_steam_client uses. Returns True if it refreshed."""
+    dst = _steam_dir(prefix)
+    tmpl = _steam_client_template()
+    if not tmpl or not dst.is_dir():
+        return False
+    cmd = ["rsync", "-a", "--checksum"]
+    for ex in _STEAM_SEED_EXCLUDES:
+        cmd += ["--exclude", ex]
+    cmd += [str(tmpl) + "/", str(dst) + "/"]
+    try:
+        subprocess.run(cmd, timeout=1800)
+    except Exception as exc:
+        log(f"_reseed_steam_client: rsync-over failed: {exc}")
+        return False
+    log("_reseed_steam_client: refreshed the Steam client from the clean template (crash self-heal)")
+    return True
+
+
 def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
     """Launch Steam through the unified wine so its CEF renders via DXMT."""
     global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
@@ -2924,6 +2999,23 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     # fails under wine). no-op if a full client is already present or theres no seed source.
     _seed_steam_client(str(prefix))
     steam_dir = _steam_dir(prefix)
+    # SELF-HEAL: client present but the PREVIOUS launch crash-STORMED -> re-seed clean (the launch cmd
+    # below wipes dumps each run, so dumps here are from the last run). _seed_steam_client is
+    # presence-idempotent so it never repairs a present-but-broken client (the steamtest gap).
+    # Trigger on the dump TOTAL, NOT .crash: a normal quit (the app SIGKILLs Steam via kill_wineserver)
+    # leaves a .crash but ~0 dumps, so keying on .crash would needlessly run the slow --checksum
+    # re-seed after every quit. A healthy bottle emits only small transient GPU dumps; a real
+    # crash-loop leaves tens of MB (steamtest had 38MB), so 15MB cleanly separates them.
+    try:
+        if (steam_dir / "steamclient.dll").exists():
+            _dmp = steam_dir / "dumps"
+            _dumps = (sum(f.stat().st_size for f in _dmp.glob("*.dmp") if f.is_file())
+                      if _dmp.is_dir() else 0)
+            if _dumps > 15_000_000:
+                log(f"Steam crash storm last run ({_dumps // 1_000_000}MB dumps) -> re-seeding a clean client")
+                _reseed_steam_client(str(prefix))
+    except Exception as _exc:
+        log(f"steam self-heal check failed (non-fatal): {_exc}")
     steam_exe = steam_dir / "steam.exe"
     if not steam_exe.exists():
         raise FileNotFoundError(f"Steam is not installed in this prefix.\nExpected: {steam_exe}")
