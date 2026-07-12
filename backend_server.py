@@ -7486,11 +7486,38 @@ def _run_and_respond(cmd_name: str, req_id: Any, handler, request: Dict[str, Any
         log(f"Error in {cmd_name}: {exc}")
         _respond(req_id, False, error=str(exc))
 
+def _ensure_cli_on_path() -> None:
+    """Best-effort: symlink macndcheese/mnc into /usr/local/bin the moment the app
+    runs, so the CLI is on PATH without the user ever running a setup step. Never
+    prompts for a password and never blocks startup -- if /usr/local/bin doesn't
+    exist or isn't writable, this silently does nothing (the `macndcheese setup`
+    subcommand is the loud fallback for that case)."""
+    try:
+        cli_path = Path(_resources_dir) / "macndcheese"
+        if not cli_path.exists():
+            return
+        target = str(cli_path.resolve())
+        bin_dir = Path("/usr/local/bin")
+        if not bin_dir.is_dir() or not os.access(str(bin_dir), os.W_OK):
+            return
+        for link_name in ("macndcheese", "mnc"):
+            link_path = bin_dir / link_name
+            if link_path.is_symlink() and os.readlink(str(link_path)) == target:
+                continue  # already correct
+            if link_path.exists() or link_path.is_symlink():
+                link_path.unlink()
+            link_path.symlink_to(target)
+    except Exception as exc:
+        log(f"Could not link the CLI onto PATH: {exc}")
+
+
 def main() -> None:
     log("MacNCheese backend server started")
     log(f"PORTABLE_DIR = {PORTABLE_DIR}")
     log(f"BOTTLES_BASE = {BOTTLES_BASE}")
     log(f"DEFAULT_PREFIX = {DEFAULT_PREFIX}")
+
+    _ensure_cli_on_path()
 
     # Restore automatic Game Mode policy in case a previous run crashed while
     # it had Game Mode forced on.

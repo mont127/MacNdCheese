@@ -48,6 +48,11 @@ cp "$BIN/MacNCheese" "$APP/Contents/MacOS/MacNCheese"
 cp "$ICNS" "$APP/Contents/Resources/MacNCheese.icns"
 cp backend_server.py installer.sh Epic.svg "$APP/Contents/Resources/"
 chmod +x "$APP/Contents/Resources/installer.sh"
+# macndcheese/mnc are plain scripts, dereferenced (not symlinked) into the
+# bundle so the codesign step below signs two real files, same as installer.sh.
+cp macndcheese "$APP/Contents/Resources/macndcheese"
+cp macndcheese "$APP/Contents/Resources/mnc"
+chmod +x "$APP/Contents/Resources/macndcheese" "$APP/Contents/Resources/mnc"
 # Bundle Apple's gamepolicyctl so the backend can force macOS Game Mode on for
 # Wine games without needing Xcode (it keeps its Apple signature; see buildapp.sh).
 if [ -f vendor/gamepolicyctl ]; then
