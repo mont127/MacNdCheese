@@ -315,7 +315,7 @@ D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
 # bundled build (build64 layout: loader/wine + dlls + server). DEV path is a fallback.
 WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
 WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
-UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk", "vr")
+UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk", "vr", "opengl")
 
 # Bradar The d3d DLL slots the unified loader routes to. As of 2026-07-04 the design
 # Bradar inverted -- canonical d3d11/dxgi/d3d10core are now the D3DMetal STUBS so games
@@ -339,6 +339,11 @@ UNIFIED_D3D_DLLS = (
     # Bradar VR = openxr-DXMT (d3d11 w/ OpenXR passthrough) + the wineopenxr bridge PE.
     # vr game backend -> loader openxr column routes d3d11 -> these _openxr slots
     "d3d11_openxr.dll", "d3d10core_openxr.dll", "dxgi_openxr.dll", "wineopenxr.dll",
+    # Bradar OpenGL = the wine-staging 11.8 wined3d->OpenGL build folded into the unified wine.
+    # opengl game backend -> loader opengl column routes d3d11/dxgi/d3d10core here + the d3d11's
+    # wined3d import -> wined3d_opengl (the matching 11.8 wined3d). runs on OUR opengl32 + the
+    # macdrv GL 3.2 clamp (WINE_MAC_GL_CONTEXT_CLAMP) so SDL3/OpenGL 3.2 games (Mewgenics) render.
+    "d3d11_opengl.dll", "dxgi_opengl.dll", "d3d10core_opengl.dll", "wined3d_opengl.dll",
 )
 
 # Bradar Game-side MediaFoundation video bridge. A homebrew-GStreamer winegstreamer variant
@@ -2798,6 +2803,10 @@ def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
         return "dxmt"
     if b in ("dxvk", "vkd3d", "vkd3d-proton"):
         return "dxvk"
+    # Bradar opengl = the wine-staging 11.8 wined3d->OpenGL build + the macdrv GL 3.2 clamp,
+    # now folded into the unified wine (no more separate wine_devel). wine_devel maps here too.
+    if b in ("opengl", "wine_devel", "gl"):
+        return "opengl"
     return "d3dmetal"
 
 
@@ -2868,6 +2877,11 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         for var in ("GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH"):
             env.pop(var, None)
     else:
+        # Bradar enable the macdrv OpenGL 3.2 clamp for games so SDL3 / OpenGL 3.2 titles
+        # (Mewgenics) get a workin forward-compat core context insted of ERROR_INVALID_VERSION.
+        # env-gated in winemac.drv so its a no-op for non-GL games. this is the wine-staging 11.8
+        # macdrv GL 3.2 patch, now built into the unified wine's winemac.so.
+        env["WINE_MAC_GL_CONTEXT_CLAMP"] = "1"
         env["GST_PLUGIN_SYSTEM_PATH_1_0"] = gst
         env["GST_PLUGIN_PATH"] = gst
         env["GST_PLUGIN_FEATURE_RANK"] = "vtdec:NONE,vtdec_hw:NONE,avdec_h264:MAX,openh264dec:SECONDARY"
@@ -4891,7 +4905,7 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
         # can pick it (the openxr d3d DLLs ride w/ the unified wine); install the runtime via Settings -> VR
         {"id": "vr", "label": "VR (OpenXR)", "available": True},
         {"id": BACKEND_D3DMETAL3, "label": "D3DMetal (injection, recommended)", "available": _d3dmetal3_available()},
-        {"id": BACKEND_WINE_DEVEL, "label": "Wine Devel (OpenGL/SDL3, e.g. Mewgenics)", "available": _find_wine_devel() is not None},
+        {"id": BACKEND_WINE_DEVEL, "label": "OpenGL (SDL3 / GL 3.2, e.g. Mewgenics)", "available": _unified_available()},
         {"id": BACKEND_GPTK, "label": "GPTK (D3DMetal, copy DLLs)", "available": _gptk_available()},
         {"id": BACKEND_GPTK_FULL, "label": "GPTK Full (Apple Toolkit)", "available": _gptk_full_available()},
     ]

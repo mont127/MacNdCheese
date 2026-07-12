@@ -890,6 +890,12 @@ uninstall_wine_d3dmetal() {
 # Downloaded from the release (WINE_DEVEL_URL) and extracted to
 # $PORTABLE_DIR/Wine Devel.app. Completely separate from Wine D3DMetal.
 install_wine_devel() {
+  # Bradar DEPRECATED: OpenGL 3.2 (wine-staging 11.8 wined3d->OpenGL + the winemac.drv GL 3.2
+  # context clamp) is now FOLDED INTO the unified wine (the opengl game backend). No separate
+  # Wine Staging 11.8 download anymore -- pick the OpenGL backend per-game + it routes thru unified.
+  echo "install_wine_devel: OpenGL 3.2 is now built into the unified wine (opengl backend); nothing to install."
+  return 0
+  # --- old standalone Wine Staging 11.8 install below is now unreachable, kept for reference ---
   echo "Step: Installing Wine Devel (Wine Staging 11.8 + OpenGL 3.2 patch)..."
   mkdir -p "$PORTABLE_DIR"
 
@@ -2382,7 +2388,8 @@ stage_unified_d3d_pack() {
   for f in d3d11.dll dxgi.dll d3d10core.dll d3d10.dll d3d10_1.dll d3d12.dll d3d12core.dll \
            winemetal.dll d3d11_dxmt.dll dxgi_dxmt.dll d3d10core_dxmt.dll \
            d3d11_d3dm.dll dxgi_d3dm.dll d3d10core_d3dm.dll d3d10_d3dm.dll \
-           d3d12_d3dm.dll d3d11_dxvk.dll d3d10core_dxvk.dll dxgi_dxvk.dll winegstreamer_game.dll; do
+           d3d12_d3dm.dll d3d11_dxvk.dll d3d10core_dxvk.dll dxgi_dxvk.dll \
+           d3d11_opengl.dll dxgi_opengl.dll d3d10core_opengl.dll wined3d_opengl.dll winegstreamer_game.dll; do
     [ -f "$d3dsrc/$f" ] && cp -f "$d3dsrc/$f" "$dst/mnc-d3d/$f"
   done
   echo "stage_unified_d3d_pack: staged d3d DLL pack from $d3dsrc"
