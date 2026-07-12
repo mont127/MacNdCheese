@@ -27,7 +27,7 @@ struct AmazonLandingView: View {
         .animation(.easeInOut(duration: 0.22), value: phase == .library)
         .onAppear { onAppearHandler() }
         .onDisappear { stopAll() }
-        .onChange(of: backend.nileInstalled) { _, installed in
+        .onChange(of: backend.nileInstalled) { installed in
             if installed && phase == .downloading { transitionToAuth() }
         }
     }

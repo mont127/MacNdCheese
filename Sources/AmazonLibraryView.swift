@@ -97,11 +97,11 @@ struct AmazonLibraryView: View {
                     .padding(.bottom, 24)
             }
         }
-        .contentMargins(.top, 20, for: .scrollContent)
-        .scrollClipDisabled()
+        .contentMarginsTopCompat(20)
+        .scrollClipDisabledCompat()
         .onAppear { loadGameOrder() }
-        .onChange(of: backend.activePrefix) { loadGameOrder() }
-        .onChange(of: games) {
+        .onChange(of: backend.activePrefix) { _ in loadGameOrder() }
+        .onChange(of: games) { _ in
             let known = Set(gameOrder)
             let newIds = games.map { $0.appid }.filter { !known.contains($0) }
             gameOrder = gameOrder.filter { id in games.contains { $0.appid == id } } + newIds
@@ -337,7 +337,7 @@ struct AmazonGameCard: View {
                             .font(.system(.title2, design: .monospaced).weight(.bold))
                             .foregroundStyle(.white)
                             .shadow(radius: 4)
-                            .contentTransition(.numericText())
+                            .numericContentTransitionCompat()
                             .animation(.default, value: installProgress)
                         if isHovering {
                             Text(L("Installing…"))
