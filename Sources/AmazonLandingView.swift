@@ -312,6 +312,11 @@ private struct AmazonWebView: NSViewRepresentable {
         prefs.allowsContentJavaScript = true
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences = prefs
+        // Ephemeral store: the default store is shared/persistent across every WKWebView
+        // in the app, so a login in one bottle's sign-in sheet would leave a session
+        // cookie that silently auto-authed every other bottle's sheet with the same
+        // Amazon account instead of prompting.
+        config.websiteDataStore = .nonPersistent()
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.load(URLRequest(url: loginURL))
