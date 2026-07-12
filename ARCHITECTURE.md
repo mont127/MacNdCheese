@@ -4,9 +4,10 @@ MacNCheese is two processes wearing one app icon.
 
 ## The two halves
 
-- **`Sources/`** — a SwiftUI app (`Package.swift`, macOS 14+). This is everything the user sees:
+- **`Sources/`** — a SwiftUI app (`Package.swift`, macOS 12+). This is everything the user sees:
   game grid, settings, onboarding, the Epic/Steam library views, the Discord-fed Game Showcase
-  tab, App Intents/Siri support.
+  tab, App Intents/Siri support (macOS 14+ only — see `Sources/AppIntents/` and
+  `Sources/CompatShims.swift` for the cross-version shims the rest of the UI leans on).
 - **`backend_server.py`** — a single long-running Python process, standard library only. It does
   the actual work: creating Wine prefixes, installing DXVK/VKD3D/DXMT/GPTK, detecting and
   launching games, managing bottles, driving the Steam/Epic integrations, forcing Game Mode, etc.

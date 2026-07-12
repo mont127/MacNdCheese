@@ -5,7 +5,6 @@ struct ContentView: View {
     @EnvironmentObject var announcements: AnnouncementChecker
     @EnvironmentObject var updateChecker: UpdateChecker
     @EnvironmentObject var loc: LocalizationManager
-    @Environment(\.openSettings) private var openSettings
     @State private var searchText = ""
     @State private var showCreateBottle = false
     @State private var showAnnouncement = false
@@ -71,7 +70,7 @@ struct ContentView: View {
                 .help(L("Console Mode"))
                 .accessibilityLabel(L("Console Mode"))
                 .disabled(backend.activePrefix == nil)
-                Button { openSettings() } label: { Image(systemName: "gear") }
+                Button { openAppSettingsCompat() } label: { Image(systemName: "gear") }
             .help(L("Settings"))
             .accessibilityLabel(L("Settings"))
         if announcements.hasNewAnnouncement {
@@ -251,13 +250,24 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
-        } detail: {
-            detailPane
+        // NavigationSplitView needs macOS 13+; NavigationView is the macOS 12 fallback.
+        Group {
+            if #available(macOS 13, *) {
+                NavigationSplitView {
+                    SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
+                } detail: {
+                    detailPane
+                }
+                .navigationSplitViewStyle(.balanced)
+            } else {
+                NavigationView {
+                    SidebarView(showCreateBottle: $showCreateBottle, showStore: $showStore)
+                    detailPane
+                }
+                .navigationViewStyle(DoubleColumnNavigationViewStyle())
+            }
         }
-        .onChange(of: backend.activePrefix) { _, _ in showStore = false; detailGame = nil }
-        .navigationSplitViewStyle(.balanced)
+        .onChange(of: backend.activePrefix) { _ in showStore = false; detailGame = nil }
         .tint(.brand)   // brand accent for sidebar selection + prominent buttons
         // Bradar console / big-picture mode takes over the whole window when its on
         .overlay {
@@ -298,7 +308,7 @@ struct ContentView: View {
         .sheet(isPresented: $showAnnouncement) {
             AnnouncementSheet(checker: announcements)
         }
-        .onChange(of: showStore) { _, isStore in
+        .onChange(of: showStore) { isStore in
             // Clear the sidebar selection while in store mode so List
             // doesn't draw a highlighted bottle row.
             if isStore { /* no-op */ }
@@ -376,10 +386,10 @@ private struct OnboardingPresenter: ViewModifier {
                 OnboardingView()
             }
             .onAppear { evaluate() }
-            .onChange(of: backend.isConnected) { _, connected in
+            .onChange(of: backend.isConnected) { connected in
                 if connected { evaluate() }
             }
-            .onChange(of: loc.needsChoice) { _, needs in
+            .onChange(of: loc.needsChoice) { needs in
                 if !needs { evaluate() }
             }
     }

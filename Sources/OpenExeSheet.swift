@@ -112,7 +112,7 @@ struct OpenExeSheet: View {
             selectDefaultBottle()
             loadIcon()
         }
-        .onChange(of: backend.bottles) { _, _ in
+        .onChange(of: backend.bottles) { _ in
             // A new bottle was created via the nested sheet – select it.
             if let newPath = backend.bottles.map({ $0.path })
                 .first(where: { !knownPathsBeforeCreate.contains($0) }) {

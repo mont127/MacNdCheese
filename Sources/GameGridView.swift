@@ -96,8 +96,8 @@ struct GameGridView: View {
                     .padding(.bottom, 24)
             }
         }
-        .contentMargins(.top, 20, for: .scrollContent)
-        .scrollClipDisabled()
+        .contentMarginsTopCompat(20)
+        .scrollClipDisabledCompat()
     }
 
     @ViewBuilder
@@ -179,8 +179,8 @@ struct GameGridView: View {
             }
         }
         .onAppear { loadGameOrder() }
-        .onChange(of: backend.activePrefix) { loadGameOrder() }
-        .onChange(of: games) {
+        .onChange(of: backend.activePrefix) { _ in loadGameOrder() }
+        .onChange(of: games) { _ in
             let known = Set(gameOrder)
             let newIds = games.map { $0.appid }.filter { !known.contains($0) }
             gameOrder = gameOrder.filter { id in games.contains { $0.appid == id } } + newIds
@@ -404,7 +404,7 @@ struct GameCardView: View {
             loadCover()
             isReachable = game.isReachable
         }
-        .onChange(of: backend.volumeChangeTick) { _, _ in
+        .onChange(of: backend.volumeChangeTick) { _ in
             isReachable = game.isReachable
         }
         .contextMenu {
@@ -609,7 +609,7 @@ struct AppCardView: View {
         .help(isReachable ? app.name : L("This app's files aren't available — its drive isn't connected."))
         .accessibilityLabel("Launch \(app.name)")
         .onAppear { isReachable = app.isReachable }
-        .onChange(of: backend.volumeChangeTick) { _, _ in
+        .onChange(of: backend.volumeChangeTick) { _ in
             isReachable = app.isReachable
         }
         .contextMenu {

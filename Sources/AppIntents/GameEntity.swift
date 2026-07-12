@@ -2,6 +2,12 @@ import AppIntents
 
 /// An AppEntity representing an installed game, resolved from GameIndexCache
 /// so Siri and Shortcuts can offer game names as typed parameters.
+///
+/// Gated to macOS 14+: ParameterPresentation/OptionsCollection (used by
+/// MacNCheeseShortcuts) only exist from macOS 14, so there's no lower floor
+/// worth targeting for this whole feature — Siri/Shortcuts integration simply
+/// isn't offered on macOS 12/13.
+@available(macOS 14, *)
 struct GameEntity: AppEntity {
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Game")
     static let defaultQuery = GameEntityQuery()
@@ -18,6 +24,7 @@ struct GameEntity: AppEntity {
     }
 }
 
+@available(macOS 14, *)
 struct GameEntityQuery: EntityQuery, EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [GameEntity] {
         let all = GameIndexCache.allGames()

@@ -153,7 +153,7 @@ struct BottleRow: View {
         // was disconnected when this row first loaded, the icon fetch was
         // skipped and never retried. volumeChangeTick bumps on every
         // mount/unmount; recheck reachability and retry the icon then.
-        .onChange(of: backend.volumeChangeTick) { _, _ in
+        .onChange(of: backend.volumeChangeTick) { _ in
             isReachable = bottle.isReachable
             if exeIcon == nil { Task { await loadIcon() } }
         }

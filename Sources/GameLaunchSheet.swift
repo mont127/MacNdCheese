@@ -127,8 +127,8 @@ struct GameLaunchSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L("Steam Description"))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
                     .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
 
                 if loadingSteamDescription {
                     HStack(spacing: 6) {
@@ -164,8 +164,8 @@ struct GameLaunchSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(L("EXE:"))
                 .font(.callout)
-                .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
 
             if loadingExes {
                 HStack(spacing: 6) {
@@ -192,8 +192,8 @@ struct GameLaunchSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(L("Graphics Engine:"))
                 .font(.callout)
-                .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
 
             if loadingBackends {
                 HStack(spacing: 6) {
@@ -229,8 +229,8 @@ struct GameLaunchSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(L("Args:"))
                 .font(.callout)
-                .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
             TextField(L("Optional launch arguments…"), text: $extraArgs)
                 .textFieldStyle(.roundedBorder)
         }
@@ -294,8 +294,8 @@ struct GameLaunchSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(L("Environment Variables:"))
                 .font(.callout)
-                .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
 
             Toggle(isOn: $advertiseAVX) {
                 Text(L("Advertise AVX2 / FMA / F16C"))
@@ -318,8 +318,8 @@ struct GameLaunchSheet: View {
                 TextEditor(text: $customEnv)
                     .font(.system(.caption, design: .monospaced))
                     .frame(minHeight: 48, maxHeight: 72)
-                    .scrollContentBackground(.hidden)
-                    .background(.fill.tertiary)
+                    .hideScrollBackgroundCompat()
+                    .background(.black.opacity(0.2))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             Text(L("KEY=value, one per line. Saved per game. Combined with the AVX toggle above."))
@@ -332,8 +332,8 @@ struct GameLaunchSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(L("Synchronization:"))
                 .font(.callout)
-                .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
 
             Toggle(isOn: $enableEsync) {
                 Text(L("Enable ESync"))
@@ -353,8 +353,8 @@ struct GameLaunchSheet: View {
 
             Text("STEAM")
                 .font(.caption)
-                .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
                 .padding(.top, 4)
 
             Picker("", selection: $steamMode) {

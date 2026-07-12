@@ -1,5 +1,6 @@
 import AppIntents
 
+@available(macOS 14, *)
 struct MacNCheeseShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(

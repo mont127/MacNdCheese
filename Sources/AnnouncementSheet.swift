@@ -18,9 +18,9 @@ struct AnnouncementSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L("MacNCheese Announcement"))
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .kerning(0.5)
                         .textCase(.uppercase)
-                        .tracking(0.5)
+                        .foregroundStyle(.secondary)
                     Text(checker.title)
                         .font(.title2)
                         .fontWeight(.semibold)
