@@ -3197,9 +3197,18 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
             _dmp = steam_dir / "dumps"
             _dumps = (sum(f.stat().st_size for f in _dmp.glob("*.dmp") if f.is_file())
                       if _dmp.is_dir() else 0)
-            if _dumps > 15_000_000:
+            # a crash_steam.exe / assert_steam.exe minidump = steam.exe ITSELF crashed last run.
+            # Steam only writes these on a real exception; a clean quit / our SIGKILL produces NONE
+            # (verified: a kill leaves .crash but 0 dumps), so keying on the FILE has no kill-false-
+            # positive. the old-client-hits-Valves-mandatory-update BRICK is exactly ONE ~300KB
+            # crash_steam dump, way under the 15MB storm total -- so trigger on the file too, not just
+            # the byte total, else a crash-loopin bottle never self-heals (--disable-breakpad only kills
+            # CEFs webhelper reporter, NOT steam.exe's crash handler, so these dumps stay written).
+            _steam_crashed = _dmp.is_dir() and (any(_dmp.glob("crash_steam.exe*.dmp"))
+                                                or any(_dmp.glob("assert_steam.exe*.dmp")))
+            if _dumps > 15_000_000 or _steam_crashed:
                 _wipe_gpucache = True
-                log(f"Steam crash storm last run ({_dumps // 1_000_000}MB dumps) -> re-seeding a clean client + wiping GPUCache")
+                log(f"Steam crashed last run (steam.exe dump={bool(_steam_crashed)}, {_dumps // 1_000_000}MB total) -> re-seeding a clean client + wiping GPUCache")
                 _reseed_steam_client(str(prefix))
     except Exception as _exc:
         log(f"steam self-heal check failed (non-fatal): {_exc}")
