@@ -2863,8 +2863,15 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
             # wineserver-round-trip IPC loop that dominate wh.sample), + kill the native-occlusion
             # recalc n the chromecast discovery utility proc = fewer background wakeups.
             # if a steam panel ever go blank/white its this cap -> bump to 2
-            "--renderer-process-limit=1 --disable-features=CalculateNativeWinOcclusion,MediaRouter "
-            "--disable-smooth-scrolling"),
+            "--renderer-process-limit=1 --disable-features=CalculateNativeWinOcclusion,MediaRouter,"
+            "Translate,OptimizationHints,AutofillServerCommunication "
+            "--disable-smooth-scrolling "
+            # Bradar kill the CEF background chatter -- none of it works usefully under wine + it
+            # just burns wakeups/net during the boot window. breakpad here is CEFs OWN crash
+            # reporter (steamwebhelper), NOT steam.exe crashhandler, so the self-heal dumps we key
+            # on r untouched. component/domain-reliability/first-run r pure startup dead weight.
+            "--disable-background-networking --disable-component-update "
+            "--disable-domain-reliability --disable-breakpad --no-first-run"),
     })
     for var in ("GTK_PATH", "WINEPATH", "VKD3D_PROTON_PATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
         env.pop(var, None)
@@ -2993,6 +3000,52 @@ def _steam_source_crashing(d: Path) -> bool:
     return False
 
 
+def _steam_client_version(d: Path) -> int:
+    """The installed Steam client version from package/steam_client_win64.manifest, or -1. A NEWER
+    steamclient.dll mtime does NOT mean a newer CLIENT (a partial/old-build copy can have a fresh
+    mtime) -- the manifest version is the authoritative + bootable-currency signal, which is why the
+    template source is ranked on THIS, not dll mtime. Higher = more current = less likely to eat the
+    Valve mandatory-update crash path on a fresh seed."""
+    try:
+        m = (d / "package" / "steam_client_win64.manifest").read_text(errors="ignore")
+        mt = re.search(r'"version"\s*"(\d+)"', m)
+        return int(mt.group(1)) if mt else -1
+    except Exception:
+        return -1
+
+
+def _refresh_seed_if_bottle_newer(prefix: str) -> bool:
+    """Opportunistic re-cache: if a bottle has self-updated to a client NEWER than the cached template
+    (e.g. after Valves next mandatory update finally downloads + applies), refresh deps/steam-client
+    from it so the seed never goes stale + never re-seeds fresh bottles onto a crash-looping old
+    client. Cheap: only fires when the bottles manifest version is STRICTLY higher than the templates,
+    and the bottle is complete + not crash-storming. No-op otherwise. Returns True if it refreshed."""
+    try:
+        cache = PORTABLE_DIR / "steam-client"
+        src = _steam_dir(prefix)
+        if not (src.is_dir() and _steam_client_complete(src)) or _steam_source_crashing(src):
+            return False
+        bv = _steam_client_version(src)
+        tv = _steam_client_version(cache) if cache.is_dir() else -1
+        if bv <= tv or bv < 0:
+            return False
+        with _steam_tmpl_lock:
+            log(f"_refresh_seed_if_bottle_newer: bottle client v{bv} > template v{tv} -> refreshing seed from {src}")
+            cache.mkdir(parents=True, exist_ok=True)
+            cmd = ["rsync", "-a", "--delete"]
+            for ex in _STEAM_SEED_EXCLUDES:
+                cmd += ["--exclude", ex]
+            cmd += [str(src) + "/", str(cache) + "/"]
+            r = subprocess.run(cmd, timeout=1800)
+            if r.returncode in (0, 24) and _steam_client_complete(cache):
+                try: (cache / ".mnc_steam_client_ok").write_text(f"refreshed v{bv}")
+                except Exception: pass
+                return True
+    except Exception as exc:
+        log(f"_refresh_seed_if_bottle_newer failed (non-fatal): {exc}")
+    return False
+
+
 def _steam_client_template() -> Optional[Path]:
     """Cached CLEAN Steam client (no games / userdata / login) used to SEED fresh bottles, because the
     Steam bootstrapper's first-run download is BROKEN under our wine (32-bit HACK22 storm on the
@@ -3016,9 +3069,12 @@ def _steam_client_template() -> Optional[Path]:
                 try: marker.write_text("adopted")
                 except Exception: pass
             return cache
-        # pick the HEALTHIEST source: a COMPLETE, non-crashing client with the NEWEST steamclient.dll
+        # pick the HEALTHIEST source: a COMPLETE, non-crashing client with the HIGHEST manifest
+        # VERSION (a fresh dll mtime is NOT currency -- an old-build copy can carry a new mtime; the
+        # manifest version is what decides whether a seeded bottle boots or eats the mandatory-update
+        # crash). tie-break on dll mtime.
         best = None
-        best_mt = -1.0
+        best_key = (-1, -1.0)  # (client version, dll mtime)
         try:
             cands = list(_load_prefixes())
         except Exception:
@@ -3033,8 +3089,9 @@ def _steam_client_template() -> Optional[Path]:
                     mt = sc.stat().st_mtime
                 except Exception:
                     mt = 0.0
-                if mt > best_mt:
-                    best_mt = mt
+                key = (_steam_client_version(d), mt)
+                if key > best_key:
+                    best_key = key
                     best = d
         if not best:
             return None
@@ -3130,16 +3187,25 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     # leaves a .crash but ~0 dumps, so keying on .crash would needlessly run the slow --checksum
     # re-seed after every quit. A healthy bottle emits only small transient GPU dumps; a real
     # crash-loop leaves tens of MB (steamtest had 38MB), so 15MB cleanly separates them.
+    # Bradar the spoofed-GPU cache (userdata/**/GPUCache) is now KEPT across launches so CEF dont
+    # re-warm its shader/program cache on the stable 0x1002 adapter every boot -- we only nuke it as
+    # a FALLBACK when the last run crash-stormed (a stale GPU blob CAN reintroduce a startup GPU
+    # crash). same crash-storm signal as the client re-seed below.
+    _wipe_gpucache = False
     try:
         if (steam_dir / "steamclient.dll").exists():
             _dmp = steam_dir / "dumps"
             _dumps = (sum(f.stat().st_size for f in _dmp.glob("*.dmp") if f.is_file())
                       if _dmp.is_dir() else 0)
             if _dumps > 15_000_000:
-                log(f"Steam crash storm last run ({_dumps // 1_000_000}MB dumps) -> re-seeding a clean client")
+                _wipe_gpucache = True
+                log(f"Steam crash storm last run ({_dumps // 1_000_000}MB dumps) -> re-seeding a clean client + wiping GPUCache")
                 _reseed_steam_client(str(prefix))
     except Exception as _exc:
         log(f"steam self-heal check failed (non-fatal): {_exc}")
+    # opportunistic seed re-cache: if THIS bottle self-updated to a newer client on a prior run,
+    # refresh the template from it so fresh bottles never get seeded onto a stale (crash-looping) one.
+    _refresh_seed_if_bottle_newer(str(prefix))
     steam_exe = steam_dir / "steam.exe"
     if not steam_exe.exists():
         raise FileNotFoundError(f"Steam is not installed in this prefix.\nExpected: {steam_exe}")
@@ -3149,12 +3215,40 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True)
     wine = str(bt / "wine")
     wineserver = str(bt / "server" / "wineserver")
-    _apply_retina_unified(bt, wine, env, params.get("retina_mode", False))
+    # Bradar collapse the launch-path wineserver churn: the retina regedit + the Steam-Client-Service
+    # disable used to run as TWO separate pre-launch `wine` spawns (retina even flushed the hive with
+    # `wineserver -w`), and then the launch shells first line `wineserver -k` immediately KILLED that
+    # server -- wasting a Rosetta wineserver cold-start + a regedit PE-JIT every launch. now BOTH reg
+    # writes r folded into one batch.reg imported by a single `wine regedit` INSIDE the shell AFTER
+    # the -k, so steam.exe reuses that same server (2 server lifecycles + 2 wine spawns -> 1).
+    _retina = bool(params.get("retina_mode", False))
+    _retina_val = "y" if _retina else "n"
+    _dpi_hex = "c0" if _retina else "60"  # 192=0xc0, 96=0x60
+    batch_reg = (
+        "REGEDIT4\n\n"
+        "[HKEY_CURRENT_USER\\Software\\Wine\\Mac Driver]\n"
+        f'"RetinaMode"="{_retina_val}"\n'
+        '"Resolution"="auto"\n\n'
+        "[HKEY_CURRENT_USER\\Control Panel\\Desktop]\n"
+        f'"LogPixels"=dword:000000{_dpi_hex}\n\n'
+        # THE big steady-state win: disable the 32-bit 'Steam Client Service' so wines SCM rejects
+        # the start BEFORE it cold-JITs SteamService.exe every 10s (that respawn loop IS the 100%
+        # burst). re-applied each launch coz steam re-enables it on update. VAC-safe (Linux ships none).
+        "[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\Steam Client Service]\n"
+        '"Start"=dword:00000004\n'
+    )
+    _batch_reg_path = Path(tempfile.gettempdir()) / "mnc_steam_batch.reg"
+    try:
+        _batch_reg_path.write_text(batch_reg, encoding="utf-8")
+    except Exception as _exc:
+        log(f"steam batch.reg write failed (non-fatal): {_exc}")
     silent = bool(params.get("silent", False))
     steam_args = STEAM_SILENT_ARGS if silent else "-tcp"
     log_path = str(LOG_DIR / "Steam-wine.log")
     # match the proven steam-unified-run.sh: kill the server then wipe the CEF caches
     # Bradar (incl userdata GPUCache) so Steam comes up clean on the spoofed GPU + DXMT
+    _gpucache_wipe_line = (f"find userdata -type d -name GPUCache -prune -exec rm -rf {{}} + 2>/dev/null\n"
+                           if _wipe_gpucache else "")
     cmd = (
         # export DYLD inside the shell. the outer arch (SIP-restricted) strips DYLD_* so
         # running wine via `arch wine` loses the fallback path and wine cannot dlopen
@@ -3164,10 +3258,12 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         f"cd {shlex.quote(str(steam_dir))} || exit 1\n"
         f"rm -f .crash 2>/dev/null\n"
         # Bradar keep config/htmlcache (the CEF compiled-UI cache) so steam dont re-cache +
-        # re-JIT the whole panorama UI every boot -- only nuke appcache + the spoofed-GPU state
-        f"rm -rf appcache 2>/dev/null\n"
+        # re-JIT the whole panorama UI every boot. also KEEP appcache/httpcache (etag-validated
+        # library metadata + images) so the library paints faster on later boots -- only nuke the
+        # REST of appcache. (the GPUCache wipe is gated below: kept unless last run crash-stormed.)
+        f"find appcache -mindepth 1 -maxdepth 1 ! -name httpcache -exec rm -rf {{}} + 2>/dev/null\n"
         f"rm -f logs/* dumps/*.dmp 2>/dev/null\n"
-        f"find userdata -type d -name GPUCache -prune -exec rm -rf {{}} + 2>/dev/null\n"
+        f"{_gpucache_wipe_line}"
         # steam.cfg used to freeze the client self-updater (BootStrapperInhibitAll) to skip the
         # manifest-download churn every launch. That freeze bricks EVERY install the moment Valve
         # makes a client update mandatory (July 2026): the bootstrap logs "Suppressing Steam
@@ -3181,11 +3277,11 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         # pre-settin their has-run keys (else e.g. World War 3 wedges forever on "Running
         # install script (Microsoft .NET Framework)" coz the NDP462 bootstrapper never exits)
         f"{_commonredist_hasrun_reg_cmds(str(prefix), wine)}"
-        # Bradar THE big one -- disable the 'Steam Client Service' so wines SCM rejects the start
-        # BEFORE it spawns + cold-JITs the 32-bit SteamService.exe every 10s (that respawn loop
-        # IS the 100% core burst). re-applied each launch coz steam re-enables it on update.
-        # VAC/games dont use this service (Linux steam ships none), so its VAC-safe
-        f"{shlex.quote(wine)} reg add \"HKLM\\System\\CurrentControlSet\\Services\\Steam Client Service\" /v Start /t REG_DWORD /d 4 /f >/dev/null 2>&1\n"
+        # Bradar ONE regedit import (retina + LogPixels + the Steam-Client-Service disable) reusing
+        # the server the -k just cleared, insted of a pre-launch regedit + a separate reg add. the
+        # service disable is THE big one (kills the SteamService.exe respawn loop); steam.exe below
+        # reuses this same wineserver so we spend 1 server lifecycle, not 3.
+        f"{shlex.quote(wine)} regedit {shlex.quote(str(_batch_reg_path))} >/dev/null 2>&1\n"
         f"{shlex.quote(wine)} steam.exe {steam_args} > {shlex.quote(log_path)} 2>&1"
     )
     log(f"Launching Steam (unified/DXMT, backend={game_backend}, silent={silent})")
