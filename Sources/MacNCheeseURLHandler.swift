@@ -79,6 +79,17 @@ final class MacNCheeseURLHandler {
                 msync: msync,
                 customEnv: customEnv
             )
+        } else if let amazonId = game.amazonId, !amazonId.isEmpty {
+            await backend.amazonLaunchGame(
+                prefix: bottlePath,
+                amazonId: amazonId,
+                backend: backend_,
+                retinaMode: retinaMode,
+                metalHud: metalHud,
+                esync: esync,
+                msync: msync,
+                customEnv: customEnv
+            )
         } else {
             let cfgExe = cfg["exe"] as? String ?? ""
             let exe = cfgExe.isEmpty ? (game.exe ?? "") : cfgExe

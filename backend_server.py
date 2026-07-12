@@ -92,6 +92,29 @@ EPIC_AUTH_URL = (
     f"?redirectUrl={urllib.parse.quote(_EPIC_REDIRECT, safe='')}"
 )
 
+NILE_DIR = PORTABLE_DIR / "nile"
+NILE_BIN = NILE_DIR / "nile"
+
+
+def _nile_config_dir(prefix: str) -> Path:
+    """Returns the per-bottle Nile (Amazon Games) config directory."""
+    return Path(prefix).expanduser().resolve() / ".nile_config"
+
+
+def _nile_cmd(prefix: str) -> List[str]:
+    """Base nile command (config isolation is done via NILE_CONFIG_PATH env var)."""
+    return [str(NILE_BIN)]
+
+
+def _nile_env(prefix: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Returns an environment dict with NILE_CONFIG_PATH set to the per-bottle dir."""
+    env = (base if base is not None else os.environ).copy()
+    config_dir = _nile_config_dir(prefix)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    env["NILE_CONFIG_PATH"] = str(config_dir)
+    return env
+
+
 APPMANIFEST_RE = re.compile(r'"(\w+)"\s+"([^"]*)"')
 
 _legendary_installing: bool = False
@@ -164,6 +187,77 @@ def _legendary_queue_worker() -> None:
                 return
             app_name, prefix = _legendary_download_queue.pop(0)
         _legendary_do_install(app_name, prefix)
+
+
+_nile_installing: bool = False
+_nile_installs: Dict[str, Any] = {}  # amazon_id -> (Popen, file, log_path, prefix)
+_nile_paused: Dict[str, str] = {}    # amazon_id -> prefix (paused downloads)
+_nile_games_cache: Dict[str, Any] = {}  # prefix -> {"games": [], "ts": float, "scanning": bool}
+_NILE_CACHE_TTL = 300  # seconds before a background re-fetch is triggered
+
+# Download queue — one install runs at a time, others wait.
+_nile_download_queue: List[Tuple[str, str]] = []  # [(amazon_id, prefix)]
+_nile_queue_lock = threading.Lock()
+_nile_queue_worker_running: bool = False
+
+
+def _terminate_nile_installs() -> None:
+    """Kill all active nile install processes and clear the queue. Called on backend exit."""
+    with _nile_queue_lock:
+        _nile_download_queue.clear()
+    for amazon_id, entry in list(_nile_installs.items()):
+        proc = entry[0]
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    _nile_installs.clear()
+    _nile_paused.clear()
+
+
+atexit.register(_terminate_nile_installs)
+
+
+def _nile_do_install(amazon_id: str, prefix: str) -> None:
+    """Run one nile install to completion. Called from the queue worker thread."""
+    install_base = str(
+        Path(prefix).expanduser().resolve() / "drive_c" / "Program Files" / "Amazon Games"
+    )
+    Path(install_base).mkdir(parents=True, exist_ok=True)
+    log_path = str(NILE_DIR / f"install_{amazon_id}.log")
+    try:
+        log_fh = open(log_path, "w")
+        proc = subprocess.Popen(
+            _nile_cmd(prefix) + ["install", amazon_id, "--base-path", install_base],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=_nile_env(prefix),
+        )
+        _nile_installs[amazon_id] = (proc, log_fh, log_path, prefix)
+        proc.wait()
+    except Exception:
+        pass
+    finally:
+        entry = _nile_installs.pop(amazon_id, None)
+        if entry:
+            try:
+                entry[1].close()
+            except Exception:
+                pass
+        _nile_games_cache.pop(prefix, None)
+
+
+def _nile_queue_worker() -> None:
+    """Process queued nile installs one at a time."""
+    global _nile_queue_worker_running
+    while True:
+        with _nile_queue_lock:
+            if not _nile_download_queue:
+                _nile_queue_worker_running = False
+                return
+            amazon_id, prefix = _nile_download_queue.pop(0)
+        _nile_do_install(amazon_id, prefix)
 
 
 BACKEND_AUTO = "auto"
@@ -1983,6 +2077,8 @@ def cmd_scan_games(params: Dict[str, Any]) -> Any:
     bottle_cfg = _load_bottles().get(key, {})
     if bottle_cfg.get("launcher_type") == "epic":
         return _scan_legendary_games(prefix_str)
+    if bottle_cfg.get("launcher_type") == "amazon":
+        return _scan_nile_games(prefix_str)
 
     prefix = Path(prefix_str).expanduser().resolve()
     steam_dir = _steam_dir(prefix)
@@ -4212,6 +4308,8 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
    
     if launcher_type == "epic":
         threading.Thread(target=_download_legendary_if_needed, daemon=True).start()
+    if launcher_type == "amazon":
+        threading.Thread(target=_download_nile_if_needed, daemon=True).start()
 
     return {"path": path_str}
 
@@ -6736,6 +6834,201 @@ def _scan_legendary_games(prefix: str) -> List[Dict[str, Any]]:
     return []
 
 
+# NOTE: Nile's exact `library list --json` / `installed.json` field names below
+# are best-effort — inferred from the CLI's `--id` based subcommands rather than
+# confirmed against a real Amazon account (not verifiable in this environment).
+# Each lookup tries a few plausible key names and degrades gracefully (empty
+# string / not-installed) rather than raising if the real shape differs.
+
+def _nile_cover_url(entry: Dict[str, Any]) -> str:
+    product = entry.get("product", entry)
+    for key in ("iconUrl", "coverUrl", "boxArtUrl", "imageUrl", "image"):
+        url = product.get(key) if isinstance(product, dict) else None
+        if url:
+            return url
+    images = entry.get("images") or entry.get("keyImages") or []
+    if isinstance(images, list):
+        for img in images:
+            if isinstance(img, dict) and img.get("url"):
+                return img["url"]
+    return ""
+
+
+_NILE_LIB_CACHE_FILE = "macncheese_amazon_library.json"
+
+
+def _nile_read_disk_library(prefix: str) -> List[Dict[str, Any]]:
+    """Read the owned-games list from the per-bottle disk cache (instant, no network)."""
+    path = _nile_config_dir(prefix) / _NILE_LIB_CACHE_FILE
+    if not path.exists():
+        return []
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _nile_write_disk_library(prefix: str, owned: List[Dict[str, Any]]) -> None:
+    """Persist the owned-games list to disk so future scans are instant."""
+    path = _nile_config_dir(prefix) / _NILE_LIB_CACHE_FILE
+    try:
+        _nile_config_dir(prefix).mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(owned, f)
+    except Exception as exc:
+        log(f"nile: disk library write failed: {exc}")
+
+
+def _nile_read_installed_here(prefix: str) -> Dict[str, Dict[str, Any]]:
+    """Read installed games from this bottle's isolated Nile config — always instant."""
+    path = _nile_config_dir(prefix) / "installed.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        entries = list(data.values()) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        results: Dict[str, Dict[str, Any]] = {}
+        for entry in entries:
+            amazon_id = entry.get("id") or entry.get("app_name") or entry.get("asin")
+            if amazon_id:
+                results[amazon_id] = entry
+        return results
+    except Exception as exc:
+        log(f"nile: failed to read {path}: {exc}")
+        return {}
+
+
+def _nile_build_games_list(prefix: str, owned_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build the game list from owned library + current installed state (all disk reads, no network)."""
+    installed_here = _nile_read_installed_here(prefix)
+    games: List[Dict[str, Any]] = []
+    for g in owned_list:
+        amazon_id = g.get("id") or g.get("app_name") or g.get("asin") or ""
+        if not amazon_id:
+            continue
+        product = g.get("product", g)
+        title = (product.get("title") if isinstance(product, dict) else None) or g.get("title", amazon_id)
+        is_installed = amazon_id in installed_here
+        install_dir = installed_here[amazon_id].get("path", "") if is_installed else ""
+        exe = _detect_exe(Path(install_dir), amazon_id, title) if install_dir else None
+        games.append({
+            "appid": f"amazon_{amazon_id}",
+            "name": title,
+            "exe": exe,
+            "install_dir": install_dir,
+            "cover_url": _nile_cover_url(g),
+            "exe_icon": None,
+            "exe_icon_format": "",
+            "is_manual": False,
+            "is_installed": is_installed,
+            "update_available": False,
+            "amazon_id": amazon_id,
+        })
+    games.sort(key=lambda g: (0 if g["is_installed"] else 1, g["name"].lower()))
+    return games
+
+
+def _nile_updates_from_cli(prefix: str) -> set:
+    """Ask nile directly which owned ids have an update available (no metadata guessing)."""
+    try:
+        r = subprocess.run(
+            _nile_cmd(prefix) + ["list-updates", "--json"],
+            capture_output=True, text=True, timeout=60, env=_nile_env(prefix),
+        )
+        data = json.loads(r.stdout) if r.stdout.strip() else []
+        ids = data if isinstance(data, list) else data.get("updates", [])
+        return {i.get("id") if isinstance(i, dict) else i for i in ids}
+    except Exception:
+        return set()
+
+
+def _refresh_nile_cache(prefix: str) -> None:
+    """Background thread: serve disk cache instantly, then fetch fresh library from network."""
+    try:
+        # Phase 1 — instant: build from disk cache and push to memory immediately.
+        owned_disk = _nile_read_disk_library(prefix)
+        if owned_disk:
+            games_fast = _nile_build_games_list(prefix, owned_disk)
+            _nile_games_cache[prefix] = {
+                "games": games_fast, "ts": time.time(), "scanning": True,
+            }
+            log(f"nile: served {len(games_fast)} games from disk cache for {prefix}")
+
+        # Phase 2 — network: fetch fresh library from Amazon (may be slow during downloads).
+        nenv = _nile_env(prefix)
+        try:
+            r = subprocess.run(
+                _nile_cmd(prefix) + ["library", "list", "--json"],
+                capture_output=True, text=True, timeout=120, env=nenv,
+            )
+            owned_raw = json.loads(r.stdout) if r.stdout.strip() else []
+        except Exception as exc:
+            log(f"nile list failed (network unavailable?): {exc}")
+            entry = _nile_games_cache.get(prefix, {})
+            entry["scanning"] = False
+            _nile_games_cache[prefix] = entry
+            return
+
+        owned_list = owned_raw.get("games", owned_raw.get("library", [])) if isinstance(owned_raw, dict) else owned_raw
+
+        # Persist fresh library to disk for next cold start.
+        _nile_write_disk_library(prefix, owned_list)
+
+        # Build final list with up-to-date installed status.
+        games = _nile_build_games_list(prefix, owned_list)
+
+        # Phase 3 — detect updates by asking nile directly.
+        updates_set = _nile_updates_from_cli(prefix)
+        if updates_set:
+            for g in games:
+                if g.get("amazon_id") in updates_set:
+                    g["update_available"] = True
+            log(f"nile: {len(updates_set)} update(s) available for {prefix}")
+
+        _nile_games_cache[prefix] = {"games": games, "ts": time.time(), "scanning": False}
+        log(f"nile: refreshed {len(games)} games from network for {prefix}")
+
+    except Exception as exc:
+        log(f"nile: cache refresh failed: {exc}")
+        entry = _nile_games_cache.get(prefix, {})
+        entry["scanning"] = False
+        _nile_games_cache[prefix] = entry
+
+
+def _scan_nile_games(prefix: str) -> List[Dict[str, Any]]:
+    """Returns games immediately from cache; background-refreshes when stale."""
+    if not _nile_installed():
+        return []
+
+    entry = _nile_games_cache.get(prefix)
+    now = time.time()
+
+    if entry:
+        if not entry.get("scanning", False):
+            age = now - entry.get("ts", 0)
+            if age < _NILE_CACHE_TTL:
+                return entry["games"]  # fresh in-memory cache — instant
+            entry["scanning"] = True
+            threading.Thread(target=_refresh_nile_cache, args=(prefix,), daemon=True).start()
+        return entry["games"]  # return whatever we have while scanning
+
+    # No in-memory cache — try disk cache for an instant first response.
+    owned_disk = _nile_read_disk_library(prefix)
+    if owned_disk:
+        games_fast = _nile_build_games_list(prefix, owned_disk)
+        _nile_games_cache[prefix] = {"games": games_fast, "ts": 0, "scanning": True}
+        threading.Thread(target=_refresh_nile_cache, args=(prefix,), daemon=True).start()
+        return games_fast
+
+    # Truly cold start — nothing cached yet.
+    _nile_games_cache[prefix] = {"games": [], "ts": 0, "scanning": True}
+    threading.Thread(target=_refresh_nile_cache, args=(prefix,), daemon=True).start()
+    return []
+    return []
+
+
 def cmd_legendary_status(_params: Dict[str, Any]) -> Any:
     return {"installed": _legendary_installed(), "installing": _legendary_installing}
 
@@ -6794,6 +7087,284 @@ def cmd_legendary_auth(params: Dict[str, Any]) -> Any:
         return {"ok": False, "display_name": "", "error": "Authentication timed out"}
     except Exception as exc:
         return {"ok": False, "display_name": "", "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Nile / Amazon Games support
+# ---------------------------------------------------------------------------
+
+def _nile_installed() -> bool:
+    return NILE_BIN.exists()
+
+
+def _download_nile_if_needed() -> None:
+    global _nile_installing
+    if _nile_installed() or _nile_installing:
+        return
+    _nile_installing = True
+    try:
+        log("Downloading Nile (Amazon Games CLI)...")
+        # Use GitHub's latest-release redirect — no API call needed, avoids rate limits.
+        # Nile publishes the raw arm64 binary directly as a release asset (no zip).
+        url = "https://github.com/imLinguin/nile/releases/latest/download/nile_macOS_arm64"
+        NILE_DIR.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "MacNCheese/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            with open(NILE_BIN, "wb") as f:
+                f.write(resp.read())
+        os.chmod(str(NILE_BIN), 0o755)
+        subprocess.run(
+            ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(NILE_BIN)],
+            capture_output=True,
+        )
+        log("Nile installed successfully")
+    except Exception as exc:
+        log(f"Error downloading nile: {exc}")
+        try:
+            NILE_BIN.unlink(missing_ok=True)
+        except Exception:
+            pass
+    finally:
+        _nile_installing = False
+
+
+def cmd_nile_status(_params: Dict[str, Any]) -> Any:
+    return {"installed": _nile_installed(), "installing": _nile_installing}
+
+
+def cmd_nile_get_auth_params(_params: Dict[str, Any]) -> Any:
+    """Starts a Nile device-auth attempt: runs `nile auth --login --non-interactive`,
+    which prints a JSON blob with a fresh Amazon sign-in URL plus the PKCE
+    client_id / code_verifier / device serial the caller must echo back
+    verbatim to cmd_nile_auth once the sign-in redirect is captured."""
+    if not _nile_installed():
+        raise RuntimeError("Nile is not installed")
+    result = subprocess.run(
+        [str(NILE_BIN), "auth", "--login", "--non-interactive"],
+        capture_output=True, text=True, timeout=30,
+    )
+    data = json.loads(result.stdout.strip())
+    return {
+        "url": data["url"],
+        "client_id": data["client_id"],
+        "code_verifier": data["code_verifier"],
+        "serial": data["serial"],
+    }
+
+
+def cmd_nile_check_auth(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    if not prefix or not _nile_installed():
+        return {"authenticated": False, "display_name": ""}
+    try:
+        result = subprocess.run(
+            _nile_cmd(prefix) + ["auth", "--status"],
+            capture_output=True, text=True, timeout=30,
+            env=_nile_env(prefix),
+        )
+        data = json.loads(result.stdout.strip())
+        logged_in = bool(data.get("LoggedIn", False))
+        name = data.get("Username", "") if logged_in else ""
+        return {"authenticated": logged_in, "display_name": name}
+    except Exception:
+        return {"authenticated": False, "display_name": ""}
+
+
+def cmd_nile_auth(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "").strip()
+    code = params.get("code", "").strip()
+    client_id = params.get("client_id", "").strip()
+    code_verifier = params.get("code_verifier", "").strip()
+    serial = params.get("serial", "").strip()
+    if not all([prefix, code, client_id, code_verifier, serial]):
+        raise ValueError("Missing required auth parameters")
+    if not _nile_installed():
+        raise RuntimeError("Nile is not installed")
+    try:
+        result = subprocess.run(
+            _nile_cmd(prefix) + [
+                "register", "--code", code, "--client-id", client_id,
+                "--code-verifier", code_verifier, "--serial", serial,
+            ],
+            capture_output=True, text=True, timeout=60,
+            env=_nile_env(prefix),
+        )
+        # `register` has no explicit success marker on stdout — verify via `auth --status`.
+        auth = cmd_nile_check_auth({"prefix": prefix})
+        if auth.get("authenticated"):
+            return {"ok": True, "display_name": auth.get("display_name", ""), "error": ""}
+        output = (result.stdout + result.stderr).strip()[:400]
+        return {"ok": False, "display_name": "", "error": output or "Registration failed"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "display_name": "", "error": "Authentication timed out"}
+    except Exception as exc:
+        return {"ok": False, "display_name": "", "error": str(exc)}
+
+
+def cmd_nile_scan_status(params: Dict[str, Any]) -> Any:
+    prefix = params.get("prefix", "")
+    entry = _nile_games_cache.get(prefix, {})
+    return {"scanning": entry.get("scanning", False), "count": len(entry.get("games", []))}
+
+
+def cmd_nile_install_game(params: Dict[str, Any]) -> Any:
+    global _nile_queue_worker_running
+    amazon_id = params.get("amazon_id", "").strip()
+    prefix = params.get("prefix", "").strip()
+    if not amazon_id or not prefix:
+        raise ValueError("Missing 'amazon_id' or 'prefix'")
+    if not _nile_installed():
+        raise RuntimeError("Nile is not installed")
+    with _nile_queue_lock:
+        if amazon_id in _nile_installs:
+            return {"queued": False, "position": 0}
+        for i, (qid, _) in enumerate(_nile_download_queue):
+            if qid == amazon_id:
+                return {"queued": True, "position": i + 1}
+        _nile_download_queue.append((amazon_id, prefix))
+        position = len(_nile_download_queue)
+        if not _nile_queue_worker_running:
+            _nile_queue_worker_running = True
+            t = threading.Thread(target=_nile_queue_worker, daemon=True)
+            t.start()
+    return {"queued": True, "position": position}
+
+
+def cmd_nile_install_progress(params: Dict[str, Any]) -> Any:
+    amazon_id = params.get("amazon_id", "").strip()
+    if not amazon_id:
+        raise ValueError("Missing 'amazon_id'")
+    entry = _nile_installs.get(amazon_id)
+    if not entry:
+        return {"progress": 0.0, "done": True, "error": None}
+    proc, log_fh, log_path, prefix = entry
+    done = proc.poll() is not None
+    progress = 0.0
+    error = None
+    try:
+        with open(log_path, "r") as f:
+            lines = f.readlines()
+        # Best-effort: Nile's install progress log format is unverified against
+        # a real Amazon account. Falls back to leaving progress at 0 (indeterminate)
+        # rather than raising if the format differs.
+        for line in reversed(lines):
+            m = re.search(r"Progress:\s*([\d.]+)%", line)
+            if m:
+                progress = float(m.group(1))
+                break
+        if done and proc.returncode not in (0, None):
+            for line in reversed(lines[-30:]):
+                if "error" in line.lower() or "failed" in line.lower():
+                    error = line.strip()
+                    break
+    except Exception:
+        pass
+    if done:
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+        _nile_installs.pop(amazon_id, None)
+        _nile_games_cache.pop(prefix, None)
+    return {"progress": progress, "done": done, "error": error}
+
+
+def cmd_nile_cancel_install(params: Dict[str, Any]) -> Any:
+    amazon_id = params.get("amazon_id", "").strip()
+    with _nile_queue_lock:
+        for i, (qid, _) in enumerate(_nile_download_queue):
+            if qid == amazon_id:
+                _nile_download_queue.pop(i)
+                break
+        entry = _nile_installs.pop(amazon_id, None)
+    if entry:
+        proc, log_fh = entry[0], entry[1]
+        try:
+            proc.terminate()
+            log_fh.close()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+def cmd_nile_all_downloads(_params: Dict[str, Any]) -> Any:
+    """Return progress of all active and queued nile downloads."""
+    def read_progress(log_path: str) -> float:
+        try:
+            with open(log_path, "r") as f:
+                lines = f.readlines()
+            for line in reversed(lines):
+                m = re.search(r"Progress:\s*([\d.]+)%", line)
+                if m:
+                    return float(m.group(1))
+        except Exception:
+            pass
+        return 0.0
+
+    result: Dict[str, Any] = {}
+    with _nile_queue_lock:
+        for amazon_id, entry in _nile_installs.items():
+            _proc, _fh, log_path, prefix = entry
+            result[amazon_id] = {
+                "progress": read_progress(log_path),
+                "queued": False,
+                "queue_position": 0,
+                "paused": False,
+                "prefix": prefix,
+            }
+        for i, (amazon_id, prefix) in enumerate(_nile_download_queue):
+            result[amazon_id] = {
+                "progress": 0.0,
+                "queued": True,
+                "queue_position": i + 1,
+                "paused": False,
+                "prefix": prefix,
+            }
+    for amazon_id, prefix in _nile_paused.items():
+        log_path = str(NILE_DIR / f"install_{amazon_id}.log")
+        result[amazon_id] = {
+            "progress": read_progress(log_path),
+            "queued": False,
+            "queue_position": 0,
+            "paused": True,
+            "prefix": prefix,
+        }
+    return result
+
+
+def cmd_nile_pause_install(params: Dict[str, Any]) -> Any:
+    amazon_id = params.get("amazon_id", "").strip()
+    entry = _nile_installs.pop(amazon_id, None)
+    if entry:
+        proc, log_fh, _log_path, prefix = entry
+        try:
+            proc.terminate()
+            log_fh.close()
+        except Exception:
+            pass
+        _nile_paused[amazon_id] = prefix
+        return {"ok": True}
+    with _nile_queue_lock:
+        for i, (qid, qprefix) in enumerate(_nile_download_queue):
+            if qid == amazon_id:
+                _nile_download_queue.pop(i)
+                _nile_paused[amazon_id] = qprefix
+                return {"ok": True}
+    return {"ok": False, "error": "Not found"}
+
+
+def cmd_nile_resume_install(params: Dict[str, Any]) -> Any:
+    global _nile_queue_worker_running
+    amazon_id = params.get("amazon_id", "").strip()
+    prefix = _nile_paused.pop(amazon_id, None) or params.get("prefix", "").strip()
+    if not prefix:
+        raise ValueError("Unknown amazon_id or missing prefix")
+    with _nile_queue_lock:
+        _nile_download_queue.append((amazon_id, prefix))
+        if not _nile_queue_worker_running:
+            _nile_queue_worker_running = True
+            threading.Thread(target=_nile_queue_worker, daemon=True).start()
+    return {"ok": True}
 
 
 def cmd_legendary_install_game(params: Dict[str, Any]) -> Any:
@@ -6989,6 +7560,78 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         _epic_cfg = {}
     if _epic_cfg.get("discord_rpc", True):
         _discord_presence_for_launch(proc, "", params.get("game_name", "") or app_name)
+
+    return {"pid": proc.pid}
+
+
+def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
+    """Launch an Amazon game via nile, which handles Amazon auth token generation."""
+    amazon_id = params.get("amazon_id", "").strip()
+    prefix = params.get("prefix", "").strip()
+    backend = params.get("backend", "auto")
+    retina_mode = params.get("retina_mode", False)
+    metal_hud = params.get("metal_hud", False)
+    esync = params.get("esync")
+    msync = params.get("msync")
+    custom_env_str = params.get("custom_env", "")
+    verbose_debug = bool(params.get("debug", False))
+
+    if not amazon_id or not prefix:
+        raise ValueError("Missing 'amazon_id' or 'prefix'")
+    if not _nile_installed():
+        raise RuntimeError("Nile is not installed")
+
+    prefix_expanded = str(Path(prefix).expanduser().resolve())
+
+    # Find the best Wine binary (backend-aware)
+    wine_bin = _backend_wine_binary(backend, "") or _find_wine_for_bottle("auto")
+    if not wine_bin:
+        raise RuntimeError("No Wine binary found")
+
+    # Build the same environment as a normal Wine launch
+    env = _wine_env(prefix_expanded)
+    env = _apply_backend_env(env, backend, verbose_debug)
+    env = _apply_sync_env(env, esync, msync)
+    if metal_hud:
+        env["MTL_HUD_ENABLED"] = "1"
+    for line in (custom_env_str or "").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+
+    # Always apply retina regedit (handles both on and off states)
+    threading.Thread(
+        target=_apply_retina_regedit, args=(wine_bin, env, retina_mode), daemon=True
+    ).start()
+
+    # Inject per-bottle nile config path into the Wine environment
+    env["NILE_CONFIG_PATH"] = str(_nile_config_dir(prefix))
+
+    # nile launch handles Amazon auth token generation and Wine invocation itself.
+    cmd = _nile_cmd(prefix) + [
+        "launch", amazon_id,
+        "--wine", wine_bin,
+        "--wine-prefix", prefix_expanded,
+    ]
+    log(f"nile launch: {shlex.join(cmd)}")
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
+
+    # MacNCheese-level Discord presence for Amazon launches. Prefer the real
+    # title passed from the UI; fall back to the Amazon id.
+    try:
+        _amazon_cfg = _load_bottles().get(_resolve_key(prefix), {})
+    except Exception:
+        _amazon_cfg = {}
+    if _amazon_cfg.get("discord_rpc", True):
+        _discord_presence_for_launch(proc, "", params.get("game_name", "") or amazon_id)
 
     return {"pid": proc.pid}
 
@@ -7446,6 +8089,18 @@ COMMANDS: Dict[str, Any] = {
     "legendary_launch_game": cmd_legendary_launch_game,
     "legendary_pause_install": cmd_legendary_pause_install,
     "legendary_resume_install": cmd_legendary_resume_install,
+    "nile_status": cmd_nile_status,
+    "nile_get_auth_params": cmd_nile_get_auth_params,
+    "nile_check_auth": cmd_nile_check_auth,
+    "nile_auth": cmd_nile_auth,
+    "nile_install_game": cmd_nile_install_game,
+    "nile_install_progress": cmd_nile_install_progress,
+    "nile_cancel_install": cmd_nile_cancel_install,
+    "nile_all_downloads": cmd_nile_all_downloads,
+    "nile_scan_status": cmd_nile_scan_status,
+    "nile_pause_install": cmd_nile_pause_install,
+    "nile_resume_install": cmd_nile_resume_install,
+    "nile_launch_game": cmd_nile_launch_game,
     "get_game_config": cmd_get_game_config,
     "set_game_config": cmd_set_game_config,
     "get_game_order": cmd_get_game_order,
@@ -7484,6 +8139,7 @@ _QUIET_POLL_CMDS = {
     "get_install_progress",
     "legendary_status",
     "epic_download_progress",
+    "nile_status",
 }
 
 # scan_games/scan_apps walk the filesystem (Steam manifests, Start Menu
@@ -7578,6 +8234,7 @@ def main() -> None:
                 _run_and_respond(cmd_name, req_id, handler, request)
     finally:
         _terminate_legendary_installs()
+        _terminate_nile_installs()
         _game_mode_reset()
 
 
