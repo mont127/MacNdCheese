@@ -197,10 +197,26 @@ struct MacNCheeseApp: App {
                     let handler = MacNCheeseURLHandler(backend: backend)
                     urlHandler = handler
 
+                    // First-launch default window size. `.defaultSize(width:height:)` (the
+                    // SwiftUI Scene modifier) needs macOS 13+ and SceneBuilder has no
+                    // `if #available` support, so this is done imperatively here instead —
+                    // it also has the advantage of working identically on every macOS version.
+                    // Gated on MacNCheeseSupport.exists (not a standalone flag) so upgrading an
+                    // existing install never clobbers a window the user already resized —
+                    // that folder is already the app's "has this install been set up before?"
+                    // signal (see OnboardingView.swift) and predates this check for every
+                    // existing user.
+                    if !MacNCheeseSupport.exists {
+                        let win = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible })
+                        win?.setContentSize(NSSize(width: 1100, height: 760))
+                    }
+
                     // Tell Siri/Shortcuts about this app's available actions.
                     // Required for shortcuts to appear in Shortcuts.app and be
-                    // invocable via Siri.
-                    MacNCheeseShortcuts.updateAppShortcutParameters()
+                    // invocable via Siri. Siri/Shortcuts integration needs macOS 14+.
+                    if #available(macOS 14, *) {
+                        MacNCheeseShortcuts.updateAppShortcutParameters()
+                    }
 
                     // One-time migration: wipe the entire Spotlight index built
                     // by older builds that did not deduplicate Epic games.
@@ -232,7 +248,6 @@ struct MacNCheeseApp: App {
                 }
         }
         .windowStyle(.automatic)
-        .defaultSize(width: 1100, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button(L("New Bottle…")) {

@@ -27,6 +27,9 @@ struct ConsoleModeView: View {
     // Bradar the gamepad reader lives as a StateObject so its GCController handlers
     // survive re-renders (a plain struct field would get torn down every redraw)
     @StateObject private var pad = GamepadRaeder()
+    // Local NSEvent monitor standing in for `.onKeyPress` (macOS 14+ only) so
+    // keyboard nav (arrows + Enter/Esc/Tab) works uniformly on macOS 12+.
+    @State private var keyMonitor: Any?
 
     // Bradar only show whats actually playable (reachable) in the console
     private var games: [Game] { backend.games.filter { $0.isReachable } }
@@ -73,25 +76,18 @@ struct ConsoleModeView: View {
             playOpen()
             loadCovers(); loadHero(); loadLogo()
             withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { pulse = true }
+            installKeyMonitor()
         }
         .onDisappear {
             pad.stop()
             exitFullscreen()           // Bradar safety: never leave the app stuck fullscreen
+            removeKeyMonitor()
         }
-        .onChange(of: selected) { _, _ in loadHero(); loadLogo() }
-        .onChange(of: backend.games) { _, _ in
+        .onChange(of: selected) { _ in loadHero(); loadLogo() }
+        .onChange(of: backend.games) { _ in
             if selected >= games.count { selected = max(0, games.count - 1) }
             loadCovers(); loadHero(); loadLogo()
         }
-        // keyboard mirrors the pad: arrows navigate, Enter=A, Esc=B, tab swaps bottle
-        .onKeyPress(.leftArrow)  { goLeft();  return .handled }
-        .onKeyPress(.rightArrow) { goRight(); return .handled }
-        .onKeyPress(.upArrow)    { goUp();    return .handled }
-        .onKeyPress(.downArrow)  { goDown();  return .handled }
-        .onKeyPress(.return)     { doSelect(); return .handled }
-        .onKeyPress(.space)      { doSelect(); return .handled }
-        .onKeyPress(.tab)        { switchBottle(1); return .handled }
-        .onKeyPress(.escape)     { exitConsole(); return .handled }
     }
 
     // MARK: hero backdrop
@@ -199,7 +195,7 @@ struct ConsoleModeView: View {
                 .padding(.horizontal, 60)
                 .padding(.vertical, 22)     // Bradar room so the focused tiles gold glow dont clip
             }
-            .onChange(of: selected) { _, n in
+            .onChange(of: selected) { n in
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { proxy.scrollTo(n, anchor: .center) }
             }
             .onAppear { proxy.scrollTo(selected, anchor: .center) }
@@ -339,6 +335,30 @@ struct ConsoleModeView: View {
             Image(systemName: glyph).font(.system(size: 16)).foregroundStyle(tint)
             Text(label).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
         }
+    }
+
+    // MARK: keyboard (NSEvent monitor stand-in for `.onKeyPress`, macOS 14+ only)
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()   // guard against a second onAppear firing before onDisappear
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            switch event.keyCode {
+            case 123: goLeft()
+            case 124: goRight()
+            case 126: goUp()
+            case 125: goDown()
+            case 36, 49: doSelect()          // Return, Space
+            case 48: switchBottle(1)          // Tab
+            case 53: exitConsole()            // Escape
+            default: return event
+            }
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
     }
 
     // MARK: navigation (zone-aware)

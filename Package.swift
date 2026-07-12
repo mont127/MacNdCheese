@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "MacNCheese",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v12)],
     targets: [
         .executableTarget(
             name: "MacNCheese",

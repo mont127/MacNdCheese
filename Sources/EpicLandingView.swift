@@ -42,7 +42,7 @@ struct EpicLandingView: View {
         .animation(.easeInOut(duration: 0.22), value: phase == .library)
         .onAppear { onAppearHandler() }
         .onDisappear { stopAll() }
-        .onChange(of: backend.legendaryInstalled) { _, installed in
+        .onChange(of: backend.legendaryInstalled) { installed in
             if installed && phase == .downloading { transitionToAuth() }
         }
     }

@@ -284,7 +284,7 @@ private struct ShowcaseCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 }
@@ -372,7 +372,7 @@ private struct ShowcaseImage: View {
 
     private func placeholder(systemImage: String) -> some View {
         RoundedRectangle(cornerRadius: 8)
-            .fill(.background.secondary)
+            .fill(.gray.opacity(0.15))
             .frame(width: tileWidth, height: height)
             .overlay(Image(systemName: systemImage).font(.title3).foregroundStyle(.tertiary))
     }

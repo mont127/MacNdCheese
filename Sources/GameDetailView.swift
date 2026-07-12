@@ -290,7 +290,7 @@ struct GameDetailView: View {
 
     private var exeSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(L("EXE:")).font(.caption).foregroundStyle(.secondary).fontWeight(.semibold)
+            Text(L("EXE:")).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
             if loadingExes {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -312,7 +312,7 @@ struct GameDetailView: View {
 
     private var graphicsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(L("Graphics Engine:")).font(.caption).foregroundStyle(.secondary).fontWeight(.semibold)
+            Text(L("Graphics Engine:")).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
             if loadingBackends {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -340,7 +340,7 @@ struct GameDetailView: View {
 
     private var argsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(L("Args:")).font(.caption).foregroundStyle(.secondary).fontWeight(.semibold)
+            Text(L("Args:")).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
             TextField(L("Optional launch arguments…"), text: $extraArgs)
                 .textFieldStyle(.roundedBorder)
         }
@@ -368,7 +368,7 @@ struct GameDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle(isOn: $enableEsync) { Text(L("Enable ESync")).font(.caption).fontWeight(.semibold) }
             Toggle(isOn: $enableMsync) { Text(L("Enable MSync")).font(.caption).fontWeight(.semibold) }
-            Text("STEAM").font(.caption).foregroundStyle(.secondary).fontWeight(.semibold).padding(.top, 2)
+            Text("STEAM").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary).padding(.top, 2)
             Picker("", selection: $steamMode) {
                 Text(L("Silent Steam")).tag("silent")
                 Text(L("Open Steam")).tag("open")
@@ -381,7 +381,7 @@ struct GameDetailView: View {
 
     private var environmentSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(L("Environment Variables:")).font(.caption).foregroundStyle(.secondary).fontWeight(.semibold)
+            Text(L("Environment Variables:")).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
             Toggle(isOn: $advertiseAVX) {
                 Text(L("Advertise AVX2 / FMA / F16C")).font(.caption).fontWeight(.semibold)
             }
@@ -396,8 +396,8 @@ struct GameDetailView: View {
                 TextEditor(text: $customEnv)
                     .font(.system(.caption, design: .monospaced))
                     .frame(minHeight: 44, maxHeight: 64)
-                    .scrollContentBackground(.hidden)
-                    .background(.fill.tertiary)
+                    .hideScrollBackgroundCompat()
+                    .background(.black.opacity(0.2))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
         }

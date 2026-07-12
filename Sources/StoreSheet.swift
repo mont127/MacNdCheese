@@ -214,7 +214,7 @@ private struct DownloadsView: View {
                                 }
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(.background.secondary, in: .rect(cornerRadius: 4))
+                                .background(.regularMaterial, in: .rect(cornerRadius: 4))
                             }
                         }
                     }

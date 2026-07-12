@@ -104,18 +104,21 @@ final class MacNCheeseURLHandler {
         // after a few donations for the same game, the system learns to associate
         // natural language like "launch Among Us" with this specific intent+entity,
         // making Siri suggestions and invocation progressively more reliable.
-        let cached = GameIndexCache.allGames()
-            .first { $0.bottlePath == bottlePath && $0.appid == game.appid }
-        if let cached {
-            let intent = LaunchGameIntent()
-            intent.game = GameEntity(
-                id: "\(cached.bottlePath):::\(cached.appid)",
-                name: cached.name,
-                bottlePath: cached.bottlePath,
-                bottleName: cached.bottleName,
-                appid: cached.appid
-            )
-            Task { try? await IntentDonationManager.shared.donate(intent: intent) }
+        // AppIntents-based donation needs macOS 14+ (see GameEntity/LaunchGameIntent).
+        if #available(macOS 14, *) {
+            let cached = GameIndexCache.allGames()
+                .first { $0.bottlePath == bottlePath && $0.appid == game.appid }
+            if let cached {
+                let intent = LaunchGameIntent()
+                intent.game = GameEntity(
+                    id: "\(cached.bottlePath):::\(cached.appid)",
+                    name: cached.name,
+                    bottlePath: cached.bottlePath,
+                    bottleName: cached.bottleName,
+                    appid: cached.appid
+                )
+                Task { try? await IntentDonationManager.shared.donate(intent: intent) }
+            }
         }
     }
 }

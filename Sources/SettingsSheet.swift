@@ -208,7 +208,7 @@ struct BottleSettingsTab: View {
                         Text(L("Metal HUD"))
                             .font(.body)
                     }
-                    .onChange(of: metalHud) { saveBottleConfig() }
+                    .onChange(of: metalHud) { _ in saveBottleConfig() }
 
                     // Unified Steam engine: one wine renders Steam via DXMT and
                     // routes games to the global backend below. Steam stays DXMT.
@@ -216,7 +216,7 @@ struct BottleSettingsTab: View {
                         Text(L("Unified Steam engine (Steam always DXMT)"))
                             .font(.body)
                     }
-                    .onChange(of: unifiedEngine) { saveBottleConfig() }
+                    .onChange(of: unifiedEngine) { _ in saveBottleConfig() }
 
                     if unifiedEngine {
                         SettingsRow(label: L("Global game backend")) {
@@ -227,7 +227,7 @@ struct BottleSettingsTab: View {
                                 Text("VR").tag("vr")
                             }
                             .pickerStyle(.segmented)
-                            .onChange(of: globalBackend) { saveBottleConfig() }
+                            .onChange(of: globalBackend) { _ in saveBottleConfig() }
                         }
                     }
 
@@ -341,7 +341,7 @@ struct BottleSettingsTab: View {
             .padding(20)
         }
         .onAppear { loadFields(); loadWineDetection() }
-        .onChange(of: backend.activePrefix) { loadFields() }
+        .onChange(of: backend.activePrefix) { _ in loadFields() }
     }
 
     private func loadWineDetection() {
@@ -677,7 +677,7 @@ struct SetupSettingsTab: View {
                             .frame(height: 140)
                             .background(.black.opacity(0.25))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .onChange(of: installLogLines) {
+                            .onChange(of: installLogLines) { _ in
                                 proxy.scrollTo("logBottom", anchor: .bottom)
                             }
                         }
@@ -1104,7 +1104,7 @@ struct DiagnoseSettingsTab: View {
                 .frame(height: 130)
                 .background(.black.opacity(0.25))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .onChange(of: repairLogLines) {
+                .onChange(of: repairLogLines) { _ in
                     proxy.scrollTo("repairLogBottom", anchor: .bottom)
                 }
             }
@@ -1346,7 +1346,7 @@ struct LogsSettingsTab: View {
                 }
                 .background(.black.opacity(0.2))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                .onChange(of: logText) {
+                .onChange(of: logText) { _ in
                     proxy.scrollTo("logBottom", anchor: .bottom)
                 }
             }
@@ -1591,8 +1591,8 @@ struct SettingsRow<Content: View>: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
                 .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
             content
         }
     }

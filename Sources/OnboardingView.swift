@@ -251,7 +251,7 @@ struct OnboardingView: View {
                     .frame(maxHeight: .infinity)
                     .background(.black.opacity(0.25))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .onChange(of: installer.logLines) {
+                    .onChange(of: installer.logLines) { _ in
                         proxy.scrollTo("logBottom", anchor: .bottom)
                     }
                 }
