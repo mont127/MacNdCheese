@@ -2180,6 +2180,7 @@ def cmd_scan_apps(params: Dict[str, Any]) -> Any:
     excluded_roots = [
         (drive_c / "windows"),
         (drive_c / "Program Files (x86)" / "Steam"),
+        (drive_c / "Program Files" / "Steam"),   # fresh fast-boot prefixes land Steam here
         (drive_c / "Program Files" / "Epic Games"),
     ]
 
@@ -2775,8 +2776,7 @@ def _commonredist_hasrun_reg_cmds(prefix: str, wine: str) -> str:
     script (Microsoft .NET Framework)". pre-settin the keys makes steam SKIP them.
     safe: those runtimes r already present (wine builtins / the .NET reg keys) n the
     installers never actualy work under wine anyway. (proven on World War 3 / .NET 4.6.2)"""
-    shared = (Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam" /
-              "steamapps" / "common" / "Steamworks Shared")
+    shared = _steam_dir(prefix) / "steamapps" / "common" / "Steamworks Shared"
     if not shared.is_dir():
         return ""
     seen = set()
@@ -2838,10 +2838,91 @@ def _steam_dir(prefix) -> Path:
     return x86
 
 
+_STEAM_SEED_EXCLUDES = ["steamapps/", "userdata/", "config/", "logs/", "dumps/",
+                        "appcache/", ".crash", "ssfn*", "*.log"]
+
+
+def _steam_client_template() -> Optional[Path]:
+    """Cached CLEAN Steam client (no games / userdata / login) used to SEED fresh bottles, because
+    the Steam bootstrapper's first-run download is BROKEN under our wine: it fault-storms at 100% CPU
+    on the unified HACK22 wine (steam.exe is a 32-bit downloader), and on the pre-HACK22 wine it dies
+    'failed to initialize update status ui, or create initial window'. Built ONCE via rsync (w/
+    excludes) from the first prefix that already has a full client (steamclient.dll). Cached in
+    deps/steam-client so seeding a new bottle is a ~instant same-volume APFS clone. Returns the
+    template dir, or None when theres no source client to build from. See steamsetup notes."""
+    cache = PORTABLE_DIR / "steam-client"
+    if (cache / "steamclient.dll").exists():
+        return cache
+    src = None
+    try:
+        cands = list(_load_prefixes())
+    except Exception:
+        cands = []
+    for pfx in cands:
+        for sub in ("Program Files (x86)", "Program Files"):
+            d = Path(pfx) / "drive_c" / sub / "Steam"
+            if (d / "steamclient.dll").exists():
+                src = d
+                break
+        if src:
+            break
+    if not src:
+        return None
+    cache.mkdir(parents=True, exist_ok=True)
+    log(f"_steam_client_template: building cached clean Steam client from {src} (one-time, ~1.4G)")
+    cmd = ["rsync", "-a", "--delete"]
+    for ex in _STEAM_SEED_EXCLUDES:
+        cmd += ["--exclude", ex]
+    cmd += [str(src) + "/", str(cache) + "/"]
+    try:
+        subprocess.run(cmd, timeout=1800)
+    except Exception as exc:
+        log(f"_steam_client_template: build failed: {exc}")
+        return None
+    return cache if (cache / "steamclient.dll").exists() else None
+
+
+def _seed_steam_client(prefix: str) -> bool:
+    """Give a fresh Steam bottle a WORKING client by cloning the cached template into it (the
+    bootstrapper first-run is broken under wine). No-op if the bottle already has a full client
+    (steamclient.dll) or no template source exists. Returns True if it seeded a client."""
+    dst = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
+    try:
+        if (dst / "steamclient.dll").exists() or (_steam_dir(prefix) / "steamclient.dll").exists():
+            return False
+    except Exception:
+        pass
+    tmpl = _steam_client_template()
+    if not tmpl:
+        log("_seed_steam_client: no seed source (no existing working Steam client to copy from)")
+        return False
+    dst.mkdir(parents=True, exist_ok=True)
+    # cp -c = APFS clonefile (~0 disk, instant) on the same volume; rsync fallback covers cross-volume.
+    subprocess.run(f'cp -c -R {shlex.quote(str(tmpl))}/. {shlex.quote(str(dst))}/ 2>/dev/null',
+                   shell=True)
+    if not (dst / "steamclient.dll").exists():
+        cmd = ["rsync", "-a"]
+        for ex in _STEAM_SEED_EXCLUDES:
+            cmd += ["--exclude", ex]
+        cmd += [str(tmpl) + "/", str(dst) + "/"]
+        try:
+            subprocess.run(cmd, timeout=1800)
+        except Exception as exc:
+            log(f"_seed_steam_client: rsync fallback failed: {exc}")
+    ok = (dst / "steamclient.dll").exists()
+    if ok:
+        log("_seed_steam_client: seeded a working Steam client into the bottle "
+            "(the bootstrapper first-run is broken under wine)")
+    return ok
+
+
 def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
     """Launch Steam through the unified wine so its CEF renders via DXMT."""
     global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
     bt = _unified_build_dir()
+    # fresh bottle w/ only the broken bootstrapper -> seed a working client (bootstrapper first-run
+    # fails under wine). no-op if a full client is already present or theres no seed source.
+    _seed_steam_client(str(prefix))
     steam_dir = _steam_dir(prefix)
     steam_exe = steam_dir / "steam.exe"
     if not steam_exe.exists():
@@ -2871,9 +2952,15 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         f"rm -rf appcache 2>/dev/null\n"
         f"rm -f logs/* dumps/*.dmp 2>/dev/null\n"
         f"find userdata -type d -name GPUCache -prune -exec rm -rf {{}} + 2>/dev/null\n"
-        # Bradar steam.cfg freeze the client self-updater -- stop the ~4.5min manifest-download
-        # churn every launch + stop it re-copyin/re-enablin the 32-bit service we disable below
-        f"[ -f steam.cfg ] || printf 'BootStrapperInhibitAll=Enable\\nBootStrapperForceSelfUpdate=disable\\n' > steam.cfg\n"
+        # steam.cfg used to freeze the client self-updater (BootStrapperInhibitAll) to skip the
+        # manifest-download churn every launch. That freeze bricks EVERY install the moment Valve
+        # makes a client update mandatory (July 2026): the bootstrap logs "Suppressing Steam
+        # update" and dead-ends -- a silent ~100%-CPU fault storm under the unified wine, a quiet
+        # exit under stock wine. Never write the freeze again, and delete OUR old freeze-file so
+        # affected installs self-heal on next launch (a user-authored steam.cfg without our
+        # marker is left alone). The service re-enable steam.cfg also guarded against is already
+        # re-disabled on every launch by the reg add below.
+        f"grep -q 'BootStrapperInhibitAll' steam.cfg 2>/dev/null && rm -f steam.cfg\n"
         # Bradar make steam SKIP the hang-prone .NET/VC++/DirectX redist install-scripts by
         # pre-settin their has-run keys (else e.g. World War 3 wedges forever on "Running
         # install script (Microsoft .NET Framework)" coz the NDP462 bootstrapper never exits)
@@ -2982,6 +3069,47 @@ def _stage_syswow64(prefix: str) -> int:
     return staged
 
 
+def _ensure_progfiles_x86(prefix: str) -> None:
+    """Set the WoW64 ProgramFilesDir (x86) registry keys so 32-bit installers (SteamSetup, redists)
+    land in 'Program Files (x86)' like on real Windows, insted of the 64-bit 'Program Files'. the
+    fast wineboot (MNC_SKIP_WOW64_INSTALL) skips the wine.inf step that writes these, so on a fresh
+    prefix a 32-bit installer's $PROGRAMFILES falls back to the 64-bit dir (thats why Steam landed in
+    'Program Files' not '(x86)'). idempotent: no-op once the key is present (proper-booted / already
+    -fixed prefixes have it). See steamsetup-installer-wine-overlay."""
+    try:
+        if '"ProgramFilesDir (x86)"' in (Path(prefix) / "system.reg").read_text(errors="ignore"):
+            return
+    except Exception:
+        pass
+    wine = _find_wine()
+    if not wine:
+        return
+    try:
+        (Path(prefix) / "drive_c" / "Program Files (x86)").mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    env = _wine_env(prefix)
+    dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    cv = r"HKLM\Software\Microsoft\Windows\CurrentVersion"
+    wow = r"HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion"
+    keys = [
+        (cv,  "ProgramFilesDir (x86)", r"C:\Program Files (x86)"),
+        (cv,  "CommonFilesDir (x86)",  r"C:\Program Files (x86)\Common Files"),
+        (wow, "ProgramFilesDir",       r"C:\Program Files (x86)"),
+        (wow, "ProgramFilesDir (x86)", r"C:\Program Files (x86)"),
+        (wow, "CommonFilesDir",        r"C:\Program Files (x86)\Common Files"),
+    ]
+    lines = "\n".join(
+        f'{shlex.quote(wine)} reg add "{k}" /v "{v}" /t REG_SZ /d {shlex.quote(d)} /f >/dev/null 2>&1'
+        for k, v, d in keys)
+    sh = f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n" + lines
+    try:
+        subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh], env=env, timeout=120)
+        log("_ensure_progfiles_x86: set ProgramFilesDir (x86) so 32-bit installers use Program Files (x86)")
+    except Exception as exc:
+        log(f"_ensure_progfiles_x86 failed: {exc}")
+
+
 def _prehack22_wine() -> str:
     """Loader for the PRE-HACK22 wine (stock gs.base swap), used ONLY to run WoW64 redist
     installers (vc_redist / VulkanRT / Rockstar-Games-Launcher + Social-Club Burn bundles /
@@ -3028,6 +3156,7 @@ def _run_installer_prehack22(prefix: str, cmd_after_wine: List[str],
     # so a fast-booted bottle (empty syswow64) makes 32-bit installers die c0000135. give it a real
     # 32-bit subsystem first (fast clonefile, idempotent). THIS is why "Run Installer" was failing.
     _stage_syswow64(prefix)
+    _ensure_progfiles_x86(prefix)
     out = open(log_path, "w") if log_path else subprocess.DEVNULL
     iw = _prehack22_wine()
     if iw:
@@ -3703,15 +3832,14 @@ def _steam_is_alive() -> bool:
         ps = subprocess.check_output(["ps", "-axo", "command"], text=True)
     except Exception:
         return False
-    return any("Program Files (x86)\\Steam\\steam.exe" in line for line in ps.splitlines())
+    return any("\\Steam\\steam.exe" in line for line in ps.splitlines())  # x86 OR non-x86 Steam
 
 
 def _wait_steam_ready(prefix: str, cap_s: int = 240) -> tuple:
     """Poll until Steam is authenticated ([Logged On] in connection_log.txt) and
     steamwebhelper is up. Returns (ready: bool, status: str). Lifted from the
     proven pre-no-shim readiness poll."""
-    connection_log = (Path(prefix) / "drive_c" / "Program Files (x86)" /
-                      "Steam" / "logs" / "connection_log.txt")
+    connection_log = _steam_dir(prefix) / "logs" / "connection_log.txt"
 
     def _check() -> tuple:
         if not _steam_is_alive():
@@ -3950,18 +4078,20 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
         # subsystem now (fast clonefile) so 32-bit installers (SteamSetup + redists) run on this
         # fresh bottle insted of dying c0000135 on the pre-HACK22 installer wine.
         _stage_syswow64(path_str)
+        _ensure_progfiles_x86(path_str)
     else:
         log("Wine not found, skipping wineboot initialization")
 
    
     if launcher_type == "steam" and wine:
-        # steam_setup_path: a user-supplied SteamSetup.exe (onboarding Steam
-        # guide). When absent, _download_and_run_steam_setup fetches the official one.
-        threading.Thread(
-            target=_download_and_run_steam_setup,
-            args=(path_str, wine, params.get("steam_setup_path")),
-            daemon=True,
-        ).start()
+        # the Steam bootstrapper's first-run download is BROKEN under our wine (32-bit HACK22 storm
+        # on the unified wine; "failed to create updater window" on the pre-HACK22 wine), so SEED a
+        # working client from the cached template insted. only fall back to the bootstrapper if
+        # theres no seed source yet (no prior working Steam install to build the template from).
+        def _provision_steam():
+            if not _seed_steam_client(path_str):
+                _download_and_run_steam_setup(path_str, wine, params.get("steam_setup_path"))
+        threading.Thread(target=_provision_steam, daemon=True).start()
 
    
     if launcher_type == "epic":
