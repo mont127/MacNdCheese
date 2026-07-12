@@ -23,6 +23,7 @@ struct GameDetailView: View {
     @State private var loadingBackends = true
     @State private var retinaMode: Bool = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
     @State private var metalHud: Bool = false
+    @State private var gameMode: Bool = true
     @State private var advancedDebug: Bool = false
     @State private var enableEsync: Bool = true
     @State private var enableMsync: Bool = true
@@ -259,6 +260,7 @@ struct GameDetailView: View {
             argsSection
             retinaSection
             metalHudToggle
+            gameModeToggle
             advancedDebugToggle
             synchronizationSection
             environmentSection
@@ -358,6 +360,18 @@ struct GameDetailView: View {
         }
     }
 
+    private var gameModeToggle: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: $gameMode) {
+                Text(L("Game Mode")).font(.caption).fontWeight(.semibold)
+            }
+            Text(L("Forces macOS Game Mode on while the game runs (prioritizes CPU/GPU and reduces input latency). macOS can't auto-detect Wine games as games, so we enable it for you."))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var advancedDebugToggle: some View {
         Toggle(isOn: $advancedDebug) {
             Text(L("Advanced debug (verbose logs)")).font(.caption).fontWeight(.semibold)
@@ -413,6 +427,7 @@ struct GameDetailView: View {
         if let a = cfg["args"] as? String { extraArgs = a }
         if let r = cfg["retina_mode"] as? Bool { retinaMode = r }
         if let h = cfg["metal_hud"] as? Bool { metalHud = h }
+        if let gm = cfg["game_mode"] as? Bool { gameMode = gm }
         if let d = cfg["debug"] as? Bool { advancedDebug = d }
         if let e = cfg["esync"] as? Bool { enableEsync = e }
         if let m = cfg["msync"] as? Bool { enableMsync = m }
@@ -426,7 +441,7 @@ struct GameDetailView: View {
         let sync = normalizedSyncSelection()
         await backend.setGameConfig(prefix: prefix, appid: game.appid, values: [
             "exe": selectedExe, "backend": selectedBackend, "args": extraArgs,
-            "retina_mode": retinaMode, "metal_hud": metalHud, "debug": advancedDebug,
+            "retina_mode": retinaMode, "metal_hud": metalHud, "game_mode": gameMode, "debug": advancedDebug,
             "esync": sync.esync, "msync": sync.msync, "custom_env": customEnv,
             "rosetta_avx": advertiseAVX, "steam_mode": steamMode,
         ])
@@ -512,19 +527,19 @@ struct GameDetailView: View {
             if let appName = game.epicAppName {
                 await backend.epicLaunchGame(
                     prefix: prefix, appName: appName, backend: selectedBackend,
-                    retinaMode: retinaMode, metalHud: metalHud,
+                    retinaMode: retinaMode, metalHud: metalHud, gameMode: gameMode,
                     esync: sync.esync, msync: sync.msync, customEnv: env, debug: advancedDebug)
             } else if let amazonId = game.amazonId {
                 await backend.amazonLaunchGame(
                     prefix: prefix, amazonId: amazonId, backend: selectedBackend,
-                    retinaMode: retinaMode, metalHud: metalHud,
+                    retinaMode: retinaMode, metalHud: metalHud, gameMode: gameMode,
                     esync: sync.esync, msync: sync.msync, customEnv: env, debug: advancedDebug)
             } else {
                 let exe = effectiveExe
                 guard !exe.isEmpty else { isLaunching = false; return }
                 await backend.launchGame(
                     prefix: prefix, exe: exe, args: extraArgs, backend: selectedBackend,
-                    installDir: game.installDir, retinaMode: retinaMode, metalHud: metalHud,
+                    installDir: game.installDir, retinaMode: retinaMode, metalHud: metalHud, gameMode: gameMode,
                     esync: sync.esync, msync: sync.msync, gameName: game.name,
                     steamAppId: game.appid, steamMode: steamMode, customEnv: env, debug: advancedDebug)
             }
