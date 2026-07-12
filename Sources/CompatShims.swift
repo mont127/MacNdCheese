@@ -42,12 +42,28 @@ extension View {
 }
 
 /// Opens the Settings scene without the macOS 14-only `\.openSettings` environment
-/// action. `showSettingsWindow:` is the selector SwiftUI itself wires up for the
-/// `Settings {}` scene from macOS 13 onward; Ventura renamed it from `showPreferencesWindow:`.
+/// action.
+///
+/// SwiftUI auto-inserts a "Settings…" item into the app menu for any `Settings {}`
+/// scene, but what that item is wired to has changed across macOS versions: the
+/// `showSettingsWindow:` selector (broadcastable via the responder chain) on macOS
+/// 13/14, but a closure-based `menuAction:` target (a private `SwiftUI.MenuItemCallback`
+/// object) on newer releases — verified live on macOS 26, where no responder in the
+/// chain implements `showSettingsWindow:` at all, so broadcasting it was a silent
+/// no-op (the gear button visibly did nothing, while the real "Settings…" ⌘, item
+/// worked). Rather than chase whichever selector today's macOS happens to use,
+/// invoke that auto-generated item directly. It's the only app-menu entry that
+/// isn't one of AppKit's fixed standard items, so it can be found without depending
+/// on its title (which the system — not this app's L()  — localizes).
 func openAppSettingsCompat() {
-    if #available(macOS 13, *) {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-    } else {
-        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+    let standardAppMenuActions: Set<String> = [
+        "orderFrontStandardAboutPanel:", "submenuAction:", "hide:",
+        "hideOtherApplications:", "unhideAllApplications:", "terminate:",
+    ]
+    guard let appMenuItems = NSApp.mainMenu?.items.first?.submenu?.items else { return }
+    for item in appMenuItems {
+        guard let action = item.action, !standardAppMenuActions.contains(NSStringFromSelector(action)) else { continue }
+        NSApp.sendAction(action, to: item.target, from: item)
+        return
     }
 }
