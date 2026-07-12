@@ -2838,10 +2838,91 @@ def _steam_dir(prefix) -> Path:
     return x86
 
 
+_STEAM_SEED_EXCLUDES = ["steamapps/", "userdata/", "config/", "logs/", "dumps/",
+                        "appcache/", ".crash", "ssfn*", "*.log"]
+
+
+def _steam_client_template() -> Optional[Path]:
+    """Cached CLEAN Steam client (no games / userdata / login) used to SEED fresh bottles, because
+    the Steam bootstrapper's first-run download is BROKEN under our wine: it fault-storms at 100% CPU
+    on the unified HACK22 wine (steam.exe is a 32-bit downloader), and on the pre-HACK22 wine it dies
+    'failed to initialize update status ui, or create initial window'. Built ONCE via rsync (w/
+    excludes) from the first prefix that already has a full client (steamclient.dll). Cached in
+    deps/steam-client so seeding a new bottle is a ~instant same-volume APFS clone. Returns the
+    template dir, or None when theres no source client to build from. See steamsetup notes."""
+    cache = PORTABLE_DIR / "steam-client"
+    if (cache / "steamclient.dll").exists():
+        return cache
+    src = None
+    try:
+        cands = list(_load_prefixes())
+    except Exception:
+        cands = []
+    for pfx in cands:
+        for sub in ("Program Files (x86)", "Program Files"):
+            d = Path(pfx) / "drive_c" / sub / "Steam"
+            if (d / "steamclient.dll").exists():
+                src = d
+                break
+        if src:
+            break
+    if not src:
+        return None
+    cache.mkdir(parents=True, exist_ok=True)
+    log(f"_steam_client_template: building cached clean Steam client from {src} (one-time, ~1.4G)")
+    cmd = ["rsync", "-a", "--delete"]
+    for ex in _STEAM_SEED_EXCLUDES:
+        cmd += ["--exclude", ex]
+    cmd += [str(src) + "/", str(cache) + "/"]
+    try:
+        subprocess.run(cmd, timeout=1800)
+    except Exception as exc:
+        log(f"_steam_client_template: build failed: {exc}")
+        return None
+    return cache if (cache / "steamclient.dll").exists() else None
+
+
+def _seed_steam_client(prefix: str) -> bool:
+    """Give a fresh Steam bottle a WORKING client by cloning the cached template into it (the
+    bootstrapper first-run is broken under wine). No-op if the bottle already has a full client
+    (steamclient.dll) or no template source exists. Returns True if it seeded a client."""
+    dst = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
+    try:
+        if (dst / "steamclient.dll").exists() or (_steam_dir(prefix) / "steamclient.dll").exists():
+            return False
+    except Exception:
+        pass
+    tmpl = _steam_client_template()
+    if not tmpl:
+        log("_seed_steam_client: no seed source (no existing working Steam client to copy from)")
+        return False
+    dst.mkdir(parents=True, exist_ok=True)
+    # cp -c = APFS clonefile (~0 disk, instant) on the same volume; rsync fallback covers cross-volume.
+    subprocess.run(f'cp -c -R {shlex.quote(str(tmpl))}/. {shlex.quote(str(dst))}/ 2>/dev/null',
+                   shell=True)
+    if not (dst / "steamclient.dll").exists():
+        cmd = ["rsync", "-a"]
+        for ex in _STEAM_SEED_EXCLUDES:
+            cmd += ["--exclude", ex]
+        cmd += [str(tmpl) + "/", str(dst) + "/"]
+        try:
+            subprocess.run(cmd, timeout=1800)
+        except Exception as exc:
+            log(f"_seed_steam_client: rsync fallback failed: {exc}")
+    ok = (dst / "steamclient.dll").exists()
+    if ok:
+        log("_seed_steam_client: seeded a working Steam client into the bottle "
+            "(the bootstrapper first-run is broken under wine)")
+    return ok
+
+
 def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
     """Launch Steam through the unified wine so its CEF renders via DXMT."""
     global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
     bt = _unified_build_dir()
+    # fresh bottle w/ only the broken bootstrapper -> seed a working client (bootstrapper first-run
+    # fails under wine). no-op if a full client is already present or theres no seed source.
+    _seed_steam_client(str(prefix))
     steam_dir = _steam_dir(prefix)
     steam_exe = steam_dir / "steam.exe"
     if not steam_exe.exists():
@@ -4003,13 +4084,14 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
 
    
     if launcher_type == "steam" and wine:
-        # steam_setup_path: a user-supplied SteamSetup.exe (onboarding Steam
-        # guide). When absent, _download_and_run_steam_setup fetches the official one.
-        threading.Thread(
-            target=_download_and_run_steam_setup,
-            args=(path_str, wine, params.get("steam_setup_path")),
-            daemon=True,
-        ).start()
+        # the Steam bootstrapper's first-run download is BROKEN under our wine (32-bit HACK22 storm
+        # on the unified wine; "failed to create updater window" on the pre-HACK22 wine), so SEED a
+        # working client from the cached template insted. only fall back to the bootstrapper if
+        # theres no seed source yet (no prior working Steam install to build the template from).
+        def _provision_steam():
+            if not _seed_steam_client(path_str):
+                _download_and_run_steam_setup(path_str, wine, params.get("steam_setup_path"))
+        threading.Thread(target=_provision_steam, daemon=True).start()
 
    
     if launcher_type == "epic":
