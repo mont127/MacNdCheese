@@ -1397,6 +1397,60 @@ export WINEDEBUG={wine_debug}
     )
 
 
+def _write_d3dmetal_legendary_wrapper(prefix: str, metal_hud: bool, debug: bool) -> str:
+    """Build a shell wrapper that stands in for a `--wine` binary for
+    legendary/nile launches, mirroring _backend_launch_cmd's D3DMETAL3 heredoc
+    (the known-working Steam/manual path) instead of the generic
+    _apply_backend_env native-DLL-override route, which crashes UnityPlayer.dll
+    with an access violation (D3DMetal.app's no-shim wine ships its OWN builtin
+    D3D-to-Metal translation -- forcing WINEDLLOVERRIDES to native (=n) and
+    relying on copied GPTK DLLs, as the generic path does, doesn't match how
+    this wine build actually expects to be run).
+
+    legendary/nile invoke their `--wine` argument as `<wine_bin> <exe> <args...>`
+    (proven via `legendary launch --dry-run`), so a chmod+x script here that
+    forwards "$@" to a direct-exec of the real D3DMetal launcher works as a
+    drop-in -- legendary still owns generating the Epic auth args, we just
+    control the environment the launcher actually sees them run in.
+
+    TEMPORARY: this duplicates _backend_launch_cmd's D3DMETAL3 branch rather
+    than sharing it, since that function is built around a Popen call MacNCheese
+    makes directly (bash -c <heredoc>), not a `--wine` binary path legendary
+    execs itself. Worth unifying if a GPTK/GPTK_FULL equivalent for Epic/Amazon
+    is ever needed too.
+    """
+    app = PORTABLE_DIR / "Wine D3DMetal.app"
+    launcher = app / "Contents" / "MacOS" / "wine"
+    rx = app / "Contents" / "Resources" / "wine"
+    libext = rx / "lib" / "external"
+    ovr = "d3d12,d3d11,d3d10,d3d10core,dxgi,d3d9=b;mf,mfplat,mfreadwrite,mferror=b"
+    dyld = ":".join([
+        str(libext),
+        "/usr/local/opt/freetype/lib",
+        "/usr/local/opt/fontconfig/lib",
+        str(rx / "lib"),
+        "/usr/local/lib",
+        "/usr/lib",
+    ])
+    wine_debug = WINE_DEBUG_VERBOSE if debug else "-all"
+    lines = [
+        "#!/bin/bash",
+        f"export WINEPREFIX={shlex.quote(prefix)}",
+        "export FONTCONFIG_PATH=/usr/local/opt/fontconfig/etc/fonts",
+        f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}",
+        f"export CX_APPLEGPT_LIBD3DSHARED_PATH={shlex.quote(str(libext / 'libd3dshared.dylib'))}",
+        f'export WINEDLLOVERRIDES="{ovr}"',
+        f"export WINEDEBUG={wine_debug}",
+    ]
+    if metal_hud:
+        lines.append("export MTL_HUD_ENABLED=1")
+    lines.append(f'exec /usr/bin/arch -x86_64 {shlex.quote(str(launcher))} "$@"')
+    script_path = Path(prefix) / ".mnc-d3dmetal-legendary-wrapper.sh"
+    script_path.write_text("\n".join(lines) + "\n")
+    script_path.chmod(0o755)
+    return str(script_path)
+
+
 def _collect_target_dirs(game_dir: Path, exe_path: Path) -> List[Path]:
     """Collect all directories that need DLL patching (matches original logic)."""
     target_dirs: set = set()
@@ -7757,6 +7811,20 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
             except Exception as exc:
                 log(f"Warning: DLL patching failed: {exc}")
 
+        # TEMPORARY: the generic _apply_backend_env route above crashes D3DMetal3
+        # (UnityPlayer.dll EXCEPTION_ACCESS_VIOLATION on init -- confirmed live).
+        # Steam/manual launches never hit this because cmd_launch_game routes
+        # D3DMETAL3 through _backend_launch_cmd's heredoc instead: builtin
+        # WINEDLLOVERRIDES (D3DMetal.app's own wine ships its own D3D-to-Metal
+        # translation, not native-DLL injection) + a direct-exec'd launcher so
+        # DYLD_FALLBACK_LIBRARY_PATH survives (macOS strips DYLD_* across `open`).
+        # legendary owns exe invocation, so we can't reuse that heredoc as-is (it's
+        # built around us calling Popen directly) -- swap in a wrapper script that
+        # sets up the identical env and forwards argv, so legendary still generates
+        # the Epic auth args and just execs through it.
+        if backend == BACKEND_D3DMETAL3:
+            wine_bin = _write_d3dmetal_legendary_wrapper(prefix_expanded, metal_hud, verbose_debug)
+
     env = _apply_sync_env(env, esync, msync)
     for line in (custom_env_str or "").splitlines():
         if "=" in line:
@@ -7881,6 +7949,14 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
                 _prepare_game_for_backend(backend, exe_path, install_dir)
             except Exception as exc:
                 log(f"Warning: DLL patching failed: {exc}")
+
+        # TEMPORARY: see cmd_legendary_launch_game -- the generic _apply_backend_env
+        # route above crashes D3DMetal3 (UnityPlayer.dll EXCEPTION_ACCESS_VIOLATION,
+        # confirmed live via the Epic path; same generic code, so it applies here
+        # too). Swap in the same wrapper-script approach cmd_launch_game's
+        # _backend_launch_cmd heredoc uses for Steam/manual D3DMetal3 launches.
+        if backend == BACKEND_D3DMETAL3:
+            wine_bin = _write_d3dmetal_legendary_wrapper(prefix_expanded, metal_hud, verbose_debug)
 
     env = _apply_sync_env(env, esync, msync)
     for line in (custom_env_str or "").splitlines():
