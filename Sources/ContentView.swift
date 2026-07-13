@@ -63,9 +63,9 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var settingsButtons: some View {
-                // Bradar console / big-picture mode -- fullscreen controller-friendly library (PC logo)
+                // Bradar console / big-picture mode -- fullscreen controller-friendly library (TV icon, #121)
                 Button { withAnimation(.easeInOut(duration: 0.25)) { showConsoleMode = true } } label: {
-                    Image(systemName: "pc")
+                    Image(systemName: "play.tv")
                 }
                 .help(L("Console Mode"))
                 .accessibilityLabel(L("Console Mode"))

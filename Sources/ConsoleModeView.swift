@@ -129,7 +129,7 @@ struct ConsoleModeView: View {
     private var topBar: some View {
         HStack(alignment: .center, spacing: 16) {
             HStack(spacing: 8) {
-                Image(systemName: "pc").font(.system(size: 14, weight: .semibold))
+                Image(systemName: "play.tv").font(.system(size: 14, weight: .semibold))
                 Text("MacNdCheese").font(.system(size: 14, weight: .semibold))
             }
             .foregroundStyle(.white.opacity(0.5))
