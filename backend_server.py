@@ -5374,6 +5374,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_rpc_bridge": _rpc_bridge_available(),
         "has_wineopenxr": _wineopenxr_available(),
         "has_monado_runtime": _monado_runtime_available(),
+        "has_winetricks": _winetricks_bin() is not None,
     }
 
 
@@ -6763,6 +6764,220 @@ def cmd_get_install_progress(params: Dict[str, Any]) -> Any:
         "failed": job.get("failed", False),
         "current": job.get("current", ""),
     }
+
+# ---------------------------------------------------------------------------
+# Winetricks App Store
+# ---------------------------------------------------------------------------
+# winetricks + cabextract ship in the same portable-deps zip as git/7zz/wget/zstd
+# (install_portable_tools() in installer.sh) and land in PORTABLE_DIR/bin, which
+# _wine_env() already prepends onto PATH -- no separate download/vendoring needed.
+
+def _winetricks_bin() -> Optional[str]:
+    p = PORTABLE_DIR / "bin" / "winetricks"
+    return str(p) if p.exists() else None
+
+
+def _winetricks_wine_and_server(prefix: str) -> Tuple[str, str]:
+    """Resolve the wine winetricks should use, following the SAME fallback chain
+    as _run_installer_prehack22 (pre-HACK22 overlay -> Wine Stable -> unified
+    wine + warning). Many winetricks verbs (vcrun*, dotnet*, other 32-bit
+    NSIS/Burn-style installer stubs) fault-storm at ~100% CPU forever under the
+    unified HACK22 wine's broken WoW64 32<->64 transition -- see
+    _prehack22_wine()'s docstring. Deliberately ignores the bottle's own
+    wine_binary preference (stable/staging/auto): that preference is for GAME
+    rendering, not installer compatibility."""
+    iw = _prehack22_wine()
+    if iw:
+        wine = iw
+    else:
+        stable = _find_wine_stable()
+        if stable:
+            log("winetricks: no pre-HACK22 overlay -> Wine Stable")
+            wine = stable
+        else:
+            wine = _find_wine()
+            if not wine:
+                raise FileNotFoundError("Wine not found")
+            log("winetricks: no pre-HACK22 overlay + no Wine Stable -> "
+                "unified wine (32-bit verbs MAY fault-storm)")
+    # Pass WINESERVER explicitly rather than relying on winetricks' own
+    # dirname(WINE)-relative search, since the pre-HACK22 overlay tree's
+    # layout isn't guaranteed to match that assumption.
+    return wine, (_find_wineserver() or "")
+
+
+def _winetricks_env(prefix: str, wine: str, wineserver: str) -> Dict[str, str]:
+    """Base env for a winetricks subprocess. Deliberately built on _wine_env
+    (WINEPREFIX, WINEDEBUG, PATH incl. PORTABLE_DIR/bin so winetricks finds
+    cabextract/7zz/wget, DYLD fallback for wine's own font rendering) rather
+    than _unified_env, which carries DXMT/Steam-CEF-specific env winetricks
+    has no use for."""
+    env = _wine_env(prefix)
+    env["WINE"] = wine
+    if wineserver:
+        env["WINESERVER"] = wineserver
+    env["WINETRICKS_LATEST_VERSION_CHECK"] = "disabled"
+    return env
+
+
+def _winetricks_popen(prefix: str, verb: str, force: bool = False) -> subprocess.Popen:
+    wtk = _winetricks_bin()
+    if not wtk:
+        raise FileNotFoundError("Winetricks isn't installed yet — run Setup first.")
+    wine, wineserver = _winetricks_wine_and_server(prefix)
+    # Same prerequisites _run_installer_prehack22 requires: a fast-booted
+    # bottle can have an empty syswow64, which makes 32-bit installers die
+    # with c0000135 before winetricks even gets a chance to run them.
+    _stage_syswow64(prefix)
+    _ensure_progfiles_x86(prefix)
+    env = _winetricks_env(prefix, wine, wineserver)
+    env["WINEDEBUG"] = "-all,+err"
+    # arch strips DYLD_*, so re-export it inside the subshell -- same pattern
+    # _run_installer_prehack22 uses.
+    dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    flags = "-q" + (" -f" if force else "")
+    sh = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
+          f"exec {shlex.quote(wtk)} {flags} {shlex.quote(verb)}")
+    log(f"winetricks: running {verb} (wine={wine})")
+    return subprocess.Popen(
+        ["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
+    )
+
+
+def cmd_winetricks_run(params: Dict[str, Any]) -> Any:
+    """Run one or more winetricks verbs as a background job. Reuses the SAME
+    _install_jobs registry / cmd_get_install_progress polling contract as
+    cmd_run_installer -- the Swift side needs no new progress-polling code."""
+    prefix: str = params.get("prefix", "")
+    verbs: List[str] = params.get("verbs", [])
+    force: bool = bool(params.get("force", False))
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+    if not verbs:
+        raise ValueError("No verbs specified")
+    if not _winetricks_bin():
+        raise FileNotFoundError("Winetricks isn't installed yet — run Setup first.")
+
+    job_id = str(uuid.uuid4())
+    job: Dict[str, Any] = {"lines": [], "done": False, "failed": False, "current": "", "proc": None}
+    _install_jobs[job_id] = job
+
+    def _run() -> None:
+        any_failed = False
+        for verb in verbs:
+            job["current"] = verb
+            job["lines"].append(f"=== Installing {verb} ===")
+            try:
+                proc = _winetricks_popen(prefix, verb, force=force)
+                job["proc"] = proc
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    job["lines"].append(line.rstrip())
+                proc.wait()
+                job["proc"] = None
+                if proc.returncode != 0:
+                    job["lines"].append(f"!!! {verb} failed (exit {proc.returncode})")
+                    any_failed = True
+                else:
+                    job["lines"].append(f"--- {verb} installed ---")
+            except Exception as exc:
+                job["lines"].append(f"!!! {verb} error: {exc}")
+                any_failed = True
+                job["proc"] = None
+        job["current"] = ""
+        job["failed"] = any_failed
+        job["lines"].append("=== All done ===" if not any_failed else "=== Finished with errors ===")
+        job["done"] = True
+
+    threading.Thread(target=_run, daemon=True, name="winetricks-run").start()
+    return {"job_id": job_id}
+
+
+def cmd_winetricks_cancel(params: Dict[str, Any]) -> Any:
+    """Terminate a running winetricks job, mirroring cmd_legendary_cancel_install."""
+    job_id = params.get("job_id", "")
+    job = _install_jobs.get(job_id)
+    if job and job.get("proc") is not None:
+        try:
+            job["proc"].terminate()
+        except Exception:
+            pass
+        job["lines"].append("=== Cancelled ===")
+        job["failed"] = True
+        job["done"] = True
+        job["proc"] = None
+    return {"ok": True}
+
+
+def cmd_winetricks_list_installed(params: Dict[str, Any]) -> Any:
+    """Ground truth is $WINEPREFIX/winetricks.log (one verb id per completed
+    line, appended by winetricks itself) rather than duplicating state in
+    ~/.macncheese_bottles.json -- stays correct even if winetricks was ever
+    run outside the app."""
+    prefix = params.get("prefix")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+    log_path = Path(prefix).expanduser() / "winetricks.log"
+    if not log_path.exists():
+        return {"installed": []}
+    try:
+        lines = log_path.read_text(errors="ignore").splitlines()
+    except Exception:
+        return {"installed": []}
+    installed = sorted({ln.strip() for ln in lines if ln.strip()})
+    return {"installed": installed}
+
+
+_winetricks_catalog_cache: Optional[List[Dict[str, str]]] = None
+
+# w_metadata <id> <category> \
+#     title="..." \
+#     ...
+_WTK_METADATA_RE = re.compile(
+    r'^w_metadata\s+(\S+)\s+(\S+)\s*\\\s*\n'
+    r'((?:^\s+\w+="(?:[^"\\]|\\.)*"\s*\\?\s*\n)*)',
+    re.MULTILINE,
+)
+_WTK_FIELD_RE = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
+
+
+def _parse_winetricks_catalog() -> List[Dict[str, str]]:
+    """Extract every verb winetricks actually supports, straight from its own
+    w_metadata declarations in the bundled script -- id, category, title (+
+    publisher/year when present). This is the same source `winetricks
+    list-all` itself is built from, so the catalog can never drift from what
+    the bundled binary can actually install, and needs no hand maintenance
+    as winetricks adds/removes verbs in future bundle updates."""
+    global _winetricks_catalog_cache
+    if _winetricks_catalog_cache is not None:
+        return _winetricks_catalog_cache
+    wtk = _winetricks_bin()
+    if not wtk:
+        return []
+    try:
+        text = Path(wtk).read_text(errors="ignore")
+    except Exception:
+        return []
+    verbs: List[Dict[str, str]] = []
+    for m in _WTK_METADATA_RE.finditer(text):
+        verb_id, category, fields_block = m.group(1), m.group(2), m.group(3)
+        fields = dict(_WTK_FIELD_RE.findall(fields_block))
+        verbs.append({
+            "id": verb_id,
+            "category": category,
+            "title": fields.get("title", verb_id),
+            "publisher": fields.get("publisher", ""),
+            "year": fields.get("year", ""),
+        })
+    verbs.sort(key=lambda v: (v["category"], v["title"].lower()))
+    _winetricks_catalog_cache = verbs
+    return verbs
+
+
+def cmd_winetricks_catalog(_params: Dict[str, Any]) -> Any:
+    return {"verbs": _parse_winetricks_catalog()}
 
 # ---------------------------------------------------------------------------
 # Legendary / Epic Games support
@@ -8451,6 +8666,10 @@ COMMANDS: Dict[str, Any] = {
     "get_exe_icon": cmd_get_exe_icon,
     "run_installer": cmd_run_installer,
     "get_install_progress": cmd_get_install_progress,
+    "winetricks_run": cmd_winetricks_run,
+    "winetricks_cancel": cmd_winetricks_cancel,
+    "winetricks_list_installed": cmd_winetricks_list_installed,
+    "winetricks_catalog": cmd_winetricks_catalog,
     "legendary_status": cmd_legendary_status,
     "legendary_check_auth": cmd_legendary_check_auth,
     "legendary_auth": cmd_legendary_auth,

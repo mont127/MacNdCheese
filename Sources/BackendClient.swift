@@ -906,6 +906,60 @@ final class BackendClient: ObservableObject {
         return nil
     }
 
+    /// Whether the bundled winetricks binary is present (installed as part of
+    /// the normal Setup/portable-tools flow). Gates the Winetricks App Store UI.
+    func winetricksAvailable() -> Bool {
+        componentsStatus?.hasWinetricks ?? false
+    }
+
+    func runWinetricks(prefix: String, verbs: [String], force: Bool = false) async -> String? {
+        do {
+            let result = try await send(cmd: "winetricks_run", params: [
+                "prefix": prefix,
+                "verbs": verbs,
+                "force": force,
+            ])
+            if let dict = result as? [String: Any], let jobId = dict["job_id"] as? String {
+                return jobId
+            }
+        } catch {
+            lastError = String(format: L("Failed to start install: %@"), error.localizedDescription)
+        }
+        return nil
+    }
+
+    func winetricksCancel(jobId: String) async {
+        _ = try? await send(cmd: "winetricks_cancel", params: ["job_id": jobId])
+    }
+
+    func winetricksListInstalled(prefix: String) async -> Set<String> {
+        do {
+            let result = try await send(cmd: "winetricks_list_installed", params: ["prefix": prefix])
+            if let dict = result as? [String: Any], let arr = dict["installed"] as? [String] {
+                return Set(arr)
+            }
+        } catch {
+            // Non-fatal — the store sheet just shows everything as not-yet-installed.
+        }
+        return []
+    }
+
+    /// The full winetricks verb catalog, parsed by the backend straight from
+    /// the bundled winetricks script's own metadata (not a static Swift list).
+    func getWinetricksCatalog() async -> [WinetricksVerb] {
+        do {
+            let result = try await send(cmd: "winetricks_catalog")
+            if let dict = result as? [String: Any],
+               let data = try? JSONSerialization.data(withJSONObject: dict["verbs"] ?? []),
+               let decoded = try? JSONDecoder().decode([WinetricksVerb].self, from: data) {
+                return decoded
+            }
+        } catch {
+            lastError = String(format: L("Failed to load the winetricks catalog: %@"), error.localizedDescription)
+        }
+        return []
+    }
+
     func getExeIcon(exe: String) async -> Data? {
         do {
             let result = try await send(cmd: "get_exe_icon", params: ["exe": exe])

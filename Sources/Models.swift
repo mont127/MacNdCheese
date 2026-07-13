@@ -248,6 +248,7 @@ struct ComponentsStatus: Codable {
     let hasVkd3d: Bool
     let hasWineOpenXR: Bool
     let hasMonadoRuntime: Bool
+    let hasWinetricks: Bool
     let wineVersion: String?
 
     enum CodingKeys: String, CodingKey {
@@ -268,11 +269,12 @@ struct ComponentsStatus: Codable {
         case hasVkd3d = "has_vkd3d"
         case hasWineOpenXR = "has_wineopenxr"
         case hasMonadoRuntime = "has_monado_runtime"
+        case hasWinetricks = "has_winetricks"
         case wineVersion = "wine_version"
     }
 
     // Backwards-compat init for older backends that don't yet send
-    // has_wine_devel / has_wineopenxr. Treat as absent → false.
+    // has_wine_devel / has_wineopenxr / has_winetricks. Treat as absent → false.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hasTools          = try c.decode(Bool.self, forKey: .hasTools)
@@ -292,6 +294,7 @@ struct ComponentsStatus: Codable {
         hasVkd3d          = try c.decode(Bool.self, forKey: .hasVkd3d)
         hasWineOpenXR     = try c.decodeIfPresent(Bool.self, forKey: .hasWineOpenXR) ?? false
         hasMonadoRuntime  = try c.decodeIfPresent(Bool.self, forKey: .hasMonadoRuntime) ?? false
+        hasWinetricks     = try c.decodeIfPresent(Bool.self, forKey: .hasWinetricks) ?? false
         wineVersion       = try c.decodeIfPresent(String.self, forKey: .wineVersion)
     }
 }
