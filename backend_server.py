@@ -7656,6 +7656,24 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         if metal_hud:
             env["MTL_HUD_ENABLED"] = "1"
 
+        # cmd_launch_game's classic branch DLL-patches the game before every launch
+        # (_prepare_game_for_backend) -- for DXMT that's what syncs d3d11/dxgi/d3d10core
+        # + winemetal.dll/.so into the wine lib dirs; without it "backend=dxmt" is a no-op
+        # and the game silently gets whatever DLLs happen to already be in the wine build.
+        # Epic never resolves an exe path itself (legendary owns exe invocation), so look
+        # it up from legendary's own installed-games record to patch the right game dir.
+        installed_entry = _read_installed_here(prefix_expanded).get(app_name, {})
+        install_dir = installed_entry.get("install_path", "")
+        exe_name = installed_entry.get("executable", "")
+        exe_path = Path(install_dir) / exe_name if install_dir and exe_name else None
+        if exe_path and exe_path.exists():
+            try:
+                _prepare_game_for_backend(backend, exe_path, install_dir)
+            except Exception as exc:
+                log(f"Warning: DLL patching failed: {exc}")
+        else:
+            log(f"legendary: couldn't resolve install dir/exe for {app_name}; skipping DLL patch")
+
     env = _apply_sync_env(env, esync, msync)
     for line in (custom_env_str or "").splitlines():
         if "=" in line:
@@ -7684,13 +7702,17 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         "--skip-version-check",
     ]
     log(f"legendary launch: {shlex.join(cmd)}")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", app_name)
+    log_path = str(LOG_DIR / f"{safe_name}-legendary.log")
+    log_fh = open(log_path, "wb")
     proc = subprocess.Popen(
         cmd,
         env=env,
         start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
     )
+    log_fh.close()
 
     _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
 
@@ -7699,7 +7721,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
     if bottle_cfg.get("discord_rpc", True):
         _discord_presence_for_launch(proc, "", params.get("game_name", "") or app_name)
 
-    return {"pid": proc.pid}
+    return {"pid": proc.pid, "log_path": log_path}
 
 
 def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
@@ -7749,6 +7771,24 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
         if metal_hud:
             env["MTL_HUD_ENABLED"] = "1"
 
+        # cmd_launch_game's classic branch DLL-patches the game before every launch
+        # (_prepare_game_for_backend) -- for DXMT that's what syncs d3d11/dxgi/d3d10core
+        # + winemetal.dll/.so into the wine lib dirs; without it "backend=dxmt" is a no-op
+        # and the game silently gets whatever DLLs happen to already be in the wine build.
+        # Amazon never resolves an exe path itself (nile owns exe invocation), so look it
+        # up the same way _nile_build_games_list does (no "executable" field like Epic's
+        # installed.json, so fall back to _detect_exe against the install dir).
+        install_dir = _nile_read_installed_here(prefix_expanded).get(amazon_id, {}).get("path", "")
+        exe_str = _detect_exe(Path(install_dir), amazon_id, params.get("game_name", "") or amazon_id) if install_dir else None
+        exe_path = Path(exe_str) if exe_str else None
+        if exe_path and exe_path.exists():
+            try:
+                _prepare_game_for_backend(backend, exe_path, install_dir)
+            except Exception as exc:
+                log(f"Warning: DLL patching failed: {exc}")
+        else:
+            log(f"nile: couldn't resolve install dir/exe for {amazon_id}; skipping DLL patch")
+
     env = _apply_sync_env(env, esync, msync)
     for line in (custom_env_str or "").splitlines():
         if "=" in line:
@@ -7775,13 +7815,17 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
         "--wine-prefix", prefix_expanded,
     ]
     log(f"nile launch: {shlex.join(cmd)}")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", amazon_id)
+    log_path = str(LOG_DIR / f"{safe_name}-nile.log")
+    log_fh = open(log_path, "wb")
     proc = subprocess.Popen(
         cmd,
         env=env,
         start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
     )
+    log_fh.close()
 
     _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
 
@@ -7790,7 +7834,7 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
     if bottle_cfg.get("discord_rpc", True):
         _discord_presence_for_launch(proc, "", params.get("game_name", "") or amazon_id)
 
-    return {"pid": proc.pid}
+    return {"pid": proc.pid, "log_path": log_path}
 
 
 # ---------------------------------------------------------------------------
