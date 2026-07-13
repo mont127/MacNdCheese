@@ -1999,6 +1999,85 @@ def _register_running_game(
     threading.Thread(target=_watch, daemon=True).start()
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _find_process_by_exe(exe_path: Path) -> Optional[int]:
+    """Find the OS pid of a running process whose command line contains exe_path."""
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,command="], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    needle = str(exe_path)
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_str, _, cmdline = line.partition(" ")
+        if needle in cmdline:
+            try:
+                return int(pid_str)
+            except ValueError:
+                continue
+    return None
+
+
+class _HandoffProcess:
+    """Popen-like shim for legendary/nile launches.
+
+    `legendary launch`/`nile launch` hand off to Wine and exit within seconds of
+    starting it -- their own subprocess.wait() fires almost immediately, which was
+    releasing Game Mode and clearing Discord presence while the actual game (a
+    separate, unrelated pid) kept running for the whole session. .wait()/.poll()
+    here track the real Wine-hosted exe (found by matching its resolved path in
+    the process list) instead, so _register_running_game/_discord_presence_for_launch
+    hold their state for as long as the game is actually alive.
+    """
+
+    def __init__(self, cli_proc: subprocess.Popen, exe_path: Optional[Path]):
+        self._cli_proc = cli_proc
+        self._exe_path = exe_path
+        self.pid = cli_proc.pid
+        self._game_pid: Optional[int] = None
+        self._searching = bool(exe_path)
+        self._settled = False
+
+    def wait(self) -> int:
+        try:
+            self._cli_proc.wait()
+        except Exception:
+            pass
+        if self._exe_path:
+            for _ in range(40):  # ~20s grace for wine to actually exec the game
+                self._game_pid = _find_process_by_exe(self._exe_path)
+                if self._game_pid:
+                    break
+                time.sleep(0.5)
+            self._searching = False
+            while self._game_pid and _pid_alive(self._game_pid):
+                time.sleep(1)
+        self._settled = True
+        return 0
+
+    def poll(self) -> Optional[int]:
+        if self._game_pid:
+            return None if _pid_alive(self._game_pid) else 0
+        # Still inside the post-handoff discovery window -- the CLI wrapper has
+        # already exited by design, so its own exit code says nothing about
+        # whether the real game is up yet. Report "still alive" until the
+        # search in wait() either finds it or gives up.
+        if self._searching:
+            return None
+        if self._settled:
+            return 0
+        return self._cli_proc.poll()
+
+
 atexit.register(_game_mode_reset)
 
 # ---------------------------------------------------------------------------
@@ -7630,6 +7709,18 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
     bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
     unified = _unified_engine_active(bottle_cfg)
 
+    # Epic never hands MacNCheese a raw exe path (legendary owns exe invocation), so
+    # look it up from legendary's own installed-games record. Used below to DLL-patch
+    # the right game dir on the classic path, and -- regardless of engine -- to find
+    # the real game process for Game Mode/Discord tracking (see _HandoffProcess).
+    installed_entry = _read_installed_here(prefix_expanded).get(app_name, {})
+    install_dir = installed_entry.get("install_path", "")
+    exe_name = installed_entry.get("executable", "")
+    exe_path = Path(install_dir) / exe_name if install_dir and exe_name else None
+    if not (exe_path and exe_path.exists()):
+        exe_path = None
+        log(f"legendary: couldn't resolve install dir/exe for {app_name}")
+
     if unified:
         # Same engine Steam/manual launches use (issue #122). Epic titles were stuck on
         # the pre-unified classic path: no D3D DLL staging, no MNC_GAME_BACKEND, no
@@ -7660,19 +7751,11 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         # (_prepare_game_for_backend) -- for DXMT that's what syncs d3d11/dxgi/d3d10core
         # + winemetal.dll/.so into the wine lib dirs; without it "backend=dxmt" is a no-op
         # and the game silently gets whatever DLLs happen to already be in the wine build.
-        # Epic never resolves an exe path itself (legendary owns exe invocation), so look
-        # it up from legendary's own installed-games record to patch the right game dir.
-        installed_entry = _read_installed_here(prefix_expanded).get(app_name, {})
-        install_dir = installed_entry.get("install_path", "")
-        exe_name = installed_entry.get("executable", "")
-        exe_path = Path(install_dir) / exe_name if install_dir and exe_name else None
-        if exe_path and exe_path.exists():
+        if exe_path:
             try:
                 _prepare_game_for_backend(backend, exe_path, install_dir)
             except Exception as exc:
                 log(f"Warning: DLL patching failed: {exc}")
-        else:
-            log(f"legendary: couldn't resolve install dir/exe for {app_name}; skipping DLL patch")
 
     env = _apply_sync_env(env, esync, msync)
     for line in (custom_env_str or "").splitlines():
@@ -7714,12 +7797,17 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
     )
     log_fh.close()
 
-    _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
+    # legendary hands off to wine and exits within seconds -- proc itself is NOT the
+    # game. Track the real wine-hosted exe instead so Game Mode/Discord presence hold
+    # for the whole session instead of releasing ~10s after launch (issue: Game Mode
+    # visibly flips back off shortly after Among Us starts, while it's still running).
+    handoff = _HandoffProcess(proc, exe_path)
+    _register_running_game(handoff, enable_game_mode=params.get("game_mode", True))
 
     # MacNCheese-level Discord presence for Epic launches. Prefer the real
     # title passed from the UI; fall back to the Epic app_name (codename).
     if bottle_cfg.get("discord_rpc", True):
-        _discord_presence_for_launch(proc, "", params.get("game_name", "") or app_name)
+        _discord_presence_for_launch(handoff, "", params.get("game_name", "") or app_name)
 
     return {"pid": proc.pid, "log_path": log_path}
 
@@ -7744,6 +7832,19 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
     prefix_expanded = str(Path(prefix).expanduser().resolve())
     bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
     unified = _unified_engine_active(bottle_cfg)
+
+    # Amazon never hands MacNCheese a raw exe path (nile owns exe invocation), so look
+    # it up the same way _nile_build_games_list does for the library listing (no
+    # "executable" field like Epic's installed.json, so fall back to _detect_exe
+    # against the install dir). Used below to DLL-patch the right game dir on the
+    # classic path, and -- regardless of engine -- to find the real game process for
+    # Game Mode/Discord tracking (see _HandoffProcess).
+    install_dir = _nile_read_installed_here(prefix_expanded).get(amazon_id, {}).get("path", "")
+    exe_str = _detect_exe(Path(install_dir), amazon_id, params.get("game_name", "") or amazon_id) if install_dir else None
+    exe_path = Path(exe_str) if exe_str else None
+    if not (exe_path and exe_path.exists()):
+        exe_path = None
+        log(f"nile: couldn't resolve install dir/exe for {amazon_id}")
 
     if unified:
         # Same engine Steam/manual launches use (issue #122). Amazon titles were stuck on
@@ -7775,19 +7876,11 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
         # (_prepare_game_for_backend) -- for DXMT that's what syncs d3d11/dxgi/d3d10core
         # + winemetal.dll/.so into the wine lib dirs; without it "backend=dxmt" is a no-op
         # and the game silently gets whatever DLLs happen to already be in the wine build.
-        # Amazon never resolves an exe path itself (nile owns exe invocation), so look it
-        # up the same way _nile_build_games_list does (no "executable" field like Epic's
-        # installed.json, so fall back to _detect_exe against the install dir).
-        install_dir = _nile_read_installed_here(prefix_expanded).get(amazon_id, {}).get("path", "")
-        exe_str = _detect_exe(Path(install_dir), amazon_id, params.get("game_name", "") or amazon_id) if install_dir else None
-        exe_path = Path(exe_str) if exe_str else None
-        if exe_path and exe_path.exists():
+        if exe_path:
             try:
                 _prepare_game_for_backend(backend, exe_path, install_dir)
             except Exception as exc:
                 log(f"Warning: DLL patching failed: {exc}")
-        else:
-            log(f"nile: couldn't resolve install dir/exe for {amazon_id}; skipping DLL patch")
 
     env = _apply_sync_env(env, esync, msync)
     for line in (custom_env_str or "").splitlines():
@@ -7827,12 +7920,16 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
     )
     log_fh.close()
 
-    _register_running_game(proc, enable_game_mode=params.get("game_mode", True))
+    # nile hands off to wine and exits within seconds -- proc itself is NOT the game.
+    # Track the real wine-hosted exe instead so Game Mode/Discord presence hold for
+    # the whole session instead of releasing ~10s after launch.
+    handoff = _HandoffProcess(proc, exe_path)
+    _register_running_game(handoff, enable_game_mode=params.get("game_mode", True))
 
     # MacNCheese-level Discord presence for Amazon launches. Prefer the real
     # title passed from the UI; fall back to the Amazon id.
     if bottle_cfg.get("discord_rpc", True):
-        _discord_presence_for_launch(proc, "", params.get("game_name", "") or amazon_id)
+        _discord_presence_for_launch(handoff, "", params.get("game_name", "") or amazon_id)
 
     return {"pid": proc.pid, "log_path": log_path}
 
