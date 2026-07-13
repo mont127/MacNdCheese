@@ -340,6 +340,7 @@ private struct EpicStoreWebView: NSViewRepresentable {
         prefs.allowsContentJavaScript = true
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences = prefs
+        config.websiteDataStore = .nonPersistent()
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.load(URLRequest(url: url))
         return webView
