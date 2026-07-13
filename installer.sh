@@ -315,6 +315,47 @@ add_mic_usage_to_app() {
   echo "  microphone usage description ensured for $(basename "$app")"
 }
 
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+# The upstream Wine .app bundles ship a CFBundleDocumentTypes claim on ".exe",
+# so every installed backend (Wine Stable/Staging/D3DMetal/Devel) shows up in
+# Finder's right-click "Open With" menu for Windows executables (issue #97).
+# They are internal runtimes the backend launches directly, never document
+# handlers — the launcher app is the one user-facing .exe opener. Drop the
+# claim, re-seal, and force-refresh the Launch Services registration so an
+# already-registered stale claim disappears too. When re-sealing, preserve any
+# entitlements on the app's main binary (a plain ad-hoc re-sign would strip
+# them). Best-effort: must never fail an install.
+strip_openwith_claims_from_app() {
+  app="$1"
+  plist="$app/Contents/Info.plist"
+  [ -d "$app" ] && [ -f "$plist" ] || return 0
+  if /usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes" "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Delete :CFBundleDocumentTypes" "$plist" >/dev/null 2>&1 || true
+    ents="$WORK_DIR/openwith-ents.plist"
+    rm -f "$ents"
+    /usr/bin/codesign -d --entitlements "$ents" --xml "$app" >/dev/null 2>&1 \
+      || /usr/bin/codesign -d --entitlements :"$ents" "$app" >/dev/null 2>&1 || true
+    if [ -s "$ents" ]; then
+      /usr/bin/codesign --force --sign - --entitlements "$ents" "$app" >/dev/null 2>&1 || true
+    else
+      /usr/bin/codesign --force --sign - "$app" >/dev/null 2>&1 || true
+    fi
+    rm -f "$ents"
+    echo "  removed Finder 'Open With' (.exe) claim from $(basename "$app")"
+  fi
+  "$LSREGISTER" -f "$app" >/dev/null 2>&1 || true
+}
+
+# Sweep every backend Wine app currently in deps. Also called from
+# install_wine_unified, which the wine version-gate re-runs on app updates, so
+# bundles installed by OLDER MacNdCheese versions get cleaned up on upgrade.
+strip_openwith_claims_from_wine_apps() {
+  for wapp in "Wine Stable.app" "Wine Staging.app" "Wine D3DMetal.app" "Wine Devel.app"; do
+    strip_openwith_claims_from_app "$PORTABLE_DIR/$wapp"
+  done
+}
+
 # Wine D3DMetal's launch path resolves freetype/fontconfig from x86_64 Homebrew
 # (/usr/local/opt/...) via DYLD_FALLBACK_LIBRARY_PATH — Wine runs under Rosetta
 # x86_64, so the dylibs must be x86_64 (the arm64 /opt/homebrew copies won't load).
@@ -622,6 +663,7 @@ install_portable_wine_staging() {
   write_component_version "wine_branch" "staging"
   write_component_version "wine_staging" "$staging_tag"
   add_mic_usage_to_app "$PORTABLE_DIR/Wine Staging.app"
+  strip_openwith_claims_from_app "$PORTABLE_DIR/Wine Staging.app"
   echo "Wine Staging $staging_tag installed to $PORTABLE_DIR"
 }
 
@@ -684,6 +726,7 @@ install_portable_wine() {
   write_component_version "wine_branch" "stable"
   write_component_version "wine_stable" "$PORTABLE_BASE_TAG"
   add_mic_usage_to_app "$PORTABLE_DIR/Wine Stable.app"
+  strip_openwith_claims_from_app "$PORTABLE_DIR/Wine Stable.app"
   echo "Portable wine installed to $PORTABLE_DIR"
 }
 
@@ -792,6 +835,8 @@ install_wine_d3dmetal() {
   # Clear quarantine so Gatekeeper does not flag every binary in the tree.
   xattr -dr com.apple.quarantine "$target_app" 2>/dev/null || true
 
+  strip_openwith_claims_from_app "$target_app"
+
   # Expose the wrapper on PATH-style locations the backend probes.
   mkdir -p "$PORTABLE_DIR/bin"
   # The no-shim wine-11-d3dmetal app is SELF-CONTAINED: it bundles the GPTK
@@ -879,6 +924,7 @@ install_wine_d3dmetal() {
 
 uninstall_wine_d3dmetal() {
   echo "Step: Uninstalling Wine D3DMetal..."
+  "$LSREGISTER" -u "$PORTABLE_DIR/Wine D3DMetal.app" >/dev/null 2>&1 || true
   rm -rf "$PORTABLE_DIR/Wine D3DMetal.app"
   rm -f  "$PORTABLE_DIR/bin/wine-d3dmetal"
   grep -v "^wine_d3dmetal=" "$VERSION_MARKER" > "${VERSION_MARKER}.tmp" 2>/dev/null || true
@@ -958,6 +1004,7 @@ install_wine_devel() {
 
 uninstall_wine_devel() {
   echo "Step: Uninstalling Wine Devel..."
+  "$LSREGISTER" -u "$PORTABLE_DIR/Wine Devel.app" >/dev/null 2>&1 || true
   rm -rf "$PORTABLE_DIR/Wine Devel.app"
   grep -v "^wine_devel=" "$VERSION_MARKER" > "${VERSION_MARKER}.tmp" 2>/dev/null || true
   mv "${VERSION_MARKER}.tmp" "$VERSION_MARKER" 2>/dev/null || true
@@ -1245,6 +1292,7 @@ init_prefix() {
 
 uninstall_wine() {
   echo "Step: Uninstalling Wine Stable..."
+  "$LSREGISTER" -u "$PORTABLE_DIR/Wine Stable.app" >/dev/null 2>&1 || true
   rm -rf "$PORTABLE_DIR/Wine Stable.app"
   grep -v "^wine_stable=" "$VERSION_MARKER" > "${VERSION_MARKER}.tmp" 2>/dev/null || true
   mv "${VERSION_MARKER}.tmp" "$VERSION_MARKER" 2>/dev/null || true
@@ -1253,6 +1301,7 @@ uninstall_wine() {
 
 uninstall_wine_staging() {
   echo "Step: Uninstalling Wine Staging..."
+  "$LSREGISTER" -u "$PORTABLE_DIR/Wine Staging.app" >/dev/null 2>&1 || true
   rm -rf "$PORTABLE_DIR/Wine Staging.app"
   grep -v "^wine_staging=" "$VERSION_MARKER" > "${VERSION_MARKER}.tmp" 2>/dev/null || true
   mv "${VERSION_MARKER}.tmp" "$VERSION_MARKER" 2>/dev/null || true
@@ -2245,6 +2294,10 @@ install_wine_unified() {
   # dev fallback rsyncs from WINE_UNIFIED_SRC=/path/to/build64
   echo "Step: Installing unified wine..."
   mkdir -p "$PORTABLE_DIR"
+  # Piggy-back the Open With cleanup here: the wine version-gate re-runs this
+  # action on every app update, so Wine apps installed by older MacNdCheese
+  # versions (which still claim .exe in Finder) get cleaned up too (issue #97).
+  strip_openwith_claims_from_wine_apps
   local dst bundle src
   dst="${PORTABLE_DIR}/wine-unified"
 
