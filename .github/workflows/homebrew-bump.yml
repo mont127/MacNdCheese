@@ -1,0 +1,84 @@
+name: Bump Homebrew Cask
+
+# Keeps realmaitreal/homebrew-macndcheese in sync with stable releases here.
+# Only fires for semver tags (v10.4.1-style) — skips nightlies and the
+# "auto-<timestamp>" tags build-universal.yml's workflow_dispatch path creates.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (defaults to the latest release)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  bump-cask:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout MacNdCheese
+        uses: actions/checkout@v4
+
+      - name: Resolve release version + checksum
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo mont127/MacNdCheese --json tagName --jq .tagName)
+          fi
+
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '$TAG' isn't a stable vX.Y.Z release, skipping cask bump."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          DIGEST=$(gh api "repos/mont127/MacNdCheese/releases/tags/$TAG" \
+            --jq '.assets[] | select(.name == "MacNCheese.dmg") | .digest')
+          if [ -z "$DIGEST" ]; then
+            echo "No MacNCheese.dmg asset found on release $TAG" >&2
+            exit 1
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${DIGEST#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Render cask
+        if: steps.release.outputs.skip != 'true'
+        run: |
+          sed -E \
+            -e "s/version +\"[^\"]+\"/version \"${{ steps.release.outputs.version }}\"/" \
+            -e "s/sha256 +\"[^\"]+\"/sha256 \"${{ steps.release.outputs.sha256 }}\"/" \
+            packaging/homebrew-tap/Casks/macndcheese.rb > /tmp/macndcheese.rb
+
+      - name: Push to tap
+        if: steps.release.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN secret is not set, can't push to the tap repo." >&2
+            exit 1
+          fi
+          git clone -q "https://x-access-token:${GH_TOKEN}@github.com/realmaitreal/homebrew-macndcheese.git" /tmp/tap
+          cp /tmp/macndcheese.rb /tmp/tap/Casks/macndcheese.rb
+          cd /tmp/tap
+          git config user.name "macndcheese-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Cask already up to date, nothing to push."
+            exit 0
+          fi
+          git add Casks/macndcheese.rb
+          git commit -q -m "macndcheese ${{ steps.release.outputs.version }}"
+          git push -q

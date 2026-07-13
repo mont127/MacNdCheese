@@ -1,0 +1,59 @@
+# -*- coding: utf-8; mode: tcl; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- vim:fenc=utf-8:ft=tcl:et:sw=4:ts=4:sts=4
+# DRAFT — untested against a real MacPorts checkout. Validate with
+# `port lint --nitpick` and a local `port -v install` before submitting upstream.
+
+PortSystem          1.0
+
+name                macndcheese
+version             10.4.1
+categories          games
+platforms           darwin
+license             Apache-2
+maintainers         {@realmaitreal gmail.com:kounikluis} openmaintainer
+description         Launcher for running Windows games on macOS via Wine
+long_description    MacNdCheese is a launcher that runs Windows games on macOS via Wine, \
+                    automatically configuring DXVK, MoltenVK, DXMT and D3DMetal so games \
+                    work without touching the terminal.
+homepage            https://github.com/mont127/MacNdCheese
+
+master_sites        https://github.com/mont127/MacNdCheese/releases/download/v${version}/
+distname            MacNCheese
+distfiles           ${distname}.dmg
+checksums           sha256  93b4785f9a7552c8dcc59e4efc4ef73447740925c56a60882fe68f649086402c \
+                    size    1922760373
+
+# The .dmg ships a prebuilt, ad-hoc-signed universal .app (arm64 + x86_64) built by
+# buildapp.sh in the main repo — this Portfile unpacks and places it rather than
+# rebuilding from source (which would additionally need a full Xcode.app for the
+# App Intents metadata step and Apple's own gamepolicyd tool, not just the CLTs).
+supported_archs     arm64 x86_64
+use_configure       no
+build               {}
+
+set app_name        "MacNdCheese Launcher.app"
+set mount_point     ${workpath}/mnt
+
+extract {}
+
+post-extract {
+    system "hdiutil attach -readonly -nobrowse -mountpoint ${mount_point} ${distpath}/${distname}.dmg"
+}
+
+destroot {
+    xinstall -d ${destroot}${applications_dir}
+    file copy "${mount_point}/${app_name}" "${destroot}${applications_dir}/${app_name}"
+    system "hdiutil detach ${mount_point}"
+}
+
+post-destroot {
+    # Ad-hoc signed, unnotarized — same Gatekeeper prompt users hit installing the
+    # .dmg manually per the project README.
+    ui_msg "-----------------------------------------------------------------"
+    ui_msg "${name} is ad-hoc signed only, not notarized. On first launch,"
+    ui_msg "approve it via System Settings > Privacy & Security > \"Open Anyway\"."
+    ui_msg "-----------------------------------------------------------------"
+}
+
+livecheck.type      regex
+livecheck.url       https://github.com/mont127/MacNdCheese/releases/latest
+livecheck.regex     {/tag/v([0-9.]+)}
