@@ -1,0 +1,47 @@
+# CLI parity allowlist
+#
+# Backend commands Sources/BackendClient.swift calls that ./macndcheese has no
+# dedicated command for. Checked by .github/scripts/check_cli_parity.py (see
+# CONTRIBUTING.md's "CLI parity" section): a NEW command missing from both
+# BackendClient.swift's caller AND this list fails CI.
+#
+# Everything below is the pre-existing backlog, seeded 2026-07-14 when this
+# check was introduced -- being listed here is not an endorsement that a
+# command shouldn't get CLI support, just that it predates the check and
+# nobody has audited it yet. Delete a line once the CLI covers that command.
+# Add a short reason after a `#` if you know why one is (or isn't) worth a
+# CLI equivalent.
+
+add_manual_app
+add_manual_game
+apply_app_update          # drives the in-app self-update banner; CLI has no update-check/apply flow yet
+check_audio_input         # mic-quality guard warning (sub-48kHz Bluetooth input), UI-only
+detect_exes               # populates a file-picker's exe suggestions
+diagnose_cheese
+get_exe_icon              # UI-only: icon for the game grid
+get_game_order
+get_setup_pid
+get_steam_description     # UI-only: store page text for the game detail view
+get_steam_media           # UI-only: box art / header images
+get_steam_running
+launch_launcher
+legendary_check_auth
+legendary_install_progress
+nile_all_downloads
+nile_auth
+nile_cancel_install
+nile_check_auth
+nile_get_auth_params
+nile_install_game
+nile_install_progress
+nile_launch_game
+nile_pause_install
+nile_resume_install
+nile_status
+open_sound_settings       # UI-only: opens macOS System Settings' Sound pane
+remove_manual_game
+reorder_bottles           # UI-only: drag-to-reorder in the sidebar
+run_cheese_repair
+set_game_config
+set_game_order
+steam_install_status

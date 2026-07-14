@@ -10,6 +10,8 @@ Keep it simple.
 If you change behavior. explain why in the pull request.
 If you add a new feature. add a small note to the README.
 If you add a new dependency. justify it.
+If you add a new interaction (a button, toggle, or backend command). add the
+equivalent to the CLI (`macndcheese`) too. See "CLI parity" below.
 
 ## What to work on
 
@@ -87,6 +89,25 @@ no longer part of this checklist. VKD3D-Proton (D3D12) is still selectable but i
 backend auto-detection yet; test it directly if your change touches it.
 
 If your change touches a specific backend. test that backend with at least one real game.
+
+## CLI parity
+
+`./macndcheese` (aka `mnc`) is a second, independent client of `backend_server.py` — same
+JSON-RPC protocol Sources/BackendClient.swift speaks, different frontend. Nothing keeps them
+in sync automatically, so they drift: `run_installer`/`get_install_progress` were Swift-only
+for a long time before `engines install/uninstall/reinstall` gave the CLI a real equivalent
+for installing/uninstalling/reinstalling Setup tab components.
+
+If you add a new interaction. a new button, toggle, or backend command a user can trigger.
+add the equivalent to the CLI too, or explain in the PR why it is Swift-only (a pure UI concern
+like an icon fetch or a system-settings deep link genuinely has no CLI equivalent).
+
+CI backstops the mechanically-checkable half of this: `.github/scripts/check_cli_parity.py`
+fails the build if BackendClient.swift calls a backend command `macndcheese` never references
+and it is not in `.github/cli-parity-allowlist.txt`. It cannot catch a new UI entry point that
+calls an existing, already-covered-by-neither command. that is a judgment call for you and
+your reviewer, not a string match. If a command genuinely should not get CLI support, add it
+to the allowlist with a short reason instead of leaving CI red.
 
 ## Pull request checklist
 

@@ -84,6 +84,19 @@ end user's machine. It must keep its **original** Apple signature — it carries
 and `buildapp.sh` check for this after codesigning and restore the pristine binary if it was
 touched. Don't try to rebuild or re-sign it yourself; see `vendor/README.md`.
 
+## `macndcheese` — the CLI
+
+A standalone Python script (symlinked as `mnc`) that speaks the exact same JSON-RPC protocol as
+`Sources/BackendClient.swift`, over its own `backend_server.py` subprocess — a second, independent
+client of the backend, not a wrapper around the Swift app. Run with no arguments for an
+interactive shell (keeps one backend alive across commands, so `use <bottle>` sticks); run with a
+subcommand for one-shot/scriptable use (`macndcheese bottles list`, `macndcheese engines status`).
+`macndcheese raw <cmd> key=value ..` calls any backend command directly, which is how it can always
+technically reach every command — but that is not the same as a *friendly, discoverable* command
+for it. See CONTRIBUTING.md's "CLI parity" section: because this and `BackendClient.swift` are two
+independent clients of the same backend, they drift unless a change to one is deliberately mirrored
+in the other, and CI only backstops the mechanically-detectable half of that.
+
 ## `discord-showcase-bot/`
 
 Not game-launching logic — this syncs the project's Discord showcase forum channel into

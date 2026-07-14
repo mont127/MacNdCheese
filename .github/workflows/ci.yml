@@ -46,8 +46,16 @@ jobs:
           python-version: "3.12"
       - name: Compile-check backend_server.py
         run: python3 -m py_compile backend_server.py
+      - name: Compile-check the CLI (macndcheese)
+        run: python3 -m py_compile macndcheese
       - name: Shell syntax check (bash -n)
         run: |
           bash -n install.sh
           bash -n buildapp.sh
           bash -n installer.sh
+      - name: CLI parity check
+        # See CONTRIBUTING.md's "CLI parity" section and
+        # .github/scripts/check_cli_parity.py's docstring: fails if Swift
+        # calls a backend command the CLI never references and that isn't in
+        # the pre-existing-backlog allowlist.
+        run: python3 .github/scripts/check_cli_parity.py

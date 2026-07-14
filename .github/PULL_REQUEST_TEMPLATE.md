@@ -33,3 +33,6 @@ If this closes an issue, link it (e.g. `Closes #123`) so labels/area carry over 
 - [ ] Log output still shows what the app is doing
 - [ ] No secrets or personal paths in this diff
 - [ ] Docs updated if behavior changed (README, CONTRIBUTING.md, or ARCHITECTURE.md)
+- [ ] If this adds a new interaction (button, toggle, backend command), `macndcheese` has an
+      equivalent, or `.github/cli-parity-allowlist.txt` explains why not (see CONTRIBUTING.md's
+      "CLI parity")
