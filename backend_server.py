@@ -3483,6 +3483,16 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     except Exception as exc:
         log(f"shared redist (steam launch) skipped: {exc}")
     env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True)
+    # Bradar wire the MoltenVK vulkan ICD into steam.exe's env so DXVK games launchd from Steams OWN
+    # UI (they inherit steam.exe's env, NOT our per-game _launch_game_unified env) can create a Vulkan
+    # instance. without it a Steam-launchd dxvk game crashs in d3d11_dxvk (vkCreateInstance fails ->
+    # "Crash!!!"). harmless to steam.exe itself (CEF renders via DXMT->Metal, never touchs the Vulkan
+    # loader). mirrors the per-game dxvk block in _launch_game_unified.
+    _vk_icd = _find_moltenvk_icd()
+    if _vk_icd:
+        env["VK_ICD_FILENAMES"] = _vk_icd
+        env["VK_DRIVER_FILES"] = _vk_icd
+        env.setdefault("DXVK_STATE_CACHE", "0")
     wine = str(bt / "wine")
     wineserver = str(bt / "server" / "wineserver")
     # Bradar collapse the launch-path wineserver churn: the retina regedit + the Steam-Client-Service
