@@ -317,6 +317,14 @@ WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
 WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
 UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk", "vr", "opengl")
 
+# Bradar redist runtimes we PRE-PROVISION into a prefix insted of runnin the 32-bit
+# installers (which fault-storm under HACK22): the real MS d3dcompiler_47 (wines builtin
+# is weak for HLSL shader compile) + a wine-mono MSI for .NET. the VC++ CRT n DirectX
+# Jun2010 r allready wine builtins in every prefix so they need NO install -- only these
+# two r genuine gaps. See the CommonRedist run-path + winemono-32bit-hack22-rootcause.
+REDIST_DIR = PORTABLE_DIR / "redist"                              # deployed (installer stages here)
+REDIST_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/mnc-redist")   # dev source (bundler copies from here)
+
 # Bradar The d3d DLL slots the unified loader routes to. As of 2026-07-04 the design
 # Bradar inverted -- canonical d3d11/dxgi/d3d10core are now the D3DMetal STUBS so games
 # Bradar default to D3DMetal with no per-game files and the loader routes Steam exes
@@ -2815,6 +2823,113 @@ def _stage_unified_dlls(prefix: str) -> None:
         log(f"unified: staged {staged} d3d DLL(s) -> system32 from {src_dir}")
 
 
+def _redist_dir() -> Optional[Path]:
+    """Locate the bundled redist pack (real MS d3dcompiler_47 + a wine-mono MSI)."""
+    for d in (REDIST_DIR, REDIST_DEV):
+        if (d / "d3dcompiler_47" / "d3dcompiler_47.dll").exists():
+            return d
+    return None
+
+
+def _provision_redist_dlls(prefix: str) -> None:
+    """Drop the REAL Microsoft d3dcompiler_47 into a prefix (x64 -> system32, i386 ->
+    syswow64). Wines builtin d3dcompiler_47 is a thin vkd3d-based reimpl that compiles HLSL
+    poorly; the real MS DLL is what shader-heavy games actualy want. Paired with the
+    d3dcompiler_47=native,builtin override in _unified_env (native FIRST, builtin fallbak --
+    NEVER native alone, see winetricks #2344, else an incomplete native can break worse than
+    builtin). Idempotent size-checkd copy. This is a FILE-DROP, not an installer run, so it
+    carrys zero HACK22 fault-storm risk -- the whole point vs runnin the DXSETUP installer."""
+    src = _redist_dir()
+    if src is None:
+        return
+    pairs = (
+        (src / "d3dcompiler_47" / "d3dcompiler_47.dll",
+         Path(prefix) / "drive_c" / "windows" / "system32" / "d3dcompiler_47.dll"),
+        (src / "d3dcompiler_47" / "d3dcompiler_47_32.dll",
+         Path(prefix) / "drive_c" / "windows" / "syswow64" / "d3dcompiler_47.dll"),
+    )
+    staged = 0
+    for s, d in pairs:
+        try:
+            if s.exists() and d.parent.is_dir() and (not d.exists() or s.stat().st_size != d.stat().st_size):
+                shutil.copy2(str(s), str(d))
+                staged += 1
+        except Exception as exc:
+            log(f"redist: provision {d.name} failed: {exc}")
+    if staged:
+        log(f"redist: provisiond real MS d3dcompiler_47 ({staged} arch) -> prefix")
+
+
+def _install_wine_mono(prefix: str, backend: str = "d3dmetal") -> bool:
+    """Install wine-mono (the .NET Framework substitute) into a prefix from the bundled MSI,
+    via the PRE-HACK22 overlay wine -- a plain 'msiexec /i', NOT the real MS .NET NDP*.exe
+    bootstrapper (that one fault-storms forever under HACK22 n never exits, which is the whole
+    reason .NET "installers" appeard broken). Once-per-prefix, guarded by the drive_c/windows/
+    mono sentinel. Returns True if mono is present (allready-there or freshly installd).
+    wine-mono covers most .NET games; the few it cant (WPF / strong-named / anticheat-gated)
+    stay a manual escalation. NEVER auto-runs real .NET. See winemono-32bit-hack22-rootcause."""
+    mono_marker = Path(prefix) / "drive_c" / "windows" / "mono"
+    if mono_marker.is_dir():
+        return True
+    src = _redist_dir()
+    if src is None:
+        return False
+    msis = sorted((src / "wine-mono").glob("wine-mono-*.msi")) if (src / "wine-mono").is_dir() else []
+    if not msis:
+        return False
+    iw = _prehack22_wine()
+    if not iw:
+        log("redist: wine-mono install skipd (no pre-HACK22 overlay wine)")
+        return False
+    msi = str(msis[-1])   # newest cached
+    env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
+    env["WINEDEBUG"] = "-all"
+    # mscoree MUST be enabled for msiexec to register mono -> drop it from the override here
+    env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mshtml="
+    _stage_syswow64(prefix)   # 32-bit subsystem so the overlay wine can run the 32-bit MSI
+    dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    sh = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
+          f"{shlex.quote(iw)} msiexec /i {shlex.quote(msi)} /qn >/dev/null 2>&1")
+    log(f"redist: installing {Path(msi).name} (wine-mono / .NET) via pre-HACK22 wine...")
+    try:
+        subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh], env=env, timeout=600)
+    except Exception as exc:
+        log(f"redist: wine-mono install failed: {exc}")
+        return False
+    ok = mono_marker.is_dir()
+    log(f"redist: wine-mono {'installd' if ok else 'install did NOT land (game .NET may not work)'}")
+    return ok
+
+
+def _game_needs_dotnet(prefix: str, game_dir: str,
+                       bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> bool:
+    """Whether to enable .NET (wine-mono) for THIS game launch. Explicit per-game opt-in
+    (params/bottle_cfg 'needs_dotnet') wins; else auto-detect -- a game that SHIPS a .NET
+    redist in its CommonRedist/Redistributables almost certainly wants .NET. Default OFF so
+    mscoree stays globally disabled (which usefully suppresses the .NET CrashReport
+    red-herring on the majority of games that dont touch .NET at all)."""
+    flag = params.get("needs_dotnet", bottle_cfg.get("needs_dotnet", None))
+    if flag is not None:
+        return bool(flag)
+    try:
+        roots = [Path(game_dir)]
+        shared = _steam_dir(prefix) / "steamapps" / "common" / "Steamworks Shared"
+        if shared.is_dir():
+            roots.append(shared)
+        for root in roots:
+            for cr in ("_CommonRedist", "Redistributables"):
+                p = root / cr
+                if not p.is_dir():
+                    continue
+                for sub in p.iterdir():
+                    nm = sub.name.lower()
+                    if sub.is_dir() and ("dotnet" in nm or ".net" in nm or "netfx" in nm):
+                        return True
+    except Exception:
+        pass
+    return False
+
+
 def _stage_unified_mf(prefix: str) -> None:
     """Stage the game-side winegstreamer video bridge into a prefix and re-point the
     wg_* MF CLSIDs at it so game intro videos decode. Idempotent: the DLL copy is
@@ -2944,7 +3059,8 @@ def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
 
 
 def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
-                 for_steam: bool = False, gst_debug: str = "") -> Dict[str, str]:
+                 for_steam: bool = False, gst_debug: str = "",
+                 needs_dotnet: bool = False) -> Dict[str, str]:
     """Env for the unified wine. Steam exes always render via DXMT (loader gate);
     non-steam games follow MNC_GAME_BACKEND. GStreamer (MF/H.264 video) is wired for
     GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none."""
@@ -2968,6 +3084,11 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                      # paths above are absent. After Homebrew so existing dev setups are unchanged.
                      str(PORTABLE_DIR / "mnc-fonts"),
                      "/usr/lib"])
+    # Bradar d3dcompiler_47=n,b -> the real MS DLL we provision (native FIRST) with wines weak
+    # builtin as fallbak (NEVER native alone, winetricks #2344). mscoree= disables .NET (kills
+    # the CrashReport red-herring) EXCEPT for needs_dotnet games, where wine-mono must load.
+    _mscoree = "" if needs_dotnet else "mscoree=;"
+    dll_ovr = f"winemenubuilder.exe=d;{_mscoree}mshtml=;d3dcompiler_47=n,b;nvapi,nvapi64="
     env.update({
         "WINEPREFIX": str(prefix),
         "WINEMSYNC": "1",
@@ -2978,7 +3099,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         "CX_APPLEGPTK_LIBD3DSHARED_PATH": libd3d,
         "FONTCONFIG_PATH": "/usr/local/opt/fontconfig/etc/fonts",
         "DYLD_FALLBACK_LIBRARY_PATH": dyld,
-        "WINEDLLOVERRIDES": "winemenubuilder.exe=d;mscoree=;mshtml=;nvapi,nvapi64=",
+        "WINEDLLOVERRIDES": dll_ovr,
         "MNC_STEAM_DXMT": "1",
         # Bradar skip the slow i386 Wow64Install during wineboot (10s vs 309s) and keep
         # the PE loader resolving 32-bit builtins from the wine lib dir post-bootstrap
@@ -3354,6 +3475,13 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     _stage_unified_dlls(str(prefix))
     _stage_unified_mf(str(prefix))
     game_backend = _unified_game_backend(bottle_cfg, params.get("backend", ""))
+    _provision_redist_dlls(str(prefix))   # real MS d3dcompiler_47 file-drop for games launchd in-Steam
+    # Bradar install the uncoverd SHARED CommonRedist (mfc/physx/...) so games startd from Steams OWN
+    # UI (not via MNC's game launch) still get em; skip-listd + marker-gated so its ~instant after 1st.
+    try:
+        _run_shared_commonredist(str(prefix), game_backend)
+    except Exception as exc:
+        log(f"shared redist (steam launch) skipped: {exc}")
     env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True)
     wine = str(bt / "wine")
     wineserver = str(bt / "server" / "wineserver")
@@ -3754,6 +3882,117 @@ def _run_installscript_redists(prefix: str, game_dir: str, backend: str) -> None
             f"wine so Steam wont fault-storm on them")
 
 
+# redist kinds allready satisfied by wine builtins (VC++ CRT / DirectX Jun2010) or by wine-mono
+# (.NET) -> we DONT run their 32-bit installers (redundant, n they .cmd/bootstrap fault-storm);
+# the has-run SKIP path + the builtins/wine-mono/d3dcompiler_47-drop cover em. everything ELSE
+# (mfc / physx / openal / xna / exotic) has NO builtin -> the run-path actualy installs it.
+_REDIST_BUILTIN_COVERED = ("vcredist", "vc_redist", "visual c++", "directx", "dxsetup",
+                           "dotnet", "netfx", "ndp", ".net framework")
+
+
+def _run_shared_commonredist(prefix: str, backend: str) -> None:
+    """INSTALL the SHARED 'Steamworks Shared/_CommonRedist' redists that have NO wine builtin
+    (mfc / physx / openal / xna / ...) via the pre-HACK22 overlay wine, so games that need em
+    actualy get em -- Steams own run of these 32-bit Burn/NSIS installers fault-storms under
+    HACK22 so it never installs em, it just marks em has-run. The builtin-coverd ones (VC++ n
+    DirectX = wine builtins, .NET = wine-mono) r deliberately SKIPD (redundant). 3 fixes over
+    the game-local path: (1) %INSTALLDIR% resolves PER-VDF to the dir just ABOVE _CommonRedist,
+    not the game dir; (2) .cmd/.bat run via 'wine cmd /c' (wine cant exec a .cmd as a PE, the
+    game-local path silently continue-skips them); (3) idempotency keys a prefix-local marker
+    file, NOT the reg key -- the has-run SKIP path sets that same reg key independently, so a
+    reg-key gate would skip forever. On any run failure we STILL leave the has-run key set so a
+    launch is never wedged. See canonical-patch + winemono-32bit-hack22-rootcause."""
+    iw = _prehack22_wine()
+    if not iw:
+        return
+    shared = _steam_dir(prefix) / "steamapps" / "common" / "Steamworks Shared"
+    if not shared.is_dir():
+        return
+    vdfs = sorted(shared.rglob("installscript*.vdf"))
+    if not vdfs:
+        return
+    marker_path = Path(prefix) / ".mnc_redists_done.json"   # {"<vdf_dir>::<label>": 1}
+    try:
+        done = json.loads(marker_path.read_text()) if marker_path.exists() else {}
+    except Exception:
+        done = {}
+    block_re = re.compile(r'"([^"]+)"\s*\{[^{}]*?"HasRunKey"\s+"([^"]+)"', re.IGNORECASE | re.DOTALL)
+    def _field(t, name):
+        m = re.search(r'"' + name + r'"\s+"([^"]*)"', t, re.IGNORECASE)
+        return m.group(1) if m else None
+    env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
+    env["WINEDEBUG"] = "-all"
+    _stage_syswow64(prefix)
+    dyld = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    handled = 0
+    for vdf in vdfs:
+        try:
+            txt = vdf.read_text(errors="ignore")
+        except Exception:
+            continue
+        if "hasrunkey" not in txt.lower():
+            continue
+        # Blocker 1: %INSTALLDIR% = the dir just ABOVE _CommonRedist for THIS vdf (fallbak: shared)
+        installdir = shared
+        for parent in vdf.parents:
+            if parent.name == "_CommonRedist":
+                installdir = parent.parent
+                break
+        hay_dir = str(vdf).lower()
+        for m in block_re.finditer(txt):
+            label, key = m.group(1), m.group(2)
+            # skip builtin/wine-mono-coverd redists (dont re-run redundant/hanging installers)
+            if any(k in hay_dir or k in label.lower() for k in _REDIST_BUILTIN_COVERED):
+                continue
+            mk = f"{vdf.parent}::{label}"
+            if done.get(mk):
+                continue
+            tail = txt[m.end():m.end() + 900]
+            proc = _field(tail, "process 1")
+            if not proc:
+                continue
+            cmd_args = _field(tail, "command 1") or ""
+            key = key.replace("\\\\", "\\").replace("HKEY_LOCAL_MACHINE", "HKLM")
+            unixpath = (proc.replace("\\\\", "\\").replace("%INSTALLDIR%", str(installdir))
+                        .replace("\\", "/"))
+            if not Path(unixpath).exists():
+                continue
+            low = unixpath.lower()
+            # Blocker 2: wine cant exec a .cmd/.bat as a PE -> run it thru the cmd.exe builtin
+            if low.endswith(".cmd") or low.endswith(".bat"):
+                runcmd = f"{shlex.quote(iw)} cmd /c {shlex.quote(unixpath)} {cmd_args}".rstrip()
+            else:
+                runcmd = f"{shlex.quote(iw)} {shlex.quote(unixpath)} {cmd_args}".rstrip()
+            log(f"shared redist install (pre-HACK22): {Path(unixpath).name} {cmd_args}".rstrip())
+            sh = f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n{runcmd} >/dev/null 2>&1"
+            try:
+                subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh], env=env, timeout=900)
+            except Exception as exc:
+                log(f"shared redist {Path(unixpath).name} run failed: {exc}")
+            # set has-run (+ Wow6432Node mirror) so Steam skips its OWN storming run
+            variants = {key}
+            if "\\Software\\" in key and "Wow6432Node" not in key:
+                variants.add(key.replace("\\Software\\", "\\Software\\Wow6432Node\\", 1))
+            for kp in variants:
+                rc = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
+                      f"{shlex.quote(iw)} reg add {shlex.quote(kp)} /v {shlex.quote(label)} "
+                      f"/t REG_DWORD /d 1 /f >/dev/null 2>&1")
+                try:
+                    subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", rc], env=env, timeout=60)
+                except Exception:
+                    pass
+            # Blocker 3: mark done in the prefix-local marker (regardless of run outcome so a
+            # broken installer never re-fires every launch; has-run above keeps Steam un-wedged)
+            done[mk] = 1
+            handled += 1
+    if handled:
+        try:
+            marker_path.write_text(json.dumps(done))
+        except Exception:
+            pass
+        log(f"shared redist: processd {handled} uncoverd CommonRedist redist(s) via pre-HACK22 wine")
+
+
 def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str, Any],
                          params: Dict[str, Any]) -> Any:
     """Launch a game through the unified wine; the loader routes its d3d to the
@@ -3775,12 +4014,22 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
         return {"pid": proc.pid}
     _stage_unified_dlls(str(prefix))
     _stage_unified_mf(str(prefix))
+    _provision_redist_dlls(str(prefix))   # real MS d3dcompiler_47 file-drop (no installer, safe)
     _ensure_steam_sdl_resolvable(str(prefix))
     backend = _unified_game_backend(bottle_cfg, params.get("backend", ""))
     metal_hud = params.get("metal_hud", bottle_cfg.get("metal_hud", False))
     debug = bool(params.get("debug", bottle_cfg.get("debug", False)))
     steam_mode = params.get("steam_mode", "silent")
     is_steam_bottle = bottle_cfg.get("launcher_type", "steam") == "steam"
+    # Bradar decide .NET up-front: a game that ships a .NET redist (or is flagged) gets wine-mono
+    # installd + mscoree ENABLED for its launch. default off so mscoree stays globally disabled,
+    # which suppresses the .NET CrashReport red-herring on the games that never touch .NET.
+    needs_dotnet = _game_needs_dotnet(str(prefix), str(exe_path.parent), bottle_cfg, params)
+    if needs_dotnet:
+        try:
+            _install_wine_mono(str(prefix), backend)
+        except Exception as exc:
+            log(f".NET (wine-mono) install skipped: {exc}")
     # Bradar pre-instal the games install-script redists (VC++/Vulkan RT/Rockstar Launcher/
     # Social Club/.NET) via the pre-HACK22 wine BEFORE steam runs its own install-script.
     # steam fires them under our HACK22 wine where the 32-bit Burn bundles fault-storm at
@@ -3791,6 +4040,13 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
             _run_installscript_redists(str(prefix), str(exe_path.parent), backend)
         except Exception as exc:
             log(f"redist pre-install skipped: {exc}")
+        # Bradar + the SHARED Steamworks-Shared/_CommonRedist redists that have NO wine builtin
+        # (mfc/physx/openal/...) -- the game-local scan above misses em (theyr a sibling of the
+        # game dir); this installs the uncoverd ones + skips the builtin-coverd VC++/DirectX/.NET.
+        try:
+            _run_shared_commonredist(str(prefix), backend)
+        except Exception as exc:
+            log(f"shared redist pre-install skipped: {exc}")
     if steam_mode != "none" and is_steam_bottle:
         # Bradar if steam is already up we DONT kill/relaunch it (the old code always ran
         # _launch_steam_unified which does a "wineserver -k" so it was killin n re-bootstrappin
@@ -3808,7 +4064,8 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
                                        "backend": params.get("backend", "")})
             except Exception as exc:
                 log(f"unified: steam auto-launch failed: {exc} (continuing)")
-    env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"))
+    env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"),
+                       needs_dotnet=needs_dotnet)
     # Bradar VR: register the wineopenxr bridge as the prefixs active OpenXR runtime + force
     # our bundled x86_64 Monado runtime (an arm64 system one wont dlopen into the Rosetta wine)
     if backend == "vr":

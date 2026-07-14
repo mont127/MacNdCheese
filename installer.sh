@@ -2316,6 +2316,7 @@ install_wine_unified() {
     find "$dst" -name 'wine' -type f -exec chmod +x {} \; 2>/dev/null || true
     xattr -dr com.apple.quarantine "$dst" 2>/dev/null || true
     stage_unified_d3d_pack "$dst"
+    stage_redist_pack
     sign_unified_wine "$dst"
     echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
     return 0
@@ -2339,6 +2340,7 @@ install_wine_unified() {
     fi
   done
   stage_unified_d3d_pack "$dst"
+  stage_redist_pack
   sign_unified_wine "$dst"
   echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
 }
@@ -2460,6 +2462,31 @@ stage_unified_d3d_pack() {
   else
     echo "stage_unified_d3d_pack: WARNING no libd3dshared.dylib found (d3dmetal backend needs it)"
   fi
+}
+
+stage_redist_pack() {
+  # copy the redist pre-provision pack (real MS d3dcompiler_47 + a wine-mono MSI) into deps/redist.
+  # the backend PRE-PROVISIONs these into a prefix at launch (_provision_redist_dlls /
+  # _install_wine_mono) insted of runnin the 32-bit VC++/.NET installers, which fault-storm under
+  # HACK22. source order: env, Resources next to us, the dev tree.
+  local rdst rsrc c
+  rdst="${PORTABLE_DIR}/redist"
+  rsrc=""
+  for c in \
+    "${MNC_REDIST_SRC:-}" \
+    "${RESOURCES_DIR:-}/redist" \
+    "$HOME/macndcheese/mnc-redist" \
+    "/Volumes/ASAFE/D3DMETALWINEDEV/mnc-redist"; do
+    [ -n "$c" ] && [ -f "$c/d3dcompiler_47/d3dcompiler_47.dll" ] && { rsrc="$c"; break; }
+  done
+  if [ -z "$rsrc" ]; then
+    echo "stage_redist_pack: WARNING no redist pack found (d3dcompiler_47 / .NET pre-provision off)"
+    return 0
+  fi
+  mkdir -p "$rdst/d3dcompiler_47" "$rdst/wine-mono"
+  cp -f "$rsrc/d3dcompiler_47/"*.dll "$rdst/d3dcompiler_47/" 2>/dev/null || true
+  [ -d "$rsrc/wine-mono" ] && cp -f "$rsrc/wine-mono/"*.msi "$rdst/wine-mono/" 2>/dev/null || true
+  echo "stage_redist_pack: staged redist pack from $rsrc ($(du -sh "$rdst" 2>/dev/null | cut -f1))"
 }
 
 uninstall_wine_unified() {
