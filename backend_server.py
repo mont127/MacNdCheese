@@ -3384,6 +3384,35 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         _batch_reg_path.write_text(batch_reg, encoding="utf-8")
     except Exception as _exc:
         log(f"steam batch.reg write failed (non-fatal): {_exc}")
+    # Bradar: the `wine regedit` above only sets Start=4 in the RUNNING hive -- an ALREADY-MADE
+    # prefix keeps "Start"=dword:00000003 ON DISK in system.reg, so the SCM can still cold-JIT the
+    # SteamService.exe respawn loop (a full P-core, THE big slowness) befor the regedit lands. So we
+    # also rewrite it DIRECTLY in system.reg while the wineserver is dead (right after the -k below),
+    # so the value is already 4 the moment wine loads the hive. Line-based (no regedit) so it fixes
+    # existing bottles on startup. Confirmed: user reported Steam "much faster" after this flip.
+    _svcfix_py = (
+        "import sys, io\n"
+        "p = sys.argv[1]\n"
+        "try:\n"
+        "    L = io.open(p, encoding='utf-8', errors='replace').read().splitlines(keepends=True)\n"
+        "except Exception:\n"
+        "    sys.exit(0)\n"
+        "insec = False; changd = False\n"
+        "for i, ln in enumerate(L):\n"
+        "    s = ln.lstrip()\n"
+        "    if s.startswith('['):\n"
+        "        insec = 'Steam Client Service]' in ln\n"
+        "    elif insec and s.startswith('\"Start\"=dword:'):\n"
+        "        if ln.strip() != '\"Start\"=dword:00000004':\n"
+        "            L[i] = '\"Start\"=dword:00000004' + chr(10); changd = True\n"
+        "if changd:\n"
+        "    io.open(p, 'w', encoding='utf-8').write(''.join(L))\n"
+    )
+    _svcfix_path = Path(tempfile.gettempdir()) / "mnc_svcfix.py"
+    try:
+        _svcfix_path.write_text(_svcfix_py, encoding="utf-8")
+    except Exception as _exc:
+        log(f"steam svcfix.py write failed (non-fatal): {_exc}")
     silent = bool(params.get("silent", False))
     steam_args = STEAM_SILENT_ARGS if silent else "-tcp"
     log_path = str(LOG_DIR / "Steam-wine.log")
@@ -3397,6 +3426,9 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         # freetype -> no fonts -> tiny empty window. run wine directly under the arch shell
         f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(env['DYLD_FALLBACK_LIBRARY_PATH'])}\n"
         f"{shlex.quote(wineserver)} -k 2>/dev/null; sleep 1\n"
+        # Bradar: with the server now dead, disable the Steam Client Service DIRECTLY in system.reg
+        # (flips Start 3->4 on disk) so even already-made bottles get it the moment wine loads the hive.
+        f"python3 {shlex.quote(str(_svcfix_path))} {shlex.quote(str(Path(prefix) / 'system.reg'))} 2>/dev/null\n"
         f"cd {shlex.quote(str(steam_dir))} || exit 1\n"
         f"rm -f .crash 2>/dev/null\n"
         # Bradar keep config/htmlcache (the CEF compiled-UI cache) so steam dont re-cache +
