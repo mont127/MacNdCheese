@@ -691,6 +691,10 @@ struct SetupSettingsTab: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button(L("Reinstall Selected")) { runReinstall() }
+                        .buttonStyle(.bordered)
+                        .disabled(isRunning || isLoadingStatus)
+                        .help(L("Force-reinstall every selected component, even ones already installed"))
                     Button(L("Update")) { runUpdate() }
                         .buttonStyle(.borderedProminent)
                         .tint(Color.brand)
@@ -745,6 +749,48 @@ struct SetupSettingsTab: View {
     }
 
     private func runUpdate() {
+        // Plan actions: install if newly selected or an update is available; uninstall if deselected but was installed
+        var uninstallActions: [String] = []
+        var installActions: [String] = []
+        func plan(_ on: Bool, _ was: Bool, hasUpdate: Bool = false, install: String, uninstall: String) {
+            if on && (!was || hasUpdate) { installActions.append(install) }
+            else if !on && was { uninstallActions.append(uninstall) }
+        }
+        plan(wantTools,       hadTools,       hasUpdate: toolsHasUpdate,       install: "install_tools",        uninstall: "uninstall_tools")
+        plan(wantWineStable,  hadWineStable,  hasUpdate: wineStableHasUpdate,  install: "install_wine",         uninstall: "uninstall_wine")
+        plan(wantWineStaging, hadWineStaging, hasUpdate: wineStagingHasUpdate, install: "install_wine_staging", uninstall: "uninstall_wine_staging")
+        plan(wantWineUnified, hadWineUnified,
+             install: "install_wine_unified", uninstall: "uninstall_wine_unified")
+        plan(wantWineDevel, hadWineDevel,
+             install: "install_wine_devel", uninstall: "uninstall_wine_devel")
+        plan(wantDxvk,        hadDxvk,        install: "install_dxvk",         uninstall: "uninstall_dxvk")
+        plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
+        plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
+        plan(wantDxmt,        hadDxmt,        hasUpdate: dxmtHasUpdate,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
+        // Bradar one VR action installs/uninstalls the whole openxr stack (installer install_vr)
+        plan(wantVR, hadVR, install: "install_vr", uninstall: "uninstall_vr")
+
+        startInstaller(actions: uninstallActions + installActions)
+    }
+
+    private func runReinstall() {
+        // Force-reinstall every currently selected component, regardless of whether it's already installed
+        var installActions: [String] = []
+        if wantTools       { installActions.append("install_tools") }
+        if wantWineStable  { installActions.append("install_wine") }
+        if wantWineStaging { installActions.append("install_wine_staging") }
+        if wantWineUnified { installActions.append("install_wine_unified") }
+        if wantWineDevel   { installActions.append("install_wine_devel") }
+        if wantDxvk        { installActions.append("install_dxvk") }
+        if wantVkd3d       { installActions.append("install_vkd3d") }
+        if wantGptkDlls    { installActions.append("install_gptk_dlls") }
+        if wantDxmt        { installActions.append("install_dxmt") }
+        if wantVR          { installActions.append("install_vr") }
+        startInstaller(actions: installActions)
+    }
+
+    private func startInstaller(actions: [String]) {
+        guard !actions.isEmpty else { return }
         guard let installerPath = InstallerPathStore.installerScriptPath() else {
             return
         }
@@ -753,37 +799,13 @@ struct SetupSettingsTab: View {
         let pathSettings = InstallerPathStore.current()
         let mesaUrl = InstallerPathStore.mesaURL
 
-        // Plan actions: install if toggled on, uninstall if toggled off but was installed
-        var uninstallActions: [String] = []
-        var installActions: [String] = []
-        func plan(_ on: Bool, _ was: Bool, install: String, uninstall: String) {
-            if on { installActions.append(install) }
-            else if was { uninstallActions.append(uninstall) }
-        }
-        plan(wantTools,       hadTools,       install: "install_tools",        uninstall: "uninstall_tools")
-        plan(wantWineStable,  hadWineStable,  install: "install_wine",         uninstall: "uninstall_wine")
-        plan(wantWineStaging, hadWineStaging, install: "install_wine_staging", uninstall: "uninstall_wine_staging")
-        plan(wantWineUnified, hadWineUnified,
-             install: "install_wine_unified", uninstall: "uninstall_wine_unified")
-        plan(wantWineDevel, hadWineDevel,
-             install: "install_wine_devel", uninstall: "uninstall_wine_devel")
-        plan(wantDxvk,        hadDxvk,        install: "install_dxvk",         uninstall: "uninstall_dxvk")
-        plan(wantVkd3d,       hadVkd3d,       install: "install_vkd3d",        uninstall: "uninstall_vkd3d")
-        plan(wantGptkDlls,    hadGptkDlls,    install: "install_gptk_dlls",    uninstall: "uninstall_gptk_dlls")
-        plan(wantDxmt,        hadDxmt,        install: "install_dxmt",         uninstall: "uninstall_dxmt")
-        // Bradar one VR action installs/uninstalls the whole openxr stack (installer install_vr)
-        plan(wantVR, hadVR, install: "install_vr", uninstall: "uninstall_vr")
-
-        let allActions = uninstallActions + installActions
-        guard !allActions.isEmpty else { return }
-
         clearInstallState()
         isRunning = true
 
         Task {
             guard let jobId = await backend.runInstaller(
                 installerPath: installerPath,
-                actions: allActions,
+                actions: actions,
                 prefix: prefix,
                 dxvkSrc: pathSettings.dxvkSrc,
                 dxvk64: pathSettings.dxvkInstall64,

@@ -256,6 +256,8 @@ enum Localization {
         "MENU": "菜单",
         "Back": "返回",
         "Update": "更新",
+        "Reinstall Selected": "重新安装所选项",
+        "Force-reinstall every selected component, even ones already installed": "强制重新安装所有已选中的组件，即使已经安装",
         "%@%% — Paused": "%@%% — 已暂停",
         "Queue #%@": "队列 #%@",
         "Installing…": "正在安装…",
