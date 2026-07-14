@@ -506,6 +506,10 @@ def _do_bottles_steam(ns, backend: "Backend", state: State) -> None:
 
 
 def _do_engines_list(ns, backend: "Backend", state: State) -> None:
+    scope = getattr(ns, "scope", None)
+    if scope in ("installed", "uninstalled"):
+        _do_engines_list_components(ns, backend, scope)
+        return
     data = backend.call("list_backends")
     if ns.as_json:
         _emit(data, True)
@@ -516,6 +520,44 @@ def _do_engines_list(ns, backend: "Backend", state: State) -> None:
         label = b.get("label", "") + (" (default)" if b.get("id") == auto else "")
         rows.append((b.get("id", ""), label, "yes" if b.get("available") else "no"))
     _print_table(("id", "label", "available"), rows)
+
+
+def _do_engines_list_components(ns, backend: "Backend", scope: str) -> None:
+    """`engines list installed`/`engines list uninstalled` -- same COMPONENTS registry
+    `install`/`uninstall`/`reinstall` use, filtered by current status."""
+    status = backend.call("get_components_status") or {}
+    update_info = backend.call("get_update_info") or {}
+    want_installed = scope == "installed"
+    matches = [c for c in COMPONENTS if bool(status.get(c["status_key"])) == want_installed]
+    if ns.as_json:
+        if want_installed:
+            markers = _read_version_markers()
+            data = [{
+                "id": c["id"], "label": c["label"],
+                "installed_version": markers.get(c["version_marker"]) if c["version_marker"] else None,
+                "latest_version": update_info.get(c["latest_field"]) if c["latest_field"] else None,
+                "update_available": bool(c["update_key"] and update_info.get(c["update_key"])),
+            } for c in matches]
+        else:
+            data = [{"id": c["id"], "label": c["label"]} for c in matches]
+        _emit(data, True)
+        return
+    if not matches:
+        print(_paint(f"No components are {scope}.", _DIM))
+        return
+    if want_installed:
+        markers = _read_version_markers()
+        rows = []
+        for c in matches:
+            installed_version = markers.get(c["version_marker"], "?") if c["version_marker"] else "-"
+            latest_version = update_info.get(c["latest_field"]) if c["latest_field"] else None
+            update = "yes" if (c["update_key"] and update_info.get(c["update_key"])) else \
+                     ("no" if c["update_key"] else "n/a")
+            rows.append((c["label"], installed_version, latest_version or "-", update))
+        _print_table(("component", "installed", "latest", "update available"), rows)
+    else:
+        for c in matches:
+            print(c["label"])
 
 
 def _do_engines_status(ns, backend: "Backend", state: State) -> None:
@@ -531,6 +573,308 @@ def _do_engines_status(ns, backend: "Backend", state: State) -> None:
     rows = [(w.get("id", ""), "yes" if w.get("installed") else "no", w.get("version") or "", w.get("path") or "")
             for w in wine.get("variants", [])]
     _print_table(("id", "installed", "version", "path"), rows)
+
+
+# ---- engines: component install/uninstall/reinstall ------------------------------
+# Mirrors SetupSettingsTab's component list in Sources/SettingsSheet.swift -- keep
+# these two in sync if a component is ever added/removed there.
+# version_marker: key in the .mnc_versions marker file (see _read_version_markers) that
+# holds the installed tag, or None if this component doesn't record one. latest_field:
+# the get_update_info field with the latest available tag/name, or None if the backend
+# doesn't track updates for it (wine_devel/vr write a marker but nothing compares it;
+# wine_unified/dxvk/vkd3d/gptk_dlls don't even write one -- installer.sh never calls
+# write_component_version for those).
+COMPONENTS = [
+    {"id": "tools", "label": "Tools (git, 7z, wget)",
+     "install": "install_tools", "uninstall": "uninstall_tools",
+     "status_key": "has_tools", "update_key": "tools_update_available",
+     "version_marker": "tools", "latest_field": "cheese_latest_tag",
+     "aliases": ["tools", "tool"]},
+    {"id": "wine_stable", "label": "Wine (Stable)",
+     "install": "install_wine", "uninstall": "uninstall_wine",
+     "status_key": "has_wine_stable", "update_key": "wine_stable_update_available",
+     "version_marker": "wine_stable", "latest_field": "cheese_latest_tag",
+     "aliases": ["wine stable", "stable"]},
+    {"id": "wine_staging", "label": "Wine (Staging)",
+     "install": "install_wine_staging", "uninstall": "uninstall_wine_staging",
+     "status_key": "has_wine_staging", "update_key": "wine_staging_update_available",
+     "version_marker": "wine_staging", "latest_field": "gcenx_latest_tag",
+     "aliases": ["wine staging", "staging"]},
+    {"id": "wine_unified", "label": "Wine Unified (Steam + games engine)",
+     "install": "install_wine_unified", "uninstall": "uninstall_wine_unified",
+     "status_key": "has_wine_unified", "update_key": None,
+     "version_marker": None, "latest_field": None,
+     "aliases": ["wine unified", "unified"]},
+    {"id": "wine_devel", "label": "Wine Devel (SDL3/OpenGL)",
+     "install": "install_wine_devel", "uninstall": "uninstall_wine_devel",
+     "status_key": "has_wine_devel", "update_key": None,
+     "version_marker": "wine_devel", "latest_field": None,
+     "aliases": ["wine devel", "devel"]},
+    {"id": "dxvk", "label": "DXVK",
+     "install": "install_dxvk", "uninstall": "uninstall_dxvk",
+     "status_key": "has_dxvk64", "update_key": None,
+     "version_marker": None, "latest_field": None,
+     "aliases": ["dxvk"]},
+    {"id": "vkd3d", "label": "VKD3D-Proton",
+     "install": "install_vkd3d", "uninstall": "uninstall_vkd3d",
+     "status_key": "has_vkd3d", "update_key": None,
+     "version_marker": None, "latest_field": None,
+     "aliases": ["vkd3d", "vkd3d proton"]},
+    {"id": "gptk_dlls", "label": "D3DMetal (GPTK DLLs)",
+     "install": "install_gptk_dlls", "uninstall": "uninstall_gptk_dlls",
+     "status_key": "has_gptk_dlls", "update_key": None,
+     "version_marker": None, "latest_field": None,
+     "aliases": ["gptk dlls", "gptk"]},
+    {"id": "dxmt", "label": "DXMT",
+     "install": "install_dxmt", "uninstall": "uninstall_dxmt",
+     "status_key": "has_dxmt", "update_key": "dxmt_update_available",
+     "version_marker": "dxmt", "latest_field": "dxmt_latest_tag",
+     "aliases": ["dxmt"]},
+    {"id": "vr", "label": "VR (OpenXR)",
+     "install": "install_vr", "uninstall": "uninstall_vr",
+     "status_key": "has_monado_runtime", "update_key": None,
+     "version_marker": "vr", "latest_field": None,
+     "aliases": ["vr", "openxr"]},
+]
+
+
+def _normalize_component(s: str) -> str:
+    return " ".join(s.lower().replace("-", " ").split())
+
+
+def _resolve_component(token: str) -> dict:
+    """name -> a COMPONENTS entry. an exact alias match wins outright (so "stable",
+    "staging", "devel", "unified" are each unambiguous shorthand on their own even
+    though they're also substrings of another component's alias); only a genuinely
+    ambiguous bare root like "wine" falls through to listing every component whose
+    alias contains it, so the caller finds out which one to be specific about."""
+    norm = _normalize_component(token)
+    exact = [c for c in COMPONENTS if norm in {_normalize_component(a) for a in c["aliases"]}]
+    if len(exact) == 1:
+        return exact[0]
+    partial = [c for c in COMPONENTS
+               if any(norm in _normalize_component(a) or _normalize_component(a) in norm
+                      for a in c["aliases"])]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        names = ", ".join(f'"{c["aliases"][0]}"' for c in partial)
+        raise BackendError(f"{token!r} is ambiguous -- which one do you mean: {names}?")
+    known = ", ".join(sorted({c["aliases"][0] for c in COMPONENTS}))
+    raise BackendError(f"no component named {token!r} -- known components: {known}")
+
+
+def _resolve_components(tokens: "list[str]") -> "list[dict]":
+    seen_ids: set = set()
+    out = []
+    for token in tokens:
+        c = _resolve_component(token)
+        if c["id"] not in seen_ids:
+            seen_ids.add(c["id"])
+            out.append(c)
+    return out
+
+
+APP_BUNDLE_ID = "com.marcel.macncheese"
+
+
+def _defaults_read(key: str, default: str) -> str:
+    """read a value the Swift app stored via @AppStorage -- same domain, same key,
+    so the cli installs to whatever custom paths the user set in Settings -> Paths."""
+    try:
+        result = subprocess.run(["defaults", "read", APP_BUNDLE_ID, key],
+                                 capture_output=True, text=True, timeout=3)
+    except Exception:
+        return default
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else default
+
+
+def _installer_paths() -> dict:
+    """mirrors InstallerPathStore's keys/defaults (Sources/SettingsSheet.swift)."""
+    home = os.path.expanduser("~")
+    gptk_default = os.path.join(home, "macndcheese", "gptk")
+    if not os.path.isdir(gptk_default):
+        gptk_default = os.path.join(home, "gptk")
+    return {
+        "dxvk_src": _defaults_read("installerPaths.dxvkSrc", os.path.join(home, "DXVK-macOS")),
+        "dxvk64": _defaults_read("installerPaths.dxvkInstall", os.path.join(home, "dxvk-release")),
+        "dxvk32": _defaults_read("installerPaths.dxvkInstall32", os.path.join(home, "dxvk-release-32")),
+        "mesa": _defaults_read("installerPaths.mesaDir", os.path.join(home, "mesa", "x64")),
+        "dxmt": _defaults_read("installerPaths.dxmtDir", os.path.join(home, "dxmt")),
+        "vkd3d": _defaults_read("installerPaths.vkd3dDir", os.path.join(home, "vkd3d-proton")),
+        "gptk_dir": _defaults_read("installerPaths.gptkDir", gptk_default),
+    }
+
+
+MESA_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-msvc.7z"
+
+VERSION_MARKER_PATH = os.path.expanduser(
+    "~/Library/Application Support/MacNCheese/deps/.mnc_versions")
+
+
+def _read_version_markers() -> dict:
+    """same file + format as backend_server.py's VERSION_MARKER/_read_version_marker --
+    read directly since there's no backend command that returns raw installed tags."""
+    try:
+        with open(VERSION_MARKER_PATH, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return {}
+    out = {}
+    for line in lines:
+        if "=" in line:
+            key, _, value = line.partition("=")
+            out[key.strip()] = value.strip()
+    return out
+
+
+def _installer_script_path() -> "str | None":
+    candidates = [os.path.join(HERE, "installer.sh"), os.path.expanduser("~/macndcheese/installer.sh")]
+    return next((p for p in candidates if os.path.exists(p)), None)
+
+
+# installer.sh's install_*/uninstall_* actions for every one of these components
+# install to shared, machine-wide locations (PORTABLE_DIR / $HOME/...) -- grepping
+# the whole script confirms $PREFIX_DIR/$WINEPREFIX is only ever read by init_prefix
+# (bottle creation) and two unrelated openxr-registration actions, never by any
+# action in COMPONENTS above. So there's genuinely no bottle to scope these to;
+# a fixed placeholder is all `run_installer` needs.
+_INSTALLER_PLACEHOLDER_PREFIX = os.path.expanduser("~/wined")
+
+
+def _run_installer_job(backend: "Backend", actions: "list[str]") -> None:
+    if not actions:
+        print(_paint("Nothing to do.", _DIM))
+        return
+    installer_path = _installer_script_path()
+    if not installer_path:
+        raise BackendError("installer.sh not found -- looked next to the cli and in ~/macndcheese/installer.sh")
+    paths = _installer_paths()
+    job = backend.call("run_installer", {
+        "installer_path": installer_path,
+        "actions": actions,
+        "prefix": _INSTALLER_PLACEHOLDER_PREFIX,
+        "dxvk_src": paths["dxvk_src"],
+        "dxvk64": paths["dxvk64"],
+        "dxvk32": paths["dxvk32"],
+        "mesa": paths["mesa"],
+        "mesa_url": MESA_URL,
+        "dxmt": paths["dxmt"],
+        "vkd3d": paths["vkd3d"],
+        "gptk_dir": paths["gptk_dir"],
+    }) or {}
+    job_id = job.get("job_id")
+    offset = 0
+    failed = False
+    while True:
+        time.sleep(0.5)
+        progress = backend.call("get_install_progress", {"job_id": job_id, "offset": offset}) or {}
+        for line in progress.get("lines", []):
+            print(line)
+        offset = progress.get("total_lines", offset)
+        if progress.get("done"):
+            failed = progress.get("failed", False)
+            break
+    if failed:
+        raise BackendError("one or more actions failed -- see the log above")
+    print(_paint("Done.", _GRN))
+
+
+def _is_wildcard(names: "list[str]") -> bool:
+    return len(names) == 1 and names[0].lower() in ("*", "all")
+
+
+def _expand_or_resolve(names: "list[str]", status: dict, only_installed: bool) -> "list[dict]":
+    """"*"/"all" expands to every component (or, when only_installed, just the ones
+    currently installed); any other input goes through the normal name resolver so
+    ambiguous/unknown names still get a clear error."""
+    if _is_wildcard(names):
+        if only_installed:
+            return [c for c in COMPONENTS if status.get(c["status_key"])]
+        return list(COMPONENTS)
+    return _resolve_components(names)
+
+
+def _print_dry_run(pairs: "list[tuple[str, str]]") -> None:
+    if not pairs:
+        print(_paint("Nothing to do.", _DIM))
+        return
+    print("Would run:")
+    for label, action in pairs:
+        print(f"  {action}  ({label})")
+
+
+def _confirm_wildcard(verb: str, labels: "list[str]", yes: bool) -> bool:
+    """"*"/"all" is exactly what let an earlier `engines install all` silently try to
+    install 4 real components on a live machine -- require --yes (or an interactive
+    y/N) before a wildcard actually touches more than one thing."""
+    if yes or not labels:
+        return True
+    names = ", ".join(labels)
+    if not sys.stdin.isatty():
+        raise BackendError(f"refusing to {verb} {len(labels)} component(s) without --yes "
+                            f"in a non-interactive shell: {names}")
+    if input(f"This will {verb} {len(labels)} component(s): {names}. Continue? [y/N] "
+             ).strip().lower() not in ("y", "yes"):
+        print("Cancelled.")
+        return False
+    return True
+
+
+def _do_engines_install(ns, backend: "Backend", state: State) -> None:
+    status = backend.call("get_components_status") or {}
+    update_info = backend.call("get_update_info") or {}
+    components = _expand_or_resolve(ns.names, status, only_installed=False)
+    to_install = []
+    for c in components:
+        installed = bool(status.get(c["status_key"]))
+        has_update = bool(update_info.get(c["update_key"])) if c["update_key"] else False
+        if not installed or has_update:
+            to_install.append(c)
+        else:
+            print(f"{c['label']} is already installed (up to date) -- skipping. "
+                  f"Use `engines reinstall` to force.")
+    if ns.dry_run:
+        _print_dry_run([(c["label"], c["install"]) for c in to_install])
+        return
+    if _is_wildcard(ns.names) and not _confirm_wildcard("install", [c["label"] for c in to_install], ns.yes):
+        return
+    _run_installer_job(backend, [c["install"] for c in to_install])
+
+
+def _do_engines_reinstall(ns, backend: "Backend", state: State) -> None:
+    status = backend.call("get_components_status") or {}
+    components = _expand_or_resolve(ns.names, status, only_installed=True)
+    if _is_wildcard(ns.names) and not components:
+        print(_paint("Nothing is installed yet -- nothing to reinstall.", _DIM))
+        return
+    if ns.dry_run:
+        _print_dry_run([(c["label"], c["install"]) for c in components])
+        return
+    if _is_wildcard(ns.names) and not _confirm_wildcard("reinstall", [c["label"] for c in components], ns.yes):
+        return
+    _run_installer_job(backend, [c["install"] for c in components])
+
+
+def _do_engines_uninstall(ns, backend: "Backend", state: State) -> None:
+    status = backend.call("get_components_status") or {}
+    components = _expand_or_resolve(ns.names, status, only_installed=True)
+    if _is_wildcard(ns.names) and not components:
+        print(_paint("Nothing is installed -- nothing to uninstall.", _DIM))
+        return
+    to_uninstall = []
+    for c in components:
+        if status.get(c["status_key"]):
+            to_uninstall.append(c)
+        else:
+            print(f"{c['label']} isn't installed -- nothing to do.")
+    if ns.dry_run:
+        _print_dry_run([(c["label"], c["uninstall"]) for c in to_uninstall])
+        return
+    if _is_wildcard(ns.names) and not _confirm_wildcard("uninstall", [c["label"] for c in to_uninstall], ns.yes):
+        return
+    _run_installer_job(backend, [c["uninstall"] for c in to_uninstall])
 
 
 def _do_list_games(ns, backend: "Backend", state: State) -> None:
@@ -658,6 +1002,30 @@ def _do_launch(ns, backend: "Backend", state: State) -> None:
         print("No per-game log for Epic launches -- streaming the general backend log instead.")
         log_path = GENERAL_LOG_PATH
     _tail_log(log_path, result.get("pid"))
+
+
+def _do_install_exe(ns, backend: "Backend", state: State) -> None:
+    """`mnc install <exe>` -- run a windows installer .exe/.msi inside a bottle.
+    Mirrors `mnc uninstall <exe>`; unlike `engines install`, --bottle actually
+    matters here since run_exe launches the installer inside that specific
+    prefix. Reuses the same run_exe path `launch <exe-not-a-known-game>` falls
+    back to, but as its own command (discoverable, and streams the installer's
+    log properly instead of declining like launch's raw-exe fallback does)."""
+    bottle = _bottle_arg(ns, backend, state)
+    path = os.path.expanduser(ns.exe)
+    if not os.path.isfile(path):
+        raise BackendError(f"no such file: {path!r}")
+    result = backend.call("run_exe", {"prefix": bottle["path"], "exe": path, "args": ns.args or ""})
+    name = os.path.basename(path)
+    if result.get("already_running"):
+        print(f"{name} is already running (PID {result.get('pid')}).")
+        return
+    log_path = os.path.join(bottle["path"], "mnc-installer.log")
+    print(f"Started {name} (PID {result.get('pid')}).")
+    if ns.logs:
+        _tail_log(log_path, result.get("pid"))
+    else:
+        print(f"Run again with --logs to stream {log_path}")
 
 
 def _do_uninstall(ns, backend: "Backend", state: State) -> None:
@@ -797,9 +1165,16 @@ def _add_bottle_flag(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--bottle", metavar="name", help="bottle name or path (defaults to the selected one)")
 
 
+def _add_install_flags(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--dry-run", "-n", action="store_true", dest="dry_run",
+                     help="show what would run without doing it")
+    sp.add_argument("--yes", "-y", action="store_true",
+                     help='skip the confirmation prompt for "*"/all')
+
+
 GROUP_VERBS = {
     "bottles": ["list", "create", "delete", "info", "move", "init", "clean", "kill", "folder", "winecfg", "steam"],
-    "engines": ["list", "status"],
+    "engines": ["list", "status", "install", "uninstall", "reinstall"],
     "list": ["games", "apps", "running"],
     "settings": ["get", "set"],
     "epic": ["status", "login", "install", "downloads", "cancel", "pause", "resume"],
@@ -882,11 +1257,37 @@ def _build_parser() -> argparse.ArgumentParser:
     ep.set_defaults(_handler=_help_handler(ep))
     esub = ep.add_subparsers(dest="engines_verb")
 
-    sp = esub.add_parser("list", help="graphics backends (dxvk, d3dmetal, ...)")
+    sp = esub.add_parser("list", help="graphics backends; or installed/uninstalled setup components")
+    sp.add_argument("scope", nargs="?", choices=["installed", "uninstalled"],
+                     help="omit for graphics backends (dxvk, d3dmetal, ...); "
+                          "\"installed\"/\"uninstalled\" for setup components")
     sp.set_defaults(_handler=_do_engines_list)
 
     sp = esub.add_parser("status", help="installed components and wine builds")
     sp.set_defaults(_handler=_do_engines_status)
+
+    sp = esub.add_parser("install",
+                          help='install one or more components, e.g. install "wine stable" dxvk; '
+                               '"*"/all = everything not yet installed or out of date')
+    sp.add_argument("names", nargs="+", metavar="component",
+                     help="tools, \"wine stable\", \"wine staging\", \"wine unified\", \"wine devel\", "
+                          "dxvk, vkd3d, \"gptk dlls\", dxmt, vr, or \"*\"/all")
+    _add_install_flags(sp)
+    sp.set_defaults(_handler=_do_engines_install)
+
+    sp = esub.add_parser("uninstall",
+                          help='uninstall one or more components, e.g. uninstall "wine staging" dxvk; '
+                               '"*"/all = everything currently installed')
+    sp.add_argument("names", nargs="+", metavar="component")
+    _add_install_flags(sp)
+    sp.set_defaults(_handler=_do_engines_uninstall)
+
+    sp = esub.add_parser("reinstall",
+                          help='force-reinstall components regardless of current state; "*"/all = '
+                               "everything currently installed")
+    sp.add_argument("names", nargs="+", metavar="component")
+    _add_install_flags(sp)
+    sp.set_defaults(_handler=_do_engines_reinstall)
 
     # ---- list ----
     lp = sub.add_parser("list", help="list games, apps, or running processes")
@@ -913,7 +1314,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--logs", action="store_true", help="stream this launch's log until you press control-c")
     sp.set_defaults(_handler=_do_launch)
 
-    # ---- uninstall ----
+    # ---- install / uninstall (windows apps in a bottle) ----
+    sp = sub.add_parser("install", help="run a windows installer .exe/.msi inside a bottle")
+    sp.add_argument("exe", help="path to the installer .exe or .msi")
+    sp.add_argument("--args", default="", help="extra arguments for the installer")
+    sp.add_argument("--logs", action="store_true", help="stream the installer log until you press control-c")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_install_exe)
+
     sp = sub.add_parser("uninstall", help="uninstall a windows app")
     sp.add_argument("exe")
     _add_bottle_flag(sp)
@@ -995,9 +1403,13 @@ def execute(ns, backend: Backend, state: State) -> None:
 _REPL_HELP = """commands:
   status                     backend, wine, and running status
   bottles [verb]             list/create/delete/info/move/init/clean/kill/folder/winecfg/steam
-  engines list|status        graphics backends and installed components
+  engines list|status        graphics backends; wine builds + raw component flags
+  engines list installed|uninstalled  which setup components are/aren't installed
+  engines install/uninstall/reinstall <component..>  manage wine/dxvk/dxmt/etc (e.g. "wine stable")
+                             all take --dry-run to preview, and "*"/all needs --yes outside a tty
   list games|apps|running    what's in a bottle, or what's running
   launch <target> [--logs]   start a game by name, or an exe path
+  install <exe> [--logs]     run a windows installer .exe/.msi in a bottle
   uninstall <exe>            remove a windows app
   settings get|set           read or change a bottle's settings
   epic <verb>                sign in, install, and manage epic games
