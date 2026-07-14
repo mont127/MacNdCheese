@@ -3958,9 +3958,14 @@ def _run_shared_commonredist(prefix: str, backend: str) -> None:
             if not Path(unixpath).exists():
                 continue
             low = unixpath.lower()
-            # Blocker 2: wine cant exec a .cmd/.bat as a PE -> run it thru the cmd.exe builtin
+            # Blocker 2: wine cant exec a .cmd/.bat as a PE -> run it thru cmd.exe. But `cmd /c
+            # <path>` chokes on a spaced/paren'd path -- "Program Files (x86)" trips cmds /c
+            # quote-strip rule so the path splits n nothing runs (proven live). Robust fix: cd into
+            # the .cmds OWN dir + run it by BASENAME (no spaces). an .exe takes a unix path fine.
             if low.endswith(".cmd") or low.endswith(".bat"):
-                runcmd = f"{shlex.quote(iw)} cmd /c {shlex.quote(unixpath)} {cmd_args}".rstrip()
+                cmd_dir = shlex.quote(str(Path(unixpath).parent))
+                base = shlex.quote(Path(unixpath).name)
+                runcmd = f"cd {cmd_dir} && {shlex.quote(iw)} cmd /c {base} {cmd_args}".rstrip()
             else:
                 runcmd = f"{shlex.quote(iw)} {shlex.quote(unixpath)} {cmd_args}".rstrip()
             log(f"shared redist install (pre-HACK22): {Path(unixpath).name} {cmd_args}".rstrip())
