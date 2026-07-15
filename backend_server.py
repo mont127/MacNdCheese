@@ -2901,6 +2901,37 @@ def _install_wine_mono(prefix: str, backend: str = "d3dmetal") -> bool:
     return ok
 
 
+def _install_corefonts(prefix: str) -> None:
+    """File-drop the MS core fonts (arial/times/verdana/...) into a prefix so CEF/HTML UIs like
+    the EA app render text insted of tofu boxes. TTFs come from the bundled deps/redist/corefonts
+    pack; wine auto-registers any TTF dropped in the Fonts dir on next start. Idempotent (sentinel
+    arial.ttf). Pure FILE-DROP -- NOT the winetricks corefonts installer -> zero fault-storm risk n
+    no network. No-op (with a log) if the pack isnt bundled."""
+    fonts = Path(prefix) / "drive_c" / "windows" / "Fonts"
+    try:
+        fonts.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if (fonts / "arial.ttf").exists():
+        return
+    src = _redist_dir()
+    cf = (src / "corefonts") if src else None
+    if cf is None or not cf.is_dir():
+        log("corefonts: pack not bundled (deps/redist/corefonts) -> EA/HTML UI text may be boxes")
+        return
+    n = 0
+    for ttf in list(cf.glob("*.ttf")) + list(cf.glob("*.TTF")):
+        dst = fonts / ttf.name
+        try:
+            if not dst.exists():
+                shutil.copy2(str(ttf), str(dst))
+                n += 1
+        except Exception as exc:
+            log(f"corefonts: copy {ttf.name} failed: {exc}")
+    if n:
+        log(f"corefonts: droppd {n} TTF(s) -> prefix Fonts")
+
+
 def _game_needs_dotnet(prefix: str, game_dir: str,
                        bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> bool:
     """Whether to enable .NET (wine-mono) for THIS game launch. Explicit per-game opt-in
@@ -3763,7 +3794,8 @@ def _prehack22_wine() -> str:
 
 def _run_installer_prehack22(prefix: str, cmd_after_wine: List[str],
                              backend: str = "d3dmetal",
-                             log_path: Optional[str] = None) -> subprocess.Popen:
+                             log_path: Optional[str] = None,
+                             env: Optional[Dict[str, str]] = None) -> subprocess.Popen:
     """Launch a WoW64/32-bit installer (SteamSetup, generic .exe/.msi installers)
     via the PRE-HACK22 wine. Steams NSIS stub -- n other 32-bit NSIS/Burn installer
     stubs -- jump to garbage n fault-storm at 100% CPU under the unified wines HACK22
@@ -3773,9 +3805,13 @@ def _run_installer_prehack22(prefix: str, cmd_after_wine: List[str],
     clean, same as the redist pre-install path (_run_installscript_redists). uses
     arch-x86_64 + an in-shell DYLD re-export becuse arch strips DYLD_*. wine output is
     teed to log_path so "Run Installer" isnt a silent black box. Falls back to the
-    unified wine only when the pre-HACK22 wine isnt bundled (may then fault-storm)."""
-    env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
-    env["WINEDEBUG"] = "-all,+err"  # errors only: bounded log but catchs real crashs / missing DLLs
+    unified wine only when the pre-HACK22 wine isnt bundled (may then fault-storm).
+    Callers that need a SPECIFIC env pass `env` to OVERRIDE the default -- e.g. the EA app,
+    which needs mscoree ENABLED + GStreamer STRIPPED (the default for_steam=False env would
+    wrongly disable mscoree n wire GStreamer into a CEF app)."""
+    if env is None:
+        env = _unified_env(prefix, backend or "d3dmetal", False, for_steam=False)
+        env["WINEDEBUG"] = "-all,+err"  # errors only: bounded log but catchs real crashs / missing DLLs
     # the pre-HACK22 overlay wine (n the Wine-Stable fallback) have no MNC_SKIP_WOW64_INSTALL hack,
     # so a fast-booted bottle (empty syswow64) makes 32-bit installers die c0000135. give it a real
     # 32-bit subsystem first (fast clonefile, idempotent). THIS is why "Run Installer" was failing.
@@ -4008,6 +4044,71 @@ def _run_shared_commonredist(prefix: str, backend: str) -> None:
         log(f"shared redist: processd {handled} uncoverd CommonRedist redist(s) via pre-HACK22 wine")
 
 
+def _ea_disable_updater(exe_path: Path) -> None:
+    """Turn off the EA apps self-updater (EACore.ini [Bootstrap] EnableUpdating=false) so it cant
+    relaunch EADesktop.exe + strip the Chromium flags we pass on argv. Best-effort (EA may regen it,
+    but the argv flags on OUR initial launch reach the CEF browser regardless)."""
+    ini = exe_path.parent / "EACore.ini"
+    try:
+        if not ini.exists():
+            return
+        txt = ini.read_text(errors="ignore")
+        if re.search(r"(?im)^\s*EnableUpdating\s*=\s*false", txt):
+            return
+        if re.search(r"(?im)^\s*EnableUpdating\s*=", txt):
+            txt = re.sub(r"(?im)^\s*EnableUpdating\s*=.*$", "EnableUpdating=false", txt)
+        elif re.search(r"(?im)^\s*\[Bootstrap\]\s*$", txt):
+            txt = re.sub(r"(?im)^(\s*\[Bootstrap\]\s*)$", r"\1\nEnableUpdating=false", txt, count=1)
+        else:
+            txt = txt.rstrip() + "\n[Bootstrap]\nEnableUpdating=false\n"
+        ini.write_text(txt)
+        log("EA: disabled self-updater (EACore.ini EnableUpdating=false)")
+    except Exception as exc:
+        log(f"EA: could not edit EACore.ini: {exc}")
+
+
+def _launch_ea_app(prefix: str, exe_path: Path, args: str, params: Dict[str, Any]) -> Any:
+    """Launch the EA app (EADesktop.exe -- a CEF/Chromium launcher, like Steams webhelper) on the
+    PRE-HACK22 (stock-%gs) wine with the CEF blank-content fix. GATED: fires only for
+    launcher_type=='ea' / EADesktop.exe, so the unified engine + HACK22 (load-bearing for Steam/RE4)
+    stay untouched. The blue-blank content is a Chromium GPU-compositing failure (same class as the
+    Steam CEF null-GPU wall); on this stock-%gs wine we cant route ANGLE->d3d11 (HACK30 is
+    steam.exe-only + no DXVK staged), so we use Chromiums SOFTWARE compositor (--disable-gpu = Skia
+    CPU, which also dodges the SwiftShader crash). Flags go on EADesktop.exe's ARGV -- it IS the CEF
+    browser proc, so Chromium forwards the GPU switches to its GPU/renderer children (this is the
+    load-bearing delivery; no kernelbase matcher needed since we disable EAs self-relaunch). Needs
+    mono + native d3dcompiler_47 + corefonts (Hafliss/Gcenx confirmed). Escape hatch for the hardware
+    path: set MNC_EA_CEF_FLAGS. See the EA-app workflow + [[ea-app-blank-content]] memory."""
+    _provision_redist_dlls(prefix)                      # real MS d3dcompiler_47 (Gcenx: needed)
+    try:
+        _install_wine_mono(prefix, "d3dmetal")          # .NET via wine-mono (mscoree ENABLED below)
+    except Exception as exc:
+        log(f"EA: wine-mono install skipped: {exc}")
+    try:
+        _install_corefonts(prefix)                      # MS core fonts for the CEF UI text
+    except Exception as exc:
+        log(f"EA: corefonts install skipped: {exc}")
+    _ea_disable_updater(exe_path)                        # so EA cant relaunch + strip our argv flags
+    # env: pre-HACK22 wine (via _run_installer_prehack22), mscoree ENABLED (needs_dotnet=True),
+    # GStreamer STRIPPED (for_steam=True), d3dcompiler_47=n,b already in the override.
+    env = _unified_env(prefix, "d3dmetal", metal_hud=False, for_steam=True, needs_dotnet=True)
+    env["WINEDEBUG"] = "-all,+err"
+    flags = os.environ.get(
+        "MNC_EA_CEF_FLAGS",
+        "--no-sandbox --disable-gpu --disable-gpu-compositing --in-process-gpu",
+    )
+    env["QTWEBENGINE_CHROMIUM_FLAGS"] = flags            # belt-and-suspenders if the EA UI is Qt WebEngine
+    for v in ("GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0",
+              "GST_REGISTRY", "GST_REGISTRY_1_0"):
+        env.pop(v, None)                                 # keep GStreamer far from the CEF (crashs it)
+    logf = str(LOG_DIR / "EADesktop-wine.log")
+    tail = [str(exe_path)] + (shlex.split(args) if args else []) + flags.split()   # argv = load-bearing
+    proc = _run_installer_prehack22(prefix, tail, "d3dmetal", log_path=logf, env=env)
+    _running_games[proc.pid] = proc
+    log(f"launch: EA app (EADesktop) via pre-HACK22 wine + CEF software-GPU flags; log {logf}")
+    return {"pid": proc.pid, "log_path": logf, "engine": "prehack22-ea"}
+
+
 def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str, Any],
                          params: Dict[str, Any]) -> Any:
     """Launch a game through the unified wine; the loader routes its d3d to the
@@ -4027,6 +4128,12 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
         _running_games[proc.pid] = proc
         log(f"launch: SteamSetup.exe routed to pre-HACK22 installer wine (silent); log {logf}")
         return {"pid": proc.pid}
+    # Bradar the EA app (EADesktop.exe) is a CEF/Chromium launcher that HACK22 breaks (mscoree forced
+    # off + %gs fault-storm + GStreamer crashs its CEF) n whose embedded browser blue-blanks on the
+    # unified wine -> route it to a gated pre-HACK22 path w/ the CEF software-GPU fix. Additive; the
+    # unified engine + HACK22 (Steam/RE4) r untouched. Triggerd by launcher_type=='ea' OR the exe name.
+    if bottle_cfg.get("launcher_type") == "ea" or exe_path.name.lower() == "eadesktop.exe":
+        return _launch_ea_app(str(prefix), exe_path, args, params)
     _stage_unified_dlls(str(prefix))
     _stage_unified_mf(str(prefix))
     _provision_redist_dlls(str(prefix))   # real MS d3dcompiler_47 file-drop (no installer, safe)

@@ -2483,9 +2483,10 @@ stage_redist_pack() {
     echo "stage_redist_pack: WARNING no redist pack found (d3dcompiler_47 / .NET pre-provision off)"
     return 0
   fi
-  mkdir -p "$rdst/d3dcompiler_47" "$rdst/wine-mono"
+  mkdir -p "$rdst/d3dcompiler_47" "$rdst/wine-mono" "$rdst/corefonts"
   cp -f "$rsrc/d3dcompiler_47/"*.dll "$rdst/d3dcompiler_47/" 2>/dev/null || true
   [ -d "$rsrc/wine-mono" ] && cp -f "$rsrc/wine-mono/"*.msi "$rdst/wine-mono/" 2>/dev/null || true
+  [ -d "$rsrc/corefonts" ] && cp -f "$rsrc/corefonts/"*.ttf "$rdst/corefonts/" 2>/dev/null || true
   echo "stage_redist_pack: staged redist pack from $rsrc ($(du -sh "$rdst" 2>/dev/null | cut -f1))"
 }
 
