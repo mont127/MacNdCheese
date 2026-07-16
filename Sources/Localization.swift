@@ -531,6 +531,27 @@ enum Localization {
         "Steam is installing": "Steam 正在安装",
         "Follow the Steam Setup window to finish, then come back here. A \"Steam\" bottle is ready in your library.": "请按 Steam 安装窗口完成安装，然后返回此处。「Steam」容器已在你的游戏库中就绪。",
         "Finish": "完成",
+
+        // Winetricks App Store
+        "Winetricks App Store": "Winetricks 应用商店",
+        "Apps": "应用",
+        "DLLs & Libraries": "DLL 与库",
+        "Fonts": "字体",
+        "Benchmarks": "基准测试",
+        "All": "全部",
+        "%d components": "%d 个组件",
+        "Installing %@…": "正在安装 %@…",
+        "Loading catalog…": "正在加载目录…",
+        "Lost contact with the installer.": "与安装程序失去连接。",
+        "No matches.": "无匹配结果。",
+        "Powered by": "技术支持",
+        "Reinstall": "重新安装",
+        "Run Setup first": "请先运行安装设置",
+        "Search by name or winetricks id…": "按名称或 winetricks ID 搜索…",
+        "This bottle needs the app's one-time Setup step completed before you can install components here.": "此容器需要先完成应用的一次性设置步骤，然后才能在此安装组件。",
+        "Browse and install components into this bottle via winetricks.": "通过 winetricks 浏览并安装组件到此容器。",
+        "Browse and install runtimes, fonts, libraries and apps into this bottle via winetricks": "通过 winetricks 浏览并安装运行库、字体、库和应用到此容器",
+        "Add a Windows .exe to this bottle's Applications": "将 Windows .exe 添加到此容器的应用列表",
     ]
 }
 
