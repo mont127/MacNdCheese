@@ -1123,6 +1123,74 @@ def _do_epic_resume(ns, backend: "Backend", state: State) -> None:
     print("Resumed.")
 
 
+def _do_winetricks_list(ns, backend: "Backend", state: State) -> None:
+    verbs = backend.call("winetricks_catalog").get("verbs", [])
+    if ns.category:
+        verbs = [v for v in verbs if v["category"] == ns.category]
+    if ns.search:
+        q = ns.search.lower()
+        verbs = [v for v in verbs if q in v["id"].lower() or q in v["title"].lower()]
+    if ns.as_json:
+        _emit(verbs, True)
+        return
+    rows = [(v["id"], v["category"], v["title"][:70]) for v in verbs]
+    _print_table(("id", "category", "title"), rows)
+    print(f"\n{len(rows)} verb(s).")
+
+
+def _do_winetricks_installed(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    data = backend.call("winetricks_list_installed", {"prefix": bottle["path"]})
+    installed = data.get("installed", [])
+    if ns.as_json:
+        _emit(installed, True)
+        return
+    if not installed:
+        print(_paint("Nothing installed via winetricks yet.", _DIM))
+        return
+    for verb in installed:
+        print(f"  {verb}")
+    print(f"\n{len(installed)} verb(s) installed.")
+
+
+def _do_winetricks_install(ns, backend: "Backend", state: State) -> None:
+    bottle = _bottle_arg(ns, backend, state)
+    result = backend.call("winetricks_run", {
+        "prefix": bottle["path"], "verbs": ns.verbs, "force": ns.force,
+    })
+    job_id = result.get("job_id")
+    label = bottle.get("name") or bottle["path"]
+    print(f"Installing {', '.join(ns.verbs)} into {label} -- control-c to cancel:")
+    offset = 0
+    try:
+        while True:
+            time.sleep(0.5)
+            progress = backend.call("get_install_progress", {"job_id": job_id, "offset": offset})
+            for line in progress.get("lines", []):
+                print(f"  {line}")
+            offset = progress.get("total_lines", offset)
+            if progress.get("done"):
+                if progress.get("failed"):
+                    sys.exit(_paint("Finished with errors.", _RED))
+                print(_paint("Done.", _GRN))
+                return
+    except KeyboardInterrupt:
+        # the job only exists in THIS backend process's memory -- if we just
+        # exit, main()'s finally block closes the backend, its daemon thread
+        # dies mid-verb, and the underlying wine/winetricks subprocess (its
+        # own session, so it survives that) is orphaned with no way left to
+        # check on or cancel it. cancel explicitly instead of detaching, so
+        # control-c means what people expect it to mean: stop.
+        backend.call("winetricks_cancel", {"job_id": job_id})
+        print()
+        print("Cancelled.")
+
+
+def _do_winetricks_cancel(ns, backend: "Backend", state: State) -> None:
+    backend.call("winetricks_cancel", {"job_id": ns.job_id})
+    print("Cancelled.")
+
+
 def _do_setup(ns, backend: "Backend", state: State) -> None:
     target = os.path.realpath(os.path.join(HERE, "macndcheese"))
     print(f"Linking {PATH_BIN_DIR}/macndcheese and {PATH_BIN_DIR}/mnc to {target}")
@@ -1178,6 +1246,7 @@ GROUP_VERBS = {
     "list": ["games", "apps", "running"],
     "settings": ["get", "set"],
     "epic": ["status", "login", "install", "downloads", "cancel", "pause", "resume"],
+    "winetricks": ["list", "installed", "install", "cancel"],
 }
 
 
@@ -1375,6 +1444,30 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("app")
     _add_bottle_flag(sp)
     sp.set_defaults(_handler=_do_epic_resume)
+
+    wtp = sub.add_parser("winetricks", help="install runtimes, fonts, libraries and apps via winetricks")
+    wtp.set_defaults(_handler=_help_handler(wtp))
+    wtsub = wtp.add_subparsers(dest="winetricks_verb")
+
+    sp = wtsub.add_parser("list", help="browse the winetricks catalog")
+    sp.add_argument("search", nargs="?", help="filter by name or id")
+    sp.add_argument("--category", choices=["apps", "dlls", "fonts", "settings", "benchmarks"],
+                     help="only show one category")
+    sp.set_defaults(_handler=_do_winetricks_list)
+
+    sp = wtsub.add_parser("installed", help="verbs already installed in a bottle")
+    _add_bottle_flag(sp)
+    sp.set_defaults(_handler=_do_winetricks_installed)
+
+    sp = wtsub.add_parser("install", help="install one or more verbs into a bottle")
+    sp.add_argument("verbs", nargs="+", help="winetricks verb id(s), e.g. corefonts vcrun2022")
+    _add_bottle_flag(sp)
+    sp.add_argument("--force", action="store_true", help="reinstall even if already installed")
+    sp.set_defaults(_handler=_do_winetricks_install)
+
+    sp = wtsub.add_parser("cancel", help="cancel a running install job")
+    sp.add_argument("job_id")
+    sp.set_defaults(_handler=_do_winetricks_cancel)
 
     # ---- setup / commands / raw ----
     sp = sub.add_parser("setup", help="put macndcheese and mnc on your path")
