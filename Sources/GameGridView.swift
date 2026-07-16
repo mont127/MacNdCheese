@@ -488,6 +488,7 @@ struct GameCardView: View {
 struct AppsSectionView: View {
     @EnvironmentObject var backend: BackendClient
     let apps: [WineApp]
+    @State private var showWinetricksStore = false
 
     private let columns = [
         GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 16)
@@ -499,6 +500,12 @@ struct AppsSectionView: View {
                 Text("Applications")
                     .font(.headline)
                 Spacer()
+                Button { showWinetricksStore = true } label: {
+                    Label(L("Winetricks App Store"), systemImage: "shippingbox")
+                }
+                .buttonStyle(.borderless)
+                .help(L("Browse and install runtimes, fonts, libraries and apps into this bottle via winetricks"))
+
                 // Bradar Add Application -- point at any windows .exe n it sticks in this section
                 Button { addApplication() } label: {
                     Label(L("Add Application"), systemImage: "plus")
@@ -516,6 +523,9 @@ struct AppsSectionView: View {
             .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(isPresented: $showWinetricksStore) {
+            WinetricksStoreSheet()
+        }
     }
 
     private func addApplication() {

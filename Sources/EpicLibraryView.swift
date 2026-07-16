@@ -92,7 +92,7 @@ struct EpicLibraryView: View {
                 .padding(.bottom, 24)
             }
 
-            if !backend.apps.isEmpty {
+            if backend.activePrefix != nil {
                 AppsSectionView(apps: backend.apps)
                     .padding(.bottom, 24)
             }
