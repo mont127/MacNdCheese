@@ -43,3 +43,30 @@ enum WinetricksCatalog {
         categoryInfo[category] ?? WinetricksCategoryInfo(name: category.capitalized, systemImage: "shippingbox")
     }
 }
+
+/// A few winetricks verbs stomp on the exact DLLs MacNdCheese wires up itself, so
+/// installin one into a working bottle (the Steam bottle espesially) silently undoes
+/// that setup. The symptom shows up later as "Steam went black" / "my game stopped
+/// renderin", with nothing obviously connectin it back to here.
+///
+/// We WARN rather than block: on a scratch bottle these r legitimate things to want,
+/// and winetricks isnt the thing thats wrong -- the overlap with our own graphics
+/// wiring is. Both families below r read out of the bundled winetricks script itself,
+/// not guessd:
+///   - `mf`  -> `w_override_dlls native,builtin mf`
+///   - dxvk* / galliumnine* / vkd3d -> `helper_dxvk ... "dxgi,d3d8,d3d9,d3d10core,d3d11"`
+/// which is exactly the d3d11/dxgi/d3d10core set the Steam (DXMT) n game (D3DMetal)
+/// paths depend on. Prefix-matchd on purpose: winetricks ships ~50 pinned dxvk<version>
+/// verbs n ~10 galliumnine ones n they all do the same thing.
+enum WinetricksRisk {
+    static func warning(for verb: String) -> String? {
+        let v = verb.lowercased()
+        if v == "mf" || v == "mfplat" {
+            return L("This replaces the Media Foundation DLLs, which is known to stop Steam's web helper from drawing — Steam opens as a black window afterwards.")
+        }
+        if v.hasPrefix("dxvk") || v.hasPrefix("galliumnine") || v.hasPrefix("vkd3d") {
+            return L("This overwrites d3d11, dxgi and d3d10core in this bottle — the same files MacNdCheese sets up for Steam and for game rendering. Steam or your games may stop rendering until the bottle is set up again.")
+        }
+        return nil
+    }
+}

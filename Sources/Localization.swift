@@ -552,6 +552,10 @@ enum Localization {
         "Browse and install components into this bottle via winetricks.": "通过 winetricks 浏览并安装组件到此容器。",
         "Browse and install runtimes, fonts, libraries and apps into this bottle via winetricks": "通过 winetricks 浏览并安装运行库、字体、库和应用到此容器",
         "Add a Windows .exe to this bottle's Applications": "将 Windows .exe 添加到此容器的应用列表",
+        "This can break this bottle": "这可能会损坏此容器",
+        "Install anyway": "仍然安装",
+        "This replaces the Media Foundation DLLs, which is known to stop Steam's web helper from drawing — Steam opens as a black window afterwards.": "这会替换 Media Foundation DLL，已知会导致 Steam 的网页助手无法绘制——之后 Steam 将显示为黑色窗口。",
+        "This overwrites d3d11, dxgi and d3d10core in this bottle — the same files MacNdCheese sets up for Steam and for game rendering. Steam or your games may stop rendering until the bottle is set up again.": "这会覆盖此容器中的 d3d11、dxgi 和 d3d10core——正是 MacNdCheese 为 Steam 和游戏渲染所配置的文件。在重新配置此容器之前，Steam 或你的游戏可能无法渲染。",
     ]
 }
 

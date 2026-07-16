@@ -14,6 +14,10 @@ struct WinetricksStoreSheet: View {
     @State private var searchText = ""
     @State private var selectedCategory: String = "all"
     @State private var installedVerbs: Set<String> = []
+    // the verb waitin on the "this can break the bottle" confirmation (see WinetricksRisk)
+    @State private var riskyVerb: String?
+    @State private var riskyForce = false
+    @State private var riskyReason = ""
 
     private var isAvailable: Bool { backend.winetricksAvailable() }
 
@@ -57,6 +61,18 @@ struct WinetricksStoreSheet: View {
         .tint(.brand)
         .onAppear { loadCatalog(); loadInstalled() }
         .onChange(of: backend.activePrefix) { _ in loadInstalled() }
+        .alert(L("This can break this bottle"), isPresented: Binding(
+            get: { riskyVerb != nil },
+            set: { if !$0 { riskyVerb = nil } }
+        )) {
+            Button(L("Cancel"), role: .cancel) { riskyVerb = nil }
+            Button(L("Install anyway"), role: .destructive) {
+                if let v = riskyVerb { startInstall(v, force: riskyForce) }
+                riskyVerb = nil
+            }
+        } message: {
+            Text(riskyReason)
+        }
     }
 
     // MARK: - Header / footer
@@ -277,7 +293,20 @@ struct WinetricksStoreSheet: View {
 
     // MARK: - Actions
 
+    /// Both Install n Reinstall funnel thru here, so the risk check only needs to sit
+    /// in this one place to cover the whole sheet.
     private func install(_ verb: String, force: Bool = false) {
+        guard backend.activePrefix != nil, !runner.isRunning else { return }
+        if let reason = WinetricksRisk.warning(for: verb) {
+            riskyVerb = verb
+            riskyForce = force
+            riskyReason = reason
+            return
+        }
+        startInstall(verb, force: force)
+    }
+
+    private func startInstall(_ verb: String, force: Bool = false) {
         guard let prefix = backend.activePrefix, !runner.isRunning else { return }
         Task {
             await runner.run(verbs: [verb], force: force, prefix: prefix, backend: backend)
