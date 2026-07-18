@@ -2178,7 +2178,7 @@ def cmd_list_bottles(params: Dict[str, Any]) -> Any:
             "default_backend": bottle.get("default_backend", "auto"),
             "wine_binary": bottle.get("wine_binary", "auto"),
             "game_esync": bottle.get("game_esync", True),
-            "game_msync": bottle.get("game_msync", True),
+            "game_msync": bottle.get("game_msync", False),
             "discord_rpc": bottle.get("discord_rpc", True),
         })
 
@@ -2206,7 +2206,7 @@ def cmd_list_bottles(params: Dict[str, Any]) -> Any:
             "default_backend": bottle.get("default_backend", "auto"),
             "wine_binary": bottle.get("wine_binary", "auto"),
             "game_esync": bottle.get("game_esync", True),
-            "game_msync": bottle.get("game_msync", True),
+            "game_msync": bottle.get("game_msync", False),
             "discord_rpc": bottle.get("discord_rpc", True),
         })
 
@@ -3122,7 +3122,14 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     dll_ovr = f"winemenubuilder.exe=d;{_mscoree}mshtml=;d3dcompiler_47=n,b;nvapi,nvapi64="
     env.update({
         "WINEPREFIX": str(prefix),
-        "WINEMSYNC": "1",
+        # msync OFF by default. The bundled unified wine is msync-capable (server
+        # protocol 931), but turnin msync ON crash-loops the Steam CEF webhelper on a
+        # COLD boot (the cold ncalrpc service-startup storm makes an rpcrt4 error path
+        # blow up) -- warm boots r fine but we cant tell cold from warm at launch, so we
+        # keep it dormant. Steam goes thru _unified_env n never calls _apply_sync_env, so
+        # this value governs the Steam path outright. Flip back to "1" (n re-default
+        # game_msync True) once the cold-boot msync fix lands. See steam-msync-port.
+        "WINEMSYNC": "0",
         "WINEDEBUG": "-all",
         "WINEDBG": "-all",
         "ROSETTA_ADVERTISE_AVX": "1",
@@ -5098,7 +5105,7 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     bottles = _load_bottles()
     config = dict(bottles.get(key, {}))
     config.setdefault("game_esync", True)
-    config.setdefault("game_msync", True)
+    config.setdefault("game_msync", False)  # msync dormant by default (see WINEMSYNC note); cold-boot Steam crash otherwise
     config.setdefault("discord_rpc", True)
     config.setdefault("metal_hud", False)
     return config
