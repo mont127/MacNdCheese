@@ -52,6 +52,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 PORTABLE_DIR = Path.home() / "Library" / "Application Support" / "MacNCheese" / "deps"
+# x86_64 TLS closure (libgnutls.30 + nettle/hogweed/gmp/tasn1/p11-kit/intl...) for the
+# wine-unified build. it was only ever found via /usr/local/opt/gnutls/lib = INTEL homebrew,
+# which does NOT exist on a normal Apple-Silicon mac (only /opt/homebrew, useless to an x86_64
+# wine). without it wine loads with NO encryption (gnutls_process_attach fails -> no schannel ->
+# Steam's CM logon never completes -> login/QR spins forever). Wine Stable.app ships the exact
+# x86_64 closure in its own wine/lib, so list it as a DYLD_FALLBACK so wine-unified always has
+# TLS regardless of Homebrew. (Diagnosed by a user Codex report, 2026-07-19.)
+_WINE_STABLE_LIB = str(PORTABLE_DIR / "Wine Stable.app" / "Contents" / "Resources" / "wine" / "lib")
 VERSION_MARKER = PORTABLE_DIR / ".mnc_versions"
 BOTTLES_BASE = Path.home() / "Games" / "MacNCheese"
 DEFAULT_PREFIX = str(Path.home() / "wined")
@@ -737,7 +745,7 @@ def _wine_env(prefix: str) -> Dict[str, str]:
     # paths that wrap wine in `arch` re-export this in-shell since arch strips DYLD_*
     env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join([
         "/usr/local/lib", "/usr/local/opt/freetype/lib",
-        "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib",
+        "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib", _WINE_STABLE_LIB,
         "/usr/local/opt/glib/lib", "/usr/local/opt/gettext/lib",
         "/usr/local/opt/sdl2/lib",
         # bundled freetype/fontconfig fallback for no-Homebrew boxes (see _unified_env / mnc-fonts)
@@ -1165,7 +1173,7 @@ def _apply_backend_env(env: Dict[str, str], backend: str, debug: bool = False) -
             str(D3DMETAL_NATIVE_DIR),
             "/usr/local/lib",
             "/usr/local/opt/freetype/lib",
-            "/usr/local/opt/gnutls/lib",
+            "/usr/local/opt/gnutls/lib", _WINE_STABLE_LIB,
             "/usr/lib",
         ])
         env["ROSETTA_ADVERTISE_AVX"] = "1"
@@ -1368,7 +1376,7 @@ def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
             str(D3DMETAL_NATIVE_DIR),
             "/usr/local/lib",
             "/usr/local/opt/freetype/lib",
-            "/usr/local/opt/gnutls/lib",
+            "/usr/local/opt/gnutls/lib", _WINE_STABLE_LIB,
             "/usr/lib",
         ])
         dll_ovr = "winemenubuilder.exe=d;mscoree=;mshtml=;mf,mfplat,mfreadwrite,mfplay=b;atidxx64,d3d10,d3d11,d3d12,dxgi,nvapi64,nvngx-on-metalfx=n"
@@ -3106,7 +3114,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     gst_lib = "/usr/local/opt/gstreamer/lib"
     gst = gst_lib + "/gstreamer-1.0"
     dyld = ":".join([str(nd), gst_lib, "/usr/local/lib", "/usr/local/opt/freetype/lib",
-                     "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib",
+                     "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib", _WINE_STABLE_LIB,
                      "/usr/local/opt/sdl2/lib", "/usr/local/opt/glib/lib",
                      "/usr/local/opt/gettext/lib",
                      # bundled x86_64 freetype/fontconfig closure so boxes WITHOUT Homebrew still
@@ -4630,7 +4638,7 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
         str(D3DMETAL_NATIVE_DIR),
         "/usr/local/lib",
         "/usr/local/opt/freetype/lib",
-        "/usr/local/opt/gnutls/lib",
+        "/usr/local/opt/gnutls/lib", _WINE_STABLE_LIB,
         "/usr/lib",
     ])
 
