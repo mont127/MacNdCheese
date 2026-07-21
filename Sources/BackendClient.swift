@@ -316,7 +316,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, gameMode: Bool = true, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false) async {
+    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, gameMode: Bool = true, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false, forceDxmtCef: Bool = false) async {
         do {
             let screenInfo = NSScreen.screens.map { s in
                 "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"
@@ -327,6 +327,7 @@ final class BackendClient: ObservableObject {
                 "screen_info": screenInfo, "game_name": gameName, "steam_appid": steamAppId,
                 "steam_mode": steamMode, "custom_env": customEnv, "debug": debug,
                 "auto_stop_steam": UserDefaults.standard.object(forKey: "auto_stop_steam") as? Bool ?? true,
+                "force_dxmt_cef": forceDxmtCef,
             ])
             // Backend duplicate-launch guard: the same exe is still alive from a
             // previous launch, so nothing new was spawned. Tell the user what to
@@ -366,6 +367,11 @@ final class BackendClient: ObservableObject {
     @Published var steamInstalling = false
     @Published var steamInstallStep = ""
     private var steamPollTask: Task<Void, Never>?
+
+    /// True while an EA App install is in progress -> ContentView shows the "Installing
+    /// EA App…" loading overlay, mirroring steamInstalling/steamInstallStep above.
+    @Published var eaAppInstalling = false
+    @Published var eaAppInstallStep = ""
 
     func launchLauncher(prefix: String) async {
         let retinaMode = NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false
@@ -437,6 +443,50 @@ final class BackendClient: ObservableObject {
             }
             steamInstalling = false
         }
+    }
+
+    /// Kicks off the EA App bootstrap for a bottle (no-op if already installed).
+    /// Returns nil on error (lastError is already set), true if EA App was
+    /// already present, false if the install was just started in the background.
+    func installEAApp(prefix: String) async -> Bool? {
+        do {
+            let result = try await send(cmd: "install_ea_app", params: ["prefix": prefix])
+            return (result as? [String: Any])?["already_installed"] as? Bool ?? false
+        } catch {
+            lastError = String(format: L("Failed to start installing the EA App: %@"), error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// Shows the "Installing EA App…" overlay and polls ea_app_install_status until
+    /// EADesktop.exe lands, mirroring watchSteamInstall -- but directly awaitable,
+    /// since the caller needs to know when it's done before activating/launching.
+    func watchEAAppInstall(prefix: String) async {
+        eaAppInstalling = true
+        eaAppInstallStep = L("Preparing…")
+        var sawRunning = false
+        var idleAfterRun = 0
+        for _ in 0..<160 {   // EA App's installer is larger than SteamSetup; ~160 * 1.5s = 240s cap
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            let s = (try? await self.send(cmd: "ea_app_install_status",
+                                          params: ["prefix": prefix])) as? [String: Any]
+            let installed = (s?["installed"] as? Bool) ?? false
+            let running = (s?["running"] as? Bool) ?? false
+            if installed {
+                eaAppInstallStep = L("EA App installed ✓")
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                eaAppInstalling = false
+                return
+            }
+            if running {
+                sawRunning = true; idleAfterRun = 0
+                eaAppInstallStep = L("Installing EA App…")
+            } else if sawRunning {
+                idleAfterRun += 1
+                if idleAfterRun >= 4 { break }   // ran then stopped w/o EADesktop.exe -> give up
+            }
+        }
+        eaAppInstalling = false
     }
 
     func startSteamPolling() {
@@ -564,8 +614,12 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    /// Launch a discovered Windows application using the bottle's default
-    /// graphics backend, the same pipeline games use.
+    /// Launch a discovered Windows application through the same pipeline games use.
+    /// Unlike games, an "Application" here is arbitrary -- much more likely than a
+    /// chosen game to embed a CEF/Chromium UI (Electron, Qt WebEngine, other
+    /// launchers) -- so under the unified engine it always forces DXMT rather than
+    /// the bottle's configured default backend, avoiding the D3DMetal/CEF crash
+    /// found with EA App's own helper processes this session.
     func launchApp(prefix: String, app: WineApp) async {
         let bottle = bottles.first { $0.path == prefix }
         let backendId = bottle?.defaultBackend ?? "auto"
@@ -580,7 +634,8 @@ final class BackendClient: ObservableObject {
             // Bradar a discovered windows app aint a steam game, so dont drag steam up
             // just to run it. if steam happen to be up already it still see it, we just
             // dont START it (steam_mode none skips the launch, not a running instance)
-            steamMode: "none"
+            steamMode: "none",
+            forceDxmtCef: true
         )
     }
 
@@ -1107,20 +1162,6 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func epicInstallProgress(appName: String) async -> (progress: Double, done: Bool, error: String?)? {
-        do {
-            let result = try await send(cmd: "legendary_install_progress", params: ["app_name": appName])
-            if let dict = result as? [String: Any] {
-                return (
-                    dict["progress"] as? Double ?? 0,
-                    dict["done"] as? Bool ?? false,
-                    dict["error"] as? String
-                )
-            }
-        } catch {}
-        return nil
-    }
-
     func epicCancelInstall(appName: String) async {
         do {
             _ = try await send(cmd: "legendary_cancel_install", params: ["app_name": appName])
@@ -1134,13 +1175,21 @@ final class BackendClient: ObservableObject {
             var downloads: [String: EpicDownloadState] = [:]
             for (appName, info) in dict {
                 guard let info = info as? [String: Any] else { continue }
+                let installError = info["error"] as? String
                 downloads[appName] = EpicDownloadState(
                     progress: info["progress"] as? Double ?? 0,
                     queued: info["queued"] as? Bool ?? false,
                     queuePosition: info["queue_position"] as? Int ?? 0,
                     paused: info["paused"] as? Bool ?? false,
-                    prefix: info["prefix"] as? String ?? ""
+                    prefix: info["prefix"] as? String ?? "",
+                    error: installError
                 )
+                // Surface newly-appeared install failures via the existing error banner --
+                // legendary install can fail (even exit 0) with no other visible feedback.
+                if let installError, epicDownloads[appName]?.error != installError {
+                    let displayName = games.first(where: { $0.epicAppName == appName })?.name ?? appName
+                    lastError = "\(displayName): \(installError)"
+                }
             }
             epicDownloads = downloads
         } catch {}

@@ -95,6 +95,7 @@ struct Game: Identifiable, Codable, Hashable {
     var updateAvailable: Bool
     var epicAppName: String?
     var amazonId: String?
+    var thirdPartyStore: String?
 
     enum CodingKeys: String, CodingKey {
         case appid, name, exe
@@ -105,6 +106,7 @@ struct Game: Identifiable, Codable, Hashable {
         case updateAvailable = "update_available"
         case epicAppName = "epic_app_name"
         case amazonId = "amazon_id"
+        case thirdPartyStore = "third_party_store"
     }
 
     // Tolerant decoder: older backends omit is_installed / update_available /
@@ -121,7 +123,12 @@ struct Game: Identifiable, Codable, Hashable {
         updateAvailable = try c.decodeIfPresent(Bool.self, forKey: .updateAvailable) ?? false
         epicAppName = try c.decodeIfPresent(String.self, forKey: .epicAppName)
         amazonId = try c.decodeIfPresent(String.self, forKey: .amazonId)
+        thirdPartyStore = try c.decodeIfPresent(String.self, forKey: .thirdPartyStore)
     }
+
+    /// True for Epic titles Epic's own catalog flags as requiring install/
+    /// activation through another launcher (currently only seen as "The EA App").
+    var isExternallyActivated: Bool { thirdPartyStore != nil }
 
     /// True unless this game's install folder is a real, known path that's
     /// currently missing on disk — e.g. installDir is a symlink into a game
@@ -452,6 +459,7 @@ struct EpicDownloadState {
     var queuePosition: Int
     var paused: Bool = false   // from the PR; default keeps existing call sites valid
     var prefix: String
+    var error: String? = nil  // set when legendary failed (even if it exited 0, e.g. a third-party-managed title)
 }
 
 /// Transient per-game Amazon (Nile) download/queue state. UI-only, not Codable.
