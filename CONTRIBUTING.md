@@ -7,10 +7,10 @@ This project is a small GUI wrapper around existing tools to make running Window
 ## Quick rules
 
 Keep it simple.
-If you change behavior. explain why in the pull request.
-If you add a new feature. add a small note to the README.
-If you add a new dependency. justify it.
-If you add a new interaction (a button, toggle, or backend command). add the
+If you change behavior, explain why in the pull request.
+If you add a new feature, add a small note to the README.
+If you add a new dependency, justify it.
+If you add a new interaction (a button, toggle, or backend command), add the
 equivalent to the CLI (`macndcheese`) too. See "CLI parity" below.
 
 ## What to work on
