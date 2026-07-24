@@ -1,6 +1,6 @@
 # Architecture
 
-MacNCheese is two processes wearing one app icon.
+MacNdCheese is two processes wearing one app icon.
 
 ## The two halves
 
@@ -29,7 +29,7 @@ you're looking for where a specific action is implemented.
 
 | File | Owns |
 |---|---|
-| `MacNCheeseApp.swift` | App entry point, top-level state |
+| `MacNdCheeseApp.swift` | App entry point, top-level state |
 | `ContentView.swift` / `SidebarView.swift` | Main window shell and navigation |
 | `GameGridView.swift` / `GameDetailView.swift` | Game library grid and per-game detail |
 | `GameLaunchSheet.swift` | Launch-time backend picker/options |
@@ -56,7 +56,7 @@ Three scripts, three different jobs — they are not interchangeable:
   `backend_server.py` + `installer.sh` + `vendor/gamepolicyctl`, installs to
   `/Applications/MacNdCheese Launcher.app`, and codesigns it. Run this to test a change.
 - **`buildapp.sh [arm64|x86_64|universal]`** — release builder. Same bundling, but outputs into
-  `build/MacNCheese.app` and packages a distributable `.dmg`. Also extracts App Intents metadata
+  `build/MacNdCheese.app` and packages a distributable `.dmg`. Also extracts App Intents metadata
   (Siri/Shortcuts), same as `install.sh`. Two workflows call this directly (no more separate
   `.github/scripts/build-macos.sh` copy — that used to drift out of sync with this script, which
   is how the official prebuilt DMGs ended up missing the Epic logo and Game Mode support that
