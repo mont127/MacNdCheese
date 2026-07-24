@@ -4,7 +4,7 @@ MacNdCheese is a tool that manages Wine and graphics dependencies to help run Wi
 
 Security matters because the project downloads and runs external components such as Wine DXVK and Mesa.
 
-## Supported versions
+## Supported Versions
 
 Security fixes are provided for the latest released version only.
 
@@ -14,7 +14,7 @@ Older releases such as v2.0.0 v3.0.0 v1.2.0 v1.1.0 and v1.0.0 are not supported 
 
 If you are using an older release please upgrade to the latest v3.x+ release before reporting a security issue.
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
 If you discover a security issue please report it responsibly.
 
@@ -34,7 +34,7 @@ Impact if exploited.
 Proof of concept details if safe to share privately.
 Logs or screenshots if available.
 
-If the issue involves downloads include the exact URL used and any checksum information you verified.
+If the issue involves downloads, include the exact URL used and any checksum information you verified.
 
 ## What counts as a security issue
 
@@ -49,7 +49,7 @@ Privilege escalation through the tool.
 Unsafe file writes outside expected directories.
 Tampering risk in packaged releases.
 
-## Response process
+## Response Process
 
 When a vulnerability is reported this is the process.
 
@@ -60,13 +60,13 @@ A fix is prepared.
 A patched release is published.
 Users are informed in the repository.
 
-## Responsible disclosure
+## Responsible Disclosure
 
 Please avoid publishing details until a fix is released.
 
 This helps protect users.
 
-## Security guidelines for contributors
+## Security Guidelines for Contributors
 
 Do not add hidden downloads.
 

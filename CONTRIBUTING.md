@@ -1,10 +1,10 @@
-# Contributing to MacNCheese
+# Contributing to MacNdCheese
 
 Thanks for wanting to help.
 
 This project is a small GUI wrapper around existing tools to make running Windows games on macOS easier.
 
-## Quick rules
+## Quick Rules
 
 Keep it simple.
 If you change behavior, explain why in the pull request.
@@ -13,7 +13,7 @@ If you add a new dependency, justify it.
 If you add a new interaction (a button, toggle, or backend command), add the
 equivalent to the CLI (`macndcheese`) too. See "CLI parity" below.
 
-## What to work on
+## What to Work On
 
 Good first contributions.
 Fixing bugs and edge cases.
@@ -28,7 +28,7 @@ Big refactors with no user visible gain.
 New backends without a clear test case.
 Anything that downloads unknown binaries without a pinned source.
 
-## Development setup
+## Development Setup
 
 You need.
 macOS.
@@ -90,7 +90,7 @@ backend auto-detection yet; test it directly if your change touches it.
 
 If your change touches a specific backend. test that backend with at least one real game.
 
-## CLI parity
+## CLI Parity
 
 `./macndcheese` (aka `mnc`) is a second, independent client of `backend_server.py` — same
 JSON-RPC protocol Sources/BackendClient.swift speaks, different frontend. Nothing keeps them
