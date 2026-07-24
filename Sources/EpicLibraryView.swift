@@ -235,6 +235,7 @@ struct EpicGameCard: View {
         Button {
             if isPaused { resumeInstall() }
             else if game.isInstalled && !game.updateAvailable { launch() }
+            else if game.isExternallyActivated { startEAAppActivation() }
             else if !installing { startInstall() }
         } label: {
             ZStack {
@@ -283,6 +284,24 @@ struct EpicGameCard: View {
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 3)
                                 .background(.indigo, in: RoundedRectangle(cornerRadius: 4))
+                                .padding(8)
+                            Spacer()
+                        }
+                        Spacer()
+                    }
+                }
+
+                // "Managed by EA App" badge — Epic lists the title but fulfills it
+                // through another launcher; a normal legendary install can never work.
+                if game.isExternallyActivated && !installing && !isPaused {
+                    VStack {
+                        HStack {
+                            Text(game.thirdPartyStore ?? L("EA App"))
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 3)
+                                .background(.orange, in: RoundedRectangle(cornerRadius: 4))
                                 .padding(8)
                             Spacer()
                         }
@@ -395,6 +414,8 @@ struct EpicGameCard: View {
         } else if isPaused {
             Button(L("Resume Download")) { resumeInstall() }
             Button(L("Cancel Download")) { cancelInstall() }
+        } else if !installing && game.isExternallyActivated {
+            Button(String(format: L("Set Up via %@"), game.thirdPartyStore ?? L("EA App"))) { startEAAppActivation() }
         } else if !installing {
             Button(L("Download & Install")) { startInstall() }
         } else if isQueued {
@@ -433,6 +454,42 @@ struct EpicGameCard: View {
         Task {
             _ = await backend.epicInstallGame(prefix: prefix, appName: appName)
             await backend.refreshEpicDownloads()
+        }
+    }
+
+    private func startEAAppActivation() {
+        guard let prefix = backend.activePrefix, let appName = game.epicAppName,
+              !isLaunching else { return }
+        isLaunching = true
+        Task {
+            defer { isLaunching = false }
+            guard let alreadyInstalled = await backend.installEAApp(prefix: prefix) else { return }
+            if !alreadyInstalled {
+                await backend.watchEAAppInstall(prefix: prefix)
+            }
+            // EA-managed titles never become "installed" through legendary itself (no
+            // manifest exists) -- launching via --origin (appended backend-side) is what
+            // actually hands the user off to EA App to install/play it themselves. legendary's
+            // separate bulk "activate -O" claim step is a no-op on non-Windows (it can't guess
+            // which wine prefix to relay the link2ea:// URI through outside Windows' own
+            // webbrowser.open) -- Heroic Games Launcher skips it too and goes straight here.
+            let cfg = await backend.getGameConfig(prefix: prefix, appid: game.appid)
+            await backend.epicLaunchGame(
+                prefix: prefix,
+                appName: appName,
+                backend: cfg["backend"] as? String ?? "auto",
+                retinaMode: cfg["retina_mode"] as? Bool ?? (NSScreen.main.map { $0.backingScaleFactor > 1.0 } ?? false),
+                metalHud: cfg["metal_hud"] as? Bool ?? false,
+                // EA App/BF4 has no real legendary config entry, so cfg's esync/msync don't
+                // meaningfully apply -- force msync OFF instead of defaulting true. WINEMSYNC
+                // crashes wine's own service processes (svchost.exe/winedevice.exe, address
+                // 0x100000044 -- the exact plugplay.exe crash-cascade bisected earlier this
+                // session) during the fresh service spin-up this launch triggers, which can
+                // take the whole wine session down mid-launch, EA App included.
+                esync: true,
+                msync: false,
+                customEnv: cfg["custom_env"] as? String ?? ""
+            )
         }
     }
 

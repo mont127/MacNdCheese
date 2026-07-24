@@ -68,6 +68,7 @@ PREFIXES_JSON = Path.home() / ".macncheese_prefixes.json"
 BOTTLES_JSON = Path.home() / ".macncheese_bottles.json"
 
 STEAM_SETUP_URL = "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
+EA_APP_SETUP_URL = "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe"
 
 LEGENDARY_DIR = PORTABLE_DIR / "legendary"
 LEGENDARY_BIN = LEGENDARY_DIR / "legendary"
@@ -128,8 +129,24 @@ APPMANIFEST_RE = re.compile(r'"(\w+)"\s+"([^"]*)"')
 _legendary_installing: bool = False
 _legendary_installs: Dict[str, Any] = {}  # app_name -> (Popen, file, log_path, prefix)
 _legendary_paused: Dict[str, str] = {}    # app_name -> prefix (paused downloads)
+_legendary_failed: Dict[str, Dict[str, Any]] = {}  # app_name -> {"error": str, "prefix": str}
 _legendary_games_cache: Dict[str, Any] = {}  # prefix -> {"games": [], "ts": float, "scanning": bool}
 _LEGENDARY_CACHE_TTL = 300  # seconds before a background re-fetch is triggered
+
+
+def _scan_legendary_log_for_error(log_path: str, tail: int = 30) -> Optional[str]:
+    """Scans the tail of a legendary log for an error line, regardless of
+    the process's return code -- some failures (e.g. a third-party-managed
+    title) exit 0 despite printing a `[cli] ERROR: ...` line."""
+    try:
+        with open(log_path, "r") as f:
+            lines = f.readlines()
+        for line in reversed(lines[-tail:]):
+            if "error" in line.lower() or "failed" in line.lower():
+                return line.strip()
+    except Exception:
+        pass
+    return None
 
 # Download queue — one install runs at a time, others wait.
 _legendary_download_queue: List[Tuple[str, str]] = []  # [(app_name, prefix)]
@@ -156,11 +173,13 @@ atexit.register(_terminate_legendary_installs)
 
 def _legendary_do_install(app_name: str, prefix: str) -> None:
     """Run one legendary install to completion. Called from the queue worker thread."""
+    _legendary_failed.pop(app_name, None)  # clear any stale failure from a prior attempt
     install_base = str(
         Path(prefix).expanduser().resolve() / "drive_c" / "Program Files" / "Epic Games"
     )
     Path(install_base).mkdir(parents=True, exist_ok=True)
     log_path = str(LEGENDARY_DIR / f"install_{app_name}.log")
+    proc = None
     try:
         log_fh = open(log_path, "w")
         proc = subprocess.Popen(
@@ -182,6 +201,15 @@ def _legendary_do_install(app_name: str, prefix: str) -> None:
                 entry[1].close()
             except Exception:
                 pass
+        # legendary can exit 0 while having done nothing (e.g. a title that
+        # has to be installed via a third-party store) -- scan the log
+        # regardless of return code rather than trusting the exit status.
+        err = _scan_legendary_log_for_error(log_path)
+        if err or (proc is not None and proc.returncode not in (0, None)):
+            _legendary_failed[app_name] = {
+                "error": err or f"legendary exited with code {proc.returncode}",
+                "prefix": prefix,
+            }
         _legendary_games_cache.pop(prefix, None)
 
 
@@ -3151,6 +3179,17 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         # the PE loader resolving 32-bit builtins from the wine lib dir post-bootstrap
         "MNC_SKIP_WOW64_INSTALL": "1",
         "MNC_GAME_BACKEND": game_backend,
+        # Bradar EA App's CEF is genuinely multi-process (unlike Steam's steamwebhelper, which
+        # this never touches): its GPU/renderer subprocess creates a Metal swapchain for a HWND
+        # owned by a different process, which DXMT hard-rejects ("cross-process swapchain not
+        # supported yet", d3d11_swapchain.cpp) and Wine's own macdrv has no cross-process child-
+        # window Metal compositing for either (both confirmed upstream-unfixed as of 2026-07,
+        # tracked via wine!11058/!11257 + dxmt#151). --single-process merges renderer+GPU+browser
+        # into one process so the swapchain's owning process always matches the caller -- live-
+        # confirmed working (Metal HUD shows "DXMT D3D11 FL_11_1" + real compositing). Kept OFF
+        # steamwebhelper/SocialClubHelper (MNC_WEBHELPER_FLAGS below) since those already work
+        # without it and single-process removes their CEF process isolation.
+        "MNC_EA_WEBHELPER_EXTRA_FLAGS": "--single-process",
         # Bradar GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
         # this is the exact load-bearing set from the proven steam-unified-run.sh
         "MNC_WEBHELPER_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
@@ -3267,6 +3306,31 @@ def _steam_dir(prefix) -> Path:
     if (noarch / "steam.exe").exists():
         return noarch
     return x86
+
+
+def _ea_app_dir(prefix) -> Path:
+    """The EA App (EA Desktop) install dir in a prefix -- the innermost folder actually
+    containing EADesktop.exe. Same both-arch-paths caveat as _steam_dir: EA App installs
+    as 64-bit, but check Program Files (x86) too in case a fast-booted prefix's WoW64
+    redirection lands it somewhere unexpected.
+
+    EA App installs (and self-updates) into a VERSIONED subfolder --
+    "EA Desktop/<version>/EA Desktop/EADesktop.exe" -- not directly under "EA Desktop/"
+    (confirmed live: checking the un-versioned path never matched, so cmd_install_ea_app
+    re-ran the installer on every single click even though EA App was already there).
+    An in-progress self-update stages into a second "<version>-<unix timestamp>" folder
+    before promoting it -- skip those (no reliable "-" in a real EA version string) and
+    prefer the highest real version if more than one is present."""
+    dc = Path(prefix).expanduser() / "drive_c"
+    for base_name in ("Program Files", "Program Files (x86)"):
+        base = dc / base_name / "Electronic Arts" / "EA Desktop"
+        candidates = sorted(
+            (v for v in base.glob("*/EA Desktop/EADesktop.exe") if "-" not in v.parent.parent.name),
+            key=lambda p: p.parent.parent.name,
+        )
+        if candidates:
+            return candidates[-1].parent
+    return dc / "Program Files" / "Electronic Arts" / "EA Desktop"
 
 
 _STEAM_SEED_EXCLUDES = ["steamapps/", "userdata/", "config/", "logs/", "dumps/",
@@ -4153,7 +4217,17 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     _stage_unified_mf(str(prefix))
     _provision_redist_dlls(str(prefix))   # real MS d3dcompiler_47 file-drop (no installer, safe)
     _ensure_steam_sdl_resolvable(str(prefix))
-    backend = _unified_game_backend(bottle_cfg, params.get("backend", ""))
+    # Bradar arbitrary "Applications" (cmd_launch_app -> launchGame's force_dxmt_cef) are far
+    # more likely than a chosen game to embed a CEF/Chromium UI (Electron, Qt WebEngine, other
+    # launchers users point MacNdCheese at). Plain D3DMetal crashes those the same way it crashed
+    # EA App's Link2EA.exe this session ("Failed to dlopen D3DMetal" assertion in shared.mm) even
+    # when the process never really renders 3D -- just loading d3d11.dll/dxgi.dll as a dependency
+    # is enough. DXMT doesn't have that failure mode, so force it for this whole launch class
+    # regardless of the bottle's configured default_backend, same as EA App's own origin-launch.
+    if params.get("force_dxmt_cef"):
+        backend = "dxmt"
+    else:
+        backend = _unified_game_backend(bottle_cfg, params.get("backend", ""))
     metal_hud = params.get("metal_hud", bottle_cfg.get("metal_hud", False))
     debug = bool(params.get("debug", bottle_cfg.get("debug", False)))
     steam_mode = params.get("steam_mode", "silent")
@@ -4890,6 +4964,108 @@ def cmd_get_setup_pid(_params: Dict[str, Any]) -> Any:
     global _setup_proc
     running = _setup_proc is not None and _setup_proc.poll() is None
     return {"running": running}
+
+
+_ea_app_setup_proc: Optional[subprocess.Popen] = None
+
+
+def _download_and_run_eaapp_setup(prefix: str, wine: str, setup_path: Optional[str] = None) -> None:
+    """Run EAappInstaller.exe in the given prefix (background thread). Same
+    download/silent-install pattern as _download_and_run_steam_setup --
+    reuses _run_installer_prehack22 unmodified.
+
+    NOTE: a battle-tested Wine install script for EA App (Lutris) requires
+    `winetricks d3dcompiler_47` as a prerequisite and uses `/silent` rather
+    than `/S`. This app has no winetricks integration and DXMT/D3DMetal
+    handle D3D shader compilation differently than vanilla Wine+DXVK, so
+    it's not yet confirmed whether that prerequisite applies here too --
+    verify against a real install (check mnc-eaapp-installer.log for a
+    d3dcompiler-related failure) before adding it speculatively."""
+    global _ea_app_setup_proc
+    try:
+        if setup_path and Path(setup_path).expanduser().exists():
+            exe = Path(setup_path).expanduser()
+            log(f"Using provided EAappInstaller.exe: {exe}")
+        else:
+            exe = Path(tempfile.gettempdir()) / "EAappInstaller.exe"
+            if not exe.exists() or exe.stat().st_size < 1_000_000:
+                log("Downloading EAappInstaller.exe...")
+                dl_ok = False
+                try:
+                    rc = subprocess.run(["/usr/bin/curl", "-fsSL", "-o", str(exe), EA_APP_SETUP_URL],
+                                        capture_output=True, timeout=300).returncode
+                    dl_ok = (rc == 0 and exe.exists() and exe.stat().st_size > 1_000_000)
+                except Exception as cexc:
+                    log(f"curl download failed: {cexc}")
+                if not dl_ok:
+                    import ssl as _ssl
+                    noverify = _ssl.create_default_context()
+                    noverify.check_hostname = False
+                    noverify.verify_mode = _ssl.CERT_NONE
+                    with urllib.request.urlopen(EA_APP_SETUP_URL, context=noverify, timeout=300) as resp:
+                        exe.write_bytes(resp.read())
+                log("EAappInstaller.exe downloaded.")
+        logf = str(Path(prefix) / "mnc-eaapp-installer.log")
+        log(f"Launching EAappInstaller.exe in {prefix} (pre-HACK22 wine so the installer stub wont fault-storm; log {logf})")
+        # Confirmed live: neither /S nor /silent produced an actual silent install -- the
+        # installer (itself CEF-based, per EA's own docs) launched real GUI/GPU-init
+        # processes (MoltenVK/Vulkan init in the log, 2 Dock icons, no window content, no
+        # files ever landing) and then exited with nothing installed. This matches a
+        # well-documented CEF-under-Wine failure mode (blank/non-rendering window unless
+        # GPU compositing is disabled) rather than a silent-flag problem. Append the
+        # standard CEF/Chromium flags known to fix this class of bug.
+        # Tried forcing WINEMSYNC=0 here too (same crash-cascade rationale as the actual
+        # EA App launch below) but it broke the PRE-HACK22 wine build itself: "unimplemented
+        # function ntdll.dll.__wine_unix_call, aborting" (live-confirmed), the one variable
+        # changed vs every other _run_installer_prehack22 caller (Steam, redists), which all
+        # leave WINEMSYNC at _unified_env's default and work fine. Reverted -- this installer
+        # runs on a wine build with different unixlib support than the unified engine where
+        # the msync crash was actually bisected, so the fix doesn't transfer here.
+        proc = _run_installer_prehack22(
+            prefix,
+            [str(exe), "/silent", "--disable-gpu", "--disable-gpu-compositing", "--in-process-gpu"],
+            "d3dmetal", log_path=logf,
+        )
+        _ea_app_setup_proc = proc
+    except Exception as exc:
+        log(f"Warning: failed to run EAappInstaller: {exc}")
+
+
+def cmd_install_ea_app(params: Dict[str, Any]) -> Any:
+    """Kick off the EA App bootstrap for a bottle, lazily -- called the first
+    time the user interacts with an EA-managed Epic title, not at bottle
+    creation time like Steam (most Epic bottles never touch one)."""
+    prefix = params.get("prefix")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+    if (_ea_app_dir(prefix) / "EADesktop.exe").exists():
+        return {"already_installed": True}
+    wine = _find_wine()
+    if not wine:
+        raise RuntimeError("Wine not found")
+    threading.Thread(
+        target=_download_and_run_eaapp_setup,
+        args=(prefix, wine, params.get("ea_app_setup_path")),
+        daemon=True,
+    ).start()
+    return {"already_installed": False}
+
+
+def cmd_ea_app_install_status(params: Dict[str, Any]) -> Any:
+    """Drives the "Installing EA App…" loading screen, mirroring cmd_steam_install_status.
+    installed = EADesktop.exe present. running = an EAappInstaller process is still alive."""
+    prefix = params.get("prefix")
+    if not prefix:
+        raise ValueError("Missing 'prefix' parameter")
+    installed = (_ea_app_dir(prefix) / "EADesktop.exe").exists()
+    running = False
+    try:
+        out = subprocess.run(["pgrep", "-f", "EAappInstaller"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+        running = bool(out)
+    except Exception:
+        pass
+    return {"installed": installed, "running": running}
 
 
 def cmd_steam_install_status(params: Dict[str, Any]) -> Any:
@@ -7572,6 +7748,89 @@ def _read_installed_here(prefix: str) -> Dict[str, Dict[str, Any]]:
     return results
 
 
+def _epic_third_party_store(g: Dict[str, Any]) -> Optional[str]:
+    """Returns e.g. "The EA App" for Epic-catalog titles Epic's own catalog
+    flags as requiring install/activation through another launcher (surfaced
+    by `legendary info --json` as `external_activation`), else None. Read
+    straight from the same raw metadata blob `legendary list --json` already
+    returns and that's already cached on disk -- no extra network/subprocess
+    call needed."""
+    try:
+        ca = g.get("metadata", g).get("customAttributes", {})
+        return ca.get("ThirdPartyManagedApp", {}).get("value") or None
+    except (AttributeError, TypeError):
+        return None
+
+
+def _epic_third_party_store_for(app_name: str, prefix: str) -> Optional[str]:
+    """Looks up _epic_third_party_store() for a single app_name from the
+    already-cached disk library -- no network call. Used at launch time to
+    decide whether this title needs the link2ea:// handoff instead of a
+    normal legendary launch."""
+    for g in _read_disk_library(prefix):
+        if g.get("app_name") == app_name:
+            return _epic_third_party_store(g)
+    return None
+
+
+def _epic_origin_launch_uri(app_name: str, prefix: str) -> Optional[str]:
+    """Builds the same link2ea://launchgame/... URI legendary's own `launch --origin`
+    would build, and returns it for us to hand to `wine start` directly.
+
+    Bundled legendary is 0.20.34 (Dec 2023) -- 8 months before upstream commit
+    56a2314 ("Support both origin and EA App names", #632, Aug 2024) taught
+    `Game.is_origin_game` to recognize "The EA App", not just the older "Origin"
+    string. Epic's catalog now universally uses "The EA App" for these entries, so
+    `legendary launch --origin` unconditionally fails with "not an Origin title"
+    on this build (live-confirmed) -- it never even reaches the URI construction.
+    No newer official release exists to upgrade to (0.20.34 is still "Latest").
+
+    Rather than patch/replace the shared legendary binary (used for every Epic
+    install, not just this), replicate just the URI-building step using pieces
+    legendary already exposes/maintains on disk: `get-token` (stable, documented
+    CLI command) for the exchange code, and its own persisted user.json for the
+    account identity. Mirrors legendary/core.py's get_origin_uri() exactly."""
+    try:
+        lenv = _legendary_env(prefix)
+        r = subprocess.run(
+            _legendary_cmd(prefix) + ["get-token", "--json"],
+            capture_output=True, text=True, timeout=30, env=lenv,
+        )
+        token = json.loads(r.stdout) if r.stdout.strip() else {}
+        code = token.get("code")
+        if not code:
+            log(f"EA origin launch: get-token failed for {app_name}: {r.stderr.strip()[:300]}")
+            return None
+
+        user_path = _legendary_config_dir(prefix) / "user.json"
+        user = json.loads(user_path.read_text())
+        username = user.get("displayName", "")
+        account_id = user.get("account_id", "")
+        if not account_id:
+            log(f"EA origin launch: no account_id in user.json for {prefix}")
+            return None
+
+        params = [
+            ("AUTH_PASSWORD", code),
+            ("AUTH_TYPE", "exchangecode"),
+            ("epicusername", username),
+            ("epicuserid", account_id),
+            ("epiclocale", "en"),
+        ]
+        for g in _read_disk_library(prefix):
+            if g.get("app_name") == app_name:
+                extra = (g.get("metadata", g).get("customAttributes", {})
+                         .get("AdditionalCommandline", {}).get("value"))
+                if extra:
+                    params.extend(urllib.parse.parse_qsl(extra))
+                break
+
+        return f"link2ea://launchgame/{app_name}?{urllib.parse.urlencode(params)}"
+    except Exception as exc:
+        log(f"EA origin launch: failed to build link2ea:// URI for {app_name}: {exc}")
+        return None
+
+
 def _build_games_list(prefix: str, owned_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Build the game list from owned library + current installed state (all disk reads, no network)."""
     installed_here = _read_installed_here(prefix)
@@ -7597,6 +7856,7 @@ def _build_games_list(prefix: str, owned_list: List[Dict[str, Any]]) -> List[Dic
             "is_installed": is_installed,
             "update_available": False,
             "epic_app_name": app_name,
+            "third_party_store": _epic_third_party_store(g),
         })
     games.sort(key=lambda g: (0 if g["is_installed"] else 1, g["name"].lower()))
     return games
@@ -8362,6 +8622,7 @@ def cmd_legendary_all_downloads(_params: Dict[str, Any]) -> Any:
                 "queue_position": 0,
                 "paused": False,
                 "prefix": prefix,
+                "error": None,
             }
         for i, (app_name, prefix) in enumerate(_legendary_download_queue):
             result[app_name] = {
@@ -8370,6 +8631,7 @@ def cmd_legendary_all_downloads(_params: Dict[str, Any]) -> Any:
                 "queue_position": i + 1,
                 "paused": False,
                 "prefix": prefix,
+                "error": None,
             }
     for app_name, prefix in _legendary_paused.items():
         log_path = str(LEGENDARY_DIR / f"install_{app_name}.log")
@@ -8379,7 +8641,18 @@ def cmd_legendary_all_downloads(_params: Dict[str, Any]) -> Any:
             "queue_position": 0,
             "paused": True,
             "prefix": prefix,
+            "error": None,
         }
+    for app_name, info in _legendary_failed.items():
+        if app_name not in result:
+            result[app_name] = {
+                "progress": 0.0,
+                "queued": False,
+                "queue_position": 0,
+                "paused": False,
+                "prefix": info["prefix"],
+                "error": info["error"],
+            }
     return result
 
 
@@ -8403,6 +8676,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
     prefix_expanded = str(Path(prefix).expanduser().resolve())
     bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
     unified = _unified_engine_active(bottle_cfg)
+    third_party_store = _epic_third_party_store_for(app_name, prefix)
 
     # Epic never hands MacNCheese a raw exe path (legendary owns exe invocation), so
     # look it up from legendary's own installed-games record. Used below to DLL-patch
@@ -8423,7 +8697,16 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         bt = _unified_build_dir()
         _stage_unified_dlls(prefix_expanded)
         _stage_unified_mf(prefix_expanded)
-        game_backend = _unified_game_backend(bottle_cfg, backend)
+        # EA App's own helpers (Link2EA.exe, EADesktop.exe, ...) load d3d11.dll/dxgi.dll as a
+        # dependency even when they never render anything -- under plain D3DMetal that crashes
+        # immediately ("Failed to dlopen D3DMetal" assertion in shared.mm, live-confirmed on
+        # Link2EA.exe with kongbai's default_backend=d3dmetal3, which falls through to plain
+        # d3dmetal). EADesktop.exe itself is shielded from this via the loader's hardcoded
+        # steam_exes[] DXMT redirect, but Link2EA.exe and friends aren't in that list, so they'd
+        # otherwise inherit whatever MNC_GAME_BACKEND the bottle happens to default to. Force
+        # dxmt for the whole origin-launch regardless of bottle default -- matches the backend
+        # already proven working end-to-end for EA App's own CEF UI this session.
+        game_backend = "dxmt" if third_party_store else _unified_game_backend(bottle_cfg, backend)
         env = _unified_env(prefix_expanded, game_backend, metal_hud,
                             gst_debug=("5" if verbose_debug else "3"))
         # bt/wine, not bt/loader/wine -- the loader-style path can't find the build nls
@@ -8485,14 +8768,27 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
     # Inject per-bottle legendary config path into the Wine environment
     env["LEGENDARY_CONFIG_PATH"] = str(_legendary_config_dir(prefix))
 
-    # legendary launch handles Epic auth token generation and passes all required
-    # -AUTH_TYPE / -AUTH_PASSWORD / -epicapp / etc. args to Wine automatically.
-    cmd = _legendary_cmd(prefix) + [
-        "launch", app_name,
-        "--wine", wine_bin,
-        "--wine-prefix", prefix_expanded,
-        "--skip-version-check",
-    ]
+    # Titles Epic's catalog flags as third-party-managed (e.g. Battlefield 4, fulfilled
+    # via "The EA App") have no real manifest to launch directly -- hand off to the
+    # managing launcher instead. Derived here (not passed from Swift) so it applies to
+    # any such title launched through this one function, not just ones the UI knows about.
+    # Build the link2ea:// handoff ourselves (see _epic_origin_launch_uri) rather than
+    # `legendary launch --origin` -- the bundled legendary predates EA App-name support
+    # and unconditionally rejects these titles as "not an Origin title" (live-confirmed).
+    if third_party_store:
+        uri = _epic_origin_launch_uri(app_name, prefix)
+        if not uri:
+            raise RuntimeError(f"Could not build the EA App launch link for {app_name}")
+        cmd = [wine_bin, "start", uri]
+    else:
+        # legendary launch handles Epic auth token generation and passes all required
+        # -AUTH_TYPE / -AUTH_PASSWORD / -epicapp / etc. args to Wine automatically.
+        cmd = _legendary_cmd(prefix) + [
+            "launch", app_name,
+            "--wine", wine_bin,
+            "--wine-prefix", prefix_expanded,
+            "--skip-version-check",
+        ]
     log(f"legendary launch: {shlex.join(cmd)}")
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", app_name)
     log_path = str(LOG_DIR / f"{safe_name}-legendary.log")
@@ -9087,6 +9383,8 @@ COMMANDS: Dict[str, Any] = {
     "get_steam_running": cmd_get_steam_running,
     "get_setup_pid": cmd_get_setup_pid,
     "steam_install_status": cmd_steam_install_status,
+    "install_ea_app": cmd_install_ea_app,
+    "ea_app_install_status": cmd_ea_app_install_status,
     "reorder_bottles": cmd_reorder_bottles,
     "launch_launcher": cmd_launch_launcher,
     "get_exe_icon": cmd_get_exe_icon,

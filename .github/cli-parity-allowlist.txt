@@ -18,15 +18,16 @@ apply_app_update          # drives the in-app self-update banner; CLI has no upd
 check_audio_input         # mic-quality guard warning (sub-48kHz Bluetooth input), UI-only
 detect_exes               # populates a file-picker's exe suggestions
 diagnose_cheese
+ea_app_install_status     # drives the "Installing EA App…" loading screen; same shape as steam_install_status below, no CLI equivalent either
 get_exe_icon              # UI-only: icon for the game grid
 get_game_order
 get_setup_pid
 get_steam_description     # UI-only: store page text for the game detail view
 get_steam_media           # UI-only: box art / header images
 get_steam_running
+install_ea_app            # bootstraps EA App into a bottle on demand; same shape as Steam's own install, which has no CLI command either
 launch_launcher
 legendary_check_auth
-legendary_install_progress
 nile_all_downloads
 nile_auth
 nile_cancel_install

@@ -293,6 +293,16 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: backend.steamInstalling)
+        // "Installing EA App…" loading screen, mirroring the Steam one above --
+        // EA-managed Epic titles (e.g. Battlefield 4) need the real EA App client.
+        .overlay {
+            if backend.eaAppInstalling {
+                EAAppInstallOverlay(step: backend.eaAppInstallStep)
+                    .transition(.opacity)
+                    .zIndex(120)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: backend.eaAppInstalling)
         .searchable(text: $searchText, placement: .toolbar, prompt: showStore ? L("Search showcase") : L("Search games"))
         .onReceive(NotificationCenter.default.publisher(for: .createNewBottle)) { _ in
             showCreateBottle = true
