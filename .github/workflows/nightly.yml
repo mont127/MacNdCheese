@@ -45,10 +45,101 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Fetch the engine payloads from the private engine repo
+        # Makes a nightly behave like an official release: installer.sh finds the
+        # engine inside Resources and sets it up offline, instead of building or
+        # downloading wine itself.
+        #
+        # WINE_ENGINE_TOKEN is a fine-grained PAT with Contents: read-only on
+        # mont127/MacNdCheese-WineEngine-PRIVATE (that repo is private, so the
+        # workflow's own GITHUB_TOKEN cannot see it). If the secret is absent the
+        # step is skipped and the build falls back to launcher-only rather than
+        # failing -- a fork without the secret still gets a working nightly.
+        id: payload
+        env:
+          GH_TOKEN: ${{ secrets.WINE_ENGINE_TOKEN }}
+          ENGINE_REPO: mont127/MacNdCheese-WineEngine-PRIVATE
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::WINE_ENGINE_TOKEN not set - building launcher-only (no bundled engine)"
+            echo "bundled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p payload work
+
+          # Newest release carrying a unified-engine asset. Picked by ASSET NAME, not
+          # by "latest": the engine repo also publishes mnc-d3d-only releases, and
+          # engine builds are often prereleases, so `--latest` would pick the wrong one.
+          ENGINE_TAG="$(gh release list --repo "$ENGINE_REPO" --limit 100 --json tagName \
+            --jq '.[].tagName' | while read -r t; do
+              if gh api "repos/$ENGINE_REPO/releases/tags/$t" \
+                   --jq '.assets[].name' 2>/dev/null | grep -q 'unified-osx64\.tar\.xz'; then
+                echo "$t"; break
+              fi
+            done)"
+          [ -n "$ENGINE_TAG" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
+          echo "engine release: $ENGINE_TAG"
+          gh release download "$ENGINE_TAG" --repo "$ENGINE_REPO" \
+            --pattern '*unified-osx64.tar.xz' --dir work
+
+          # installer.sh does `unzip -d deps/wine-unified`, so the archive contents
+          # must sit at the ZIP ROOT. The tarball wraps them in wine-unified/, and
+          # carries mnc-d3d/ which is staged separately from Resources -- so zip from
+          # inside that dir and leave mnc-d3d out.
+          tar -xJf work/*unified-osx64.tar.xz -C work
+          ( cd work/wine-unified && zip -qr -X "$GITHUB_WORKSPACE/payload/wine-unified-bundle.zip" . -x 'mnc-d3d/*' )
+
+          # The d3d pack ships as its own release so it can be refreshed without
+          # rebuilding wine. It unpacks to a versioned dir (mnc-d3d-NNNN/), but
+          # stage_unified_d3d_pack looks for exactly Resources/mnc-d3d.
+          D3D_TAG="$(gh release list --repo "$ENGINE_REPO" --limit 100 --json tagName \
+            --jq '.[].tagName' | while read -r t; do
+              if gh api "repos/$ENGINE_REPO/releases/tags/$t" \
+                   --jq '.assets[].name' 2>/dev/null | grep -qx 'mnc-d3d\.tar\.xz'; then
+                echo "$t"; break
+              fi
+            done)"
+          if [ -n "$D3D_TAG" ]; then
+            echo "d3d pack release: $D3D_TAG"
+            gh release download "$D3D_TAG" --repo "$ENGINE_REPO" \
+              --pattern 'mnc-d3d.tar.xz' --dir work
+            mkdir -p work/d3d && tar -xJf work/mnc-d3d.tar.xz -C work/d3d
+            mv "$(find work/d3d -maxdepth 1 -mindepth 1 -type d | head -1)" payload/mnc-d3d
+          else
+            # Fall back to the copy inside the engine tarball.
+            [ -d work/wine-unified/mnc-d3d ] && cp -R work/wine-unified/mnc-d3d payload/mnc-d3d
+          fi
+
+          # A d3d pack missing either half of the D3DMetal runtime loads fine and then
+          # dies on `Failed to dlopen D3DMetal` with no hint a file is missing, so fail
+          # loudly here instead of shipping it.
+          for req in d3d11_dxmt.dll dxgi_dxmt.dll libd3dshared.dylib D3DMetal.framework; do
+            [ -e "payload/mnc-d3d/$req" ] || { echo "::error::d3d pack incomplete: $req missing"; exit 1; }
+          done
+
+          rm -rf work
+          echo "bundled=true" >> "$GITHUB_OUTPUT"
+          du -sh payload/* | sed 's/^/payload: /'
+
       - name: Build universal DMG
+        env:
+          MNC_PAYLOAD_DIR: payload
         run: |
           chmod +x buildapp.sh
           bash buildapp.sh universal
+          ls -la *.dmg
+
+      - name: Fail if the DMG exceeds GitHub's 2 GB asset limit
+        # A bundled nightly is ~1.9 GB; uploads over 2 GB are rejected outright and
+        # the failure surfaces late and confusingly, so check it up front.
+        run: |
+          SZ=$(stat -f%z "MacNdCheese Launcher.dmg" 2>/dev/null || echo 0)
+          echo "DMG size: $((SZ/1048576)) MB"
+          if [ "$SZ" -gt 2147483648 ]; then
+            echo "::error::DMG is $((SZ/1048576)) MB, over GitHub's 2048 MB asset limit"
+            exit 1
+          fi
 
       - name: Compute tag and release notes
         id: tag

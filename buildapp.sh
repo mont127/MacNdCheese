@@ -123,6 +123,29 @@ for img in Steam.png Wine.png Setting.png Add.png icon.png; do
     fi
 done
 
+# Engine payloads (wine-unified-bundle.zip, mnc-d3d/, redist/, ...). An official
+# release ships these inside Resources -- that is what makes installer.sh able to
+# set the engine up offline instead of building or downloading wine itself. They
+# are far too large for git, so they are supplied out of band: point
+# MNC_PAYLOAD_DIR at a directory containing them (the nightly workflow fills it
+# from the engine repo's releases).
+#
+# Whatever is in that directory is copied verbatim, so a payload set can grow
+# without touching this script. Absent = a launcher-only build, which is the
+# pre-existing behaviour and still perfectly usable -- installer.sh just falls
+# back to its other sources.
+PAYLOAD_DIR="${MNC_PAYLOAD_DIR:-payload}"
+if [ -d "$PAYLOAD_DIR" ] && [ -n "$(ls -A "$PAYLOAD_DIR" 2>/dev/null)" ]; then
+    echo "Bundling engine payloads from $PAYLOAD_DIR:"
+    for item in "$PAYLOAD_DIR"/*; do
+        [ -e "$item" ] || continue
+        cp -R "$item" "$RESOURCES/"
+        echo "  + $(basename "$item")  ($(du -sh "$item" 2>/dev/null | cut -f1))"
+    done
+else
+    echo "No engine payloads ($PAYLOAD_DIR absent/empty) — building launcher-only."
+fi
+
 # Extract App Intents metadata so Siri/Apple Intelligence can discover shortcuts.
 # App Intents definitions don't vary by CPU arch, so for a universal build one
 # representative triple (arm64) is enough — this only affects Siri phrase
