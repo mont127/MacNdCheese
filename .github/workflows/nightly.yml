@@ -45,16 +45,16 @@ jobs:
           fi
           xcodebuild -version
 
-      - name: Fetch the engine payloads from the private engine repo
+      - name: Fetch the engine bundle from the private engine repo
         # Makes a nightly behave like an official release: installer.sh finds the
-        # engine inside Resources and sets it up offline, instead of building or
-        # downloading wine itself.
+        # engine inside Resources and sets it up offline instead of building or
+        # downloading wine itself. Installing = replacing deps/wine-unified
+        # wholesale, which is what installer.sh already does (rm -rf then extract).
         #
-        # WINE_ENGINE_TOKEN is a fine-grained PAT with Contents: read-only on
-        # mont127/MacNdCheese-WineEngine-PRIVATE (that repo is private, so the
-        # workflow's own GITHUB_TOKEN cannot see it). If the secret is absent the
-        # step is skipped and the build falls back to launcher-only rather than
-        # failing -- a fork without the secret still gets a working nightly.
+        # WINE_ENGINE_TOKEN is a fine-grained PAT with Contents: read-only on the
+        # engine repo -- it is private, so the workflow's own GITHUB_TOKEN cannot
+        # see it. Absent secret = launcher-only build rather than a hard failure,
+        # so a fork without the secret still produces a usable nightly.
         id: payload
         env:
           GH_TOKEN: ${{ secrets.WINE_ENGINE_TOKEN }}
@@ -66,61 +66,39 @@ jobs:
             echo "bundled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          mkdir -p payload work
+          mkdir -p payload
 
-          # Newest release carrying a unified-engine asset. Picked by ASSET NAME, not
-          # by "latest": the engine repo also publishes mnc-d3d-only releases, and
-          # engine builds are often prereleases, so `--latest` would pick the wrong one.
-          ENGINE_TAG="$(gh release list --repo "$ENGINE_REPO" --limit 100 --json tagName \
+          # Newest release carrying an engine asset, chosen by ASSET NAME rather than
+          # `--latest`: engine builds are often prereleases and the repo also publishes
+          # d3d-pack-only releases, either of which would make --latest pick the wrong one.
+          TAG="$(gh release list --repo "$ENGINE_REPO" --limit 100 --json tagName \
             --jq '.[].tagName' | while read -r t; do
               if gh api "repos/$ENGINE_REPO/releases/tags/$t" \
                    --jq '.assets[].name' 2>/dev/null | grep -q 'unified-osx64\.tar\.xz'; then
                 echo "$t"; break
               fi
             done)"
-          [ -n "$ENGINE_TAG" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
-          echo "engine release: $ENGINE_TAG"
-          gh release download "$ENGINE_TAG" --repo "$ENGINE_REPO" \
-            --pattern '*unified-osx64.tar.xz' --dir work
+          [ -n "$TAG" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
+          echo "engine release: $TAG"
 
-          # installer.sh does `unzip -d deps/wine-unified`, so the archive contents
-          # must sit at the ZIP ROOT. The tarball wraps them in wine-unified/, and
-          # carries mnc-d3d/ which is staged separately from Resources -- so zip from
-          # inside that dir and leave mnc-d3d out.
-          tar -xJf work/*unified-osx64.tar.xz -C work
-          ( cd work/wine-unified && zip -qr -X "$GITHUB_WORKSPACE/payload/wine-unified-bundle.zip" . -x 'mnc-d3d/*' )
+          gh release download "$TAG" --repo "$ENGINE_REPO" \
+            --pattern '*unified-osx64.tar.xz' --dir payload
+          mv payload/*unified-osx64.tar.xz payload/wine-unified-bundle.tar.xz
 
-          # The d3d pack ships as its own release so it can be refreshed without
-          # rebuilding wine. It unpacks to a versioned dir (mnc-d3d-NNNN/), but
-          # stage_unified_d3d_pack looks for exactly Resources/mnc-d3d.
-          D3D_TAG="$(gh release list --repo "$ENGINE_REPO" --limit 100 --json tagName \
-            --jq '.[].tagName' | while read -r t; do
-              if gh api "repos/$ENGINE_REPO/releases/tags/$t" \
-                   --jq '.assets[].name' 2>/dev/null | grep -qx 'mnc-d3d\.tar\.xz'; then
-                echo "$t"; break
-              fi
-            done)"
-          if [ -n "$D3D_TAG" ]; then
-            echo "d3d pack release: $D3D_TAG"
-            gh release download "$D3D_TAG" --repo "$ENGINE_REPO" \
-              --pattern 'mnc-d3d.tar.xz' --dir work
-            mkdir -p work/d3d && tar -xJf work/mnc-d3d.tar.xz -C work/d3d
-            mv "$(find work/d3d -maxdepth 1 -mindepth 1 -type d | head -1)" payload/mnc-d3d
-          else
-            # Fall back to the copy inside the engine tarball.
-            [ -d work/wine-unified/mnc-d3d ] && cp -R work/wine-unified/mnc-d3d payload/mnc-d3d
-          fi
-
-          # A d3d pack missing either half of the D3DMetal runtime loads fine and then
-          # dies on `Failed to dlopen D3DMetal` with no hint a file is missing, so fail
-          # loudly here instead of shipping it.
-          for req in d3d11_dxmt.dll dxgi_dxmt.dll libd3dshared.dylib D3DMetal.framework; do
-            [ -e "payload/mnc-d3d/$req" ] || { echo "::error::d3d pack incomplete: $req missing"; exit 1; }
+          # The engine bundle carries mnc-d3d/ itself, so nothing else to fetch. Verify
+          # it is complete: a pack missing either half of the D3DMetal runtime loads
+          # fine and then dies on "Failed to dlopen D3DMetal" with no hint a file is
+          # missing, so fail here rather than shipping it.
+          for req in mnc-d3d/d3d11_dxmt.dll mnc-d3d/dxgi_dxmt.dll \
+                     mnc-d3d/libd3dshared.dylib mnc-d3d/D3DMetal.framework \
+                     loader/wine server/wineserver; do
+            tar -tJf payload/wine-unified-bundle.tar.xz "wine-unified/$req" >/dev/null 2>&1 \
+              || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
           done
 
-          rm -rf work
-          echo "bundled=true" >> "$GITHUB_OUTPUT"
-          du -sh payload/* | sed 's/^/payload: /'
+          echo "engine_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "bundled=true"   >> "$GITHUB_OUTPUT"
+          ls -lh payload/
 
       - name: Build universal DMG
         env:

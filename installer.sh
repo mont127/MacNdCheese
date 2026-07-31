@@ -2229,13 +2229,21 @@ locate_wine_unified_bundle() {
   script_path="$0"
   case "$script_path" in /*) ;; *) script_path="$PWD/$script_path" ;; esac
   script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd)" || script_dir=""
+  # .tar.xz is what the engine repo publishes (and what the nightly bundles);
+  # .zip is the historical hand-made bundle. Both are accepted.
   candidates="
 ${WINE_UNIFIED_BUNDLE_PATH:-}
+${RESOURCES_DIR:-}/wine-unified-bundle.tar.xz
 ${RESOURCES_DIR:-}/wine-unified-bundle.zip
+${script_dir}/wine-unified-bundle.tar.xz
 ${script_dir}/wine-unified-bundle.zip
+${script_dir}/../Resources/wine-unified-bundle.tar.xz
 ${script_dir}/../Resources/wine-unified-bundle.zip
+${script_dir}/../../Resources/wine-unified-bundle.tar.xz
 ${script_dir}/../../Resources/wine-unified-bundle.zip
+$HOME/macndcheese/wine-unified-bundle.tar.xz
 $HOME/macndcheese/wine-unified-bundle.zip
+$HOME/Library/Application Support/MacNCheese/wine-unified-bundle.tar.xz
 $HOME/Library/Application Support/MacNCheese/wine-unified-bundle.zip
 "
   while IFS= read -r c; do
@@ -2246,7 +2254,7 @@ $candidates
 EOF
   for root in /Applications "$HOME/Applications" "$HOME/Downloads"; do
     [ -d "$root" ] || continue
-    found="$(find "$root" -maxdepth 5 -name 'wine-unified-bundle.zip' -type f 2>/dev/null | head -n1)"
+    found="$(find "$root" -maxdepth 5 \( -name 'wine-unified-bundle.tar.xz' -o -name 'wine-unified-bundle.zip' \) -type f 2>/dev/null | head -n1)"
     [ -n "$found" ] && [ -f "$found" ] && { printf '%s' "$found"; return 0; }
   done
   return 1
@@ -2305,16 +2313,35 @@ install_wine_unified() {
     echo "Using unified wine bundle: $bundle"
     rm -rf "$dst"
     mkdir -p "$dst"
-    if command -v unzip >/dev/null 2>&1; then
-      unzip -q "$bundle" -d "$dst" || { echo "Failed to unzip unified wine bundle"; exit 1; }
-    elif [ -x "$SEVENZ_BIN" ]; then
-      "$SEVENZ_BIN" x -y -o"$dst" "$bundle" >/dev/null || { echo "Failed to extract unified wine bundle"; exit 1; }
-    else
-      echo "Neither unzip nor 7z available to extract the bundle"; exit 1
-    fi
+    case "$bundle" in
+      *.tar.xz|*.txz)
+        # The tarball wraps everything in one top-level dir (wine-unified/), but
+        # $dst IS that dir -- strip a level or it ends up nested twice.
+        tar -xJf "$bundle" -C "$dst" --strip-components=1 \
+          || { echo "Failed to untar unified wine bundle"; exit 1; }
+        ;;
+      *)
+        if command -v unzip >/dev/null 2>&1; then
+          unzip -q "$bundle" -d "$dst" || { echo "Failed to unzip unified wine bundle"; exit 1; }
+        elif [ -x "$SEVENZ_BIN" ]; then
+          "$SEVENZ_BIN" x -y -o"$dst" "$bundle" >/dev/null || { echo "Failed to extract unified wine bundle"; exit 1; }
+        else
+          echo "Neither unzip nor 7z available to extract the bundle"; exit 1
+        fi
+        ;;
+    esac
     find "$dst" -name 'wine' -type f -exec chmod +x {} \; 2>/dev/null || true
     xattr -dr com.apple.quarantine "$dst" 2>/dev/null || true
-    stage_unified_d3d_pack "$dst"
+    # The engine bundle now ships mnc-d3d/ itself; only stage from Resources when it
+    # didn't (older hand-made .zip bundles). Ask d3d_pack_layout rather than probing
+    # d3d11.dll: in a layout-2 pack the canonical d3d11 is a GPTK stub living under
+    # d3dm/, not at the pack root, so that probe reports "no pack" for a pack that is
+    # entirely present.
+    if [ "$(d3d_pack_layout "$dst/mnc-d3d")" != 0 ]; then
+      echo "install_wine_unified: d3d pack came with the bundle (layout $(d3d_pack_layout "$dst/mnc-d3d"))"
+    else
+      stage_unified_d3d_pack "$dst"
+    fi
     disable_builtin_d3d_slots "$dst"
     stage_redist_pack
     sign_unified_wine "$dst"
@@ -2509,7 +2536,12 @@ disable_builtin_d3d_slots() {
 # (mnc-d3d/dxmt/d3d11.dll); layout 1 is the old flat mnc-d3d/d3d11_dxmt.dll.
 # Echo 2 or 1 for a pack root.
 d3d_pack_layout() {
-  if [ -f "$1/base/d3d11.dll" ] || [ -f "$1/dxmt/d3d11.dll" ]; then echo 2; else echo 1; fi
+  local p
+  for p in dxmt/d3d11.dll base/winemetal.dll d3dm/d3d11.dll base/d3d11.dll; do
+    [ -f "$1/$p" ] && { echo 2; return; }
+  done
+  if [ -f "$1/winemetal.dll" ] || [ -f "$1/d3d11.dll" ]; then echo 1; return; fi
+  echo 0
 }
 
 # Destination path for one slot: d3d_pack_slot <root> <backend> <name> [flat-name]
