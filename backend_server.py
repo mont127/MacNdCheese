@@ -22,6 +22,7 @@ _resources_dir = _os.path.dirname(_os.path.abspath(__file__))
 if _resources_dir not in _sys.path:
     _sys.path.insert(0, _resources_dir)
 
+import array
 import atexit
 import base64
 import datetime
@@ -3178,6 +3179,155 @@ def _stage_unified_dlls(prefix: str) -> None:
             log(f"unified: stage {dll} failed: {exc}")
     if staged:
         log(f"unified: staged {staged} d3d DLL(s) -> system32 from {src_dir}")
+    _stage_unified_d3d9(prefix, src_dir)
+
+
+def _stage_unified_d3d9(prefix: str, src_dir: Path) -> None:
+    """Drop DXMT's d3d9 into the prefix, but only on an Apple GPU.
+
+    Unlike the d3d11/dxgi family this is NOT a builtin rename: the DLL ships
+    unmarked (no `winebuild --builtin`) and is loaded natively via the "d3d9=n"
+    override that _unified_env() adds on the same condition. That keeps the
+    choice in one place -- drop the file AND set the override, or neither:
+
+      Apple Silicon -> native DXMT d3d9 (Metal)
+      Intel         -> wines builtin d3d9 (wined3d), untouched
+
+    Without "=n" wine loads its own builtin out of the wine tree even when a
+    d3d9.dll sits in system32, so a stale file left behind by a machine swap
+    cannot silently take over.
+
+    64-bit goes to system32, 32-bit to syswow64; the unix bridge behind both is
+    the single 64-bit winemetal9.so, reached from a 32-bit PE via WoW64."""
+    if not _is_apple_silicon():
+        return
+    win_dir = Path(prefix) / "drive_c" / "windows"
+    for src_name, sys_dir in (("d3d9_dxmt.dll", "system32"),
+                              ("d3d9_dxmt32.dll", "syswow64")):
+        src = src_dir / src_name
+        dst_dir = win_dir / sys_dir
+        if not src.exists() or not dst_dir.is_dir():
+            continue
+        dst = dst_dir / "d3d9.dll"
+        try:
+            if dst.exists():
+                ss, ds = src.stat(), dst.stat()
+                if ss.st_size == ds.st_size and abs(ss.st_mtime - ds.st_mtime) <= 2:
+                    continue
+            shutil.copy2(str(src), str(dst))
+            log(f"unified: staged {src_name} -> {sys_dir}\\d3d9.dll (DXMT, Apple GPU)")
+        except Exception as exc:
+            log(f"unified: stage {src_name} failed: {exc}")
+
+
+# --- PE header poking: the 32-bit gate, and the 4GB patch -------------------
+#
+# Offsets we need, all from the DOS stub forward:
+#   0x00  e_magic 'MZ'
+#   0x3c  e_lfanew -> start of the NT headers
+#   +0    "PE\0\0"
+#   +4    IMAGE_FILE_HEADER: Machine at +0, Characteristics at +18
+#   +24   IMAGE_OPTIONAL_HEADER: Magic at +0, CheckSum at +64 (same in PE32/PE32+)
+_PE_MACHINE_I386 = 0x014C
+_PE_MACHINE_AMD64 = 0x8664
+_IMAGE_FILE_LARGE_ADDRESS_AWARE = 0x0020
+
+
+def _pe_header_info(exe: str) -> Optional[Tuple[int, int, int, int]]:
+    """(machine, characteristics, characteristics_offset, checksum_offset) for a PE.
+
+    None when the file isn't a PE at all -- a shell script, a .NET single-file
+    bundle stub we can't parse, a truncated download. Every caller treats that as
+    "leave it alone", which is the only safe reading of "I don't understand this
+    file"."""
+    try:
+        with open(exe, "rb") as fh:
+            if fh.read(2) != b"MZ":
+                return None
+            fh.seek(0x3C)
+            (e_lfanew,) = struct.unpack("<I", fh.read(4))
+            if e_lfanew <= 0 or e_lfanew > (1 << 24):
+                return None
+            fh.seek(e_lfanew)
+            if fh.read(4) != b"PE\0\0":
+                return None
+            machine, _nsec, _ts, _psym, _nsym, _optsz, chars = struct.unpack("<HHIIIHH", fh.read(20))
+            return machine, chars, e_lfanew + 4 + 18, e_lfanew + 24 + 64
+    except Exception:
+        return None
+
+
+def _pe_is_32bit(exe: str) -> bool:
+    info = _pe_header_info(exe)
+    return bool(info) and info[0] == _PE_MACHINE_I386
+
+
+def _pe_checksum(buf: bytearray, checksum_off: int) -> int:
+    """The PE checksum: 16-bit ones-complement sum of the image with the checksum
+    field taken as zero, plus the file size."""
+    n = len(buf)
+    saved = bytes(buf[checksum_off:checksum_off + 4])
+    buf[checksum_off:checksum_off + 4] = b"\0\0\0\0"
+    try:
+        words = array.array("H")
+        words.frombytes(bytes(buf[:n - (n & 1)]))
+        if sys.byteorder != "little":
+            words.byteswap()
+        total = sum(words)
+        if n & 1:
+            total += buf[-1]
+        while total >> 16:
+            total = (total & 0xFFFF) + (total >> 16)
+    finally:
+        buf[checksum_off:checksum_off + 4] = saved
+    return (total + n) & 0xFFFFFFFF
+
+
+def _apply_4gb_patch(exe: str) -> Optional[bool]:
+    """Set IMAGE_FILE_LARGE_ADDRESS_AWARE on a 32-bit exe that lacks it.
+
+    Same edit as ntcore's "4GB patch": one bit in the COFF Characteristics word.
+    Without it a 32-bit process is capped at a 2GB user address space even though
+    wine hands out the full 4GB; OMSI 2 is the classic case, it simply runs out
+    and dies. The bit is a promise that the program's pointer arithmetic is
+    unsigned-clean, which is why it can't just be set on everything -- but a game
+    that ships it unset and then OOMs is the exact case it exists for.
+
+    Returns True if we patched, False if nothing to do, None if we couldn't.
+    The original is kept alongside so a bad patch is one copy away from undone."""
+    info = _pe_header_info(exe)
+    if not info:
+        return None
+    machine, chars, chars_off, cksum_off = info
+    if machine != _PE_MACHINE_I386:
+        return False                      # 64-bit is large-address-aware by definition
+    if chars & _IMAGE_FILE_LARGE_ADDRESS_AWARE:
+        return False                      # already patched, by us or by the vendor
+    backup = Path(exe).with_suffix(Path(exe).suffix + ".mnc-orig")
+    try:
+        size = os.path.getsize(exe)
+        if not backup.exists():
+            shutil.copy2(exe, str(backup))
+        with open(exe, "r+b") as fh:
+            fh.seek(chars_off)
+            fh.write(struct.pack("<H", chars | _IMAGE_FILE_LARGE_ADDRESS_AWARE))
+            # Recompute the checksum only when the file carried one and is small
+            # enough to slurp. A zero checksum is legal and unverified for
+            # anything that isn't a driver, so leaving it alone is safe; wine
+            # never checks it either way.
+            fh.seek(cksum_off)
+            (old_cksum,) = struct.unpack("<I", fh.read(4))
+            if old_cksum and size <= (256 << 20):
+                fh.seek(0)
+                buf = bytearray(fh.read())
+                fh.seek(cksum_off)
+                fh.write(struct.pack("<I", _pe_checksum(buf, cksum_off)))
+        log(f"4GB patch: set LARGE_ADDRESS_AWARE on {Path(exe).name} "
+            f"(original kept as {backup.name})")
+        return True
+    except Exception as exc:
+        log(f"4GB patch: {Path(exe).name} left alone ({exc})")
+        return None
 
 
 def _redist_dir() -> Optional[Path]:
@@ -3559,10 +3709,39 @@ def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
     return "d3dmetal"
 
 
+def _rosetta_x87_loader() -> Optional[str]:
+    """RosettaHack x87+JIT loader shipped with the engine, or None if unusable.
+
+    Rosetta translates x87 through a slow generic path, and 32-bit titles do
+    their float maths on the x87 stack rather than in SSE -- OMSI 2 is the
+    textbook case. runtime_loader patches those handlers in the target process
+    before it runs.
+
+    We only hand wine the PATH here; wine decides whether to USE it, per process,
+    from the target PE's machine word (dlls/ntdll/unix/loader.c,
+    use_rosetta_x87_loader). That is deliberate: the 32-bit-only rule is then
+    structural rather than something every caller has to remember, and a 64-bit
+    child of a 32-bit process still gets a plain loader.
+
+    Apple Silicon only -- there is no Rosetta to patch on an Intel Mac.
+    """
+    if not _is_apple_silicon():
+        return None
+    d = _unified_build_dir() / "mnc-rosetta"
+    loader = d / "runtime_loader"
+    # the loader mmaps libRuntimeRosettax87 into the target and looks for it
+    # NEXT TO ITSELF, so a half-staged dir is worse than none: it would attach,
+    # fail, and take the launch with it.
+    if not (loader.is_file() and os.access(loader, os.X_OK)
+            and (d / "libRuntimeRosettax87").is_file()):
+        return None
+    return str(loader)
+
+
 def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  for_steam: bool = False, gst_debug: str = "",
                  cef_safe_mode: bool = False,
-                 debug: bool = False) -> Dict[str, str]:
+                 debug: bool = False, x87_jit: bool = True) -> Dict[str, str]:
     """Env for the unified wine. Steam exes always render via DXMT (loader gate);
     non-steam games follow MNC_GAME_BACKEND. GStreamer (MF/H.264 video) is wired for
     GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none.
@@ -3630,6 +3809,19 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     # dont have em, which behaves exactly as before.
     dll_ovr = ("winemenubuilder.exe=d;d3dcompiler_47=n,b;"
                "msvcp140_2,vcruntime140_1=n,b;nvapi,nvapi64=")
+    # Bradar d3d9 -> DXMT, but only on Apple GPUs. DXMT calls non-Apple GPU support
+    # "experimental" (dxmt_device.cpp: it drops to Metal 3.1 and loses the features it
+    # wants), and wines wined3d is the mature path there, so an Intel Mac must keep the
+    # builtin. The switch is the override alone: _stage_unified_d3d9() only drops the
+    # native DXMT d3d9 into the prefix on Apple Silicon, and without "=n" wine loads its
+    # own builtin from the wine tree regardless of what sits in system32.
+    if _is_apple_silicon():
+        dll_ovr += ";d3d9=n"
+    env.pop("ROSETTA_X87_PATH", None)   # never inherit a stale one from the shell
+    if x87_jit:
+        _x87 = _rosetta_x87_loader()
+        if _x87:
+            env["ROSETTA_X87_PATH"] = _x87
     env.update({
         "WINEPREFIX": str(prefix),
         # msync OFF by default. The bundled unified wine is msync-capable (server
@@ -3720,6 +3912,10 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         env.pop(var, None)
     if metal_hud:
         env["MTL_HUD_ENABLED"] = "1"
+        # MTL_DEBUG_BUILD too, matching the classic d3dmetal heredoc path, which has
+        # always exported both. The unified path only ever set MTL_HUD_ENABLED and the
+        # HUD did not appear on a DXMT game.
+        env["MTL_DEBUG_BUILD"] = "1"
     # GStreamer is GAMES ONLY. Steam must never touch it (its CEF crashes) so strip
     # any inherited plugin path. For games force software H.264 (avdec_h264) and disable
     # VideoToolbox vtdec which crashes the decode under Rosetta x86_64.
@@ -4824,8 +5020,16 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
                                        "backend": params.get("backend", "")})
             except Exception as exc:
                 log(f"unified: steam auto-launch failed: {exc} (continuing)")
+    # 4GB patch before we launch, not after: the flag is read by the loader when the
+    # image is mapped, so patching a running process would do nothing. No-op on a
+    # 64-bit exe and on one that already ships the bit.
+    if bool(params.get("large_address_aware", bottle_cfg.get("large_address_aware", True))):
+        _apply_4gb_patch(str(exe_path))
+    # x87+JIT is on by default; the per-bottle/per-launch flag is an escape hatch for
+    # a title the patched handlers upset, not a thing users should have to find.
     env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"),
-                       cef_safe_mode=force_cef, debug=debug)
+                       cef_safe_mode=force_cef, debug=debug,
+                       x87_jit=bool(params.get("x87_jit", bottle_cfg.get("x87_jit", True))))
     # Rockstar: make d3d12 cleanly ABSENT. The Social Club CEF resolves D3D12CreateDevice
     # dynamicaly and calls it through an UNGUARDED proc-table slot -- with our half-alive
     # d3d12 stub loaded the slot ends up NULL and every helper dies calling address 0
