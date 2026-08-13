@@ -3683,8 +3683,21 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         # documents single-process as debug-only; don't reach for it.
         # Bradar GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
         # this is the exact load-bearing set from the proven steam-unified-run.sh
+        # Bradar THE BLACK-WINDOW FIX (2026-08-13, user-confirmed "oh it renders").
+        # Steam does NOT let CEF draw to the window: it renders offscreen and composites the
+        # result itself (CBrowserComposerSystem). With gpu compositing ON, CEF hands that
+        # result over as a d3d11 SHARED TEXTURE -- and that handoff produces nothing through
+        # DXMT, so steam composited an empty surface. Every log stayed clean the whole time
+        # (window shown 1337x782 titled 'Steam', FriendsUI ReadyToRender, zero CEF errors,
+        # metal presenting) which is exactly why this hid for so long: nothing FAILED, the
+        # pixels just never arrived. --disable-gpu-compositing makes CEF hand over plain CPU
+        # bitmaps insted, which steam blits fine.
+        #
+        # --disable-software-rasterizer had to GO at the same time: it forbids the software
+        # path that cpu compositing needs. The two only work as a pair.
         "MNC_WEBHELPER_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
-            "--ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds --disable-software-rasterizer "
+            "--disable-gpu-compositing "
+            "--ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds "
             "--disable-gpu-watchdog --disable-gpu-process-crash-limit --gpu-no-context-lost "
             "--disable-gpu-process-for-dx12-info-collection --no-delay-for-dx12-vulkan-info-collection "
             "--gpu-vendor-id=0x1002 --gpu-device-id=0x67df --gpu-driver-version=20.45.0 "
