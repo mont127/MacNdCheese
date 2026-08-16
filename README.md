@@ -2,7 +2,7 @@
   <img src="icon.png" width="128" alt="MacNCheese icon" />
 </p>
 
-# MacNCheese - STILL IN BETA TESTING
+# MacNCheese
 ### Windows games on Mac, made free and easy
 
 
