@@ -22,6 +22,18 @@ final class UpdateChecker: ObservableObject {
     @Published var currentStep = ""
     @Published var installLog: [String] = []
 
+    /// Opt-in key for silent auto-install. DEFAULTS TO OFF: a launcher that
+    /// swaps itself out and relaunches without asking is hostile, and it used
+    /// to do exactly that -- the "Update & Restart" button in the banner was
+    /// dead code because install() had allready fired by the time you saw it.
+    /// Off = the banner offers the update and the user decides.
+    static let autoInstallKey = "autoInstallUpdates"
+    /// tag the user chose to skip; the banner stays quiet for exactly that version
+    static let skippedVersionKey = "skippedUpdateVersion"
+    static var autoInstallEnabled: Bool {
+        UserDefaults.standard.bool(forKey: autoInstallKey)
+    }
+
     func check(autoInstallWith backend: BackendClient? = nil) {
         Task.detached(priority: .utility) {
             do {
@@ -55,10 +67,13 @@ final class UpdateChecker: ObservableObject {
                         self.releaseURL = htmlURL
                         self.dmgURL = dmgDownload
                         self.updateAvailable = true
-                        // Bradar AUTO-update on launch: a newer version is out -> apply it right now
-                        // (download DMG -> extract+codesign -> swap -> relaunch) insted of waitin for
-                        // a manual banner click. the banner still shows "Updating to X…" live.
-                        if let backend, !dmgDownload.isEmpty { self.install(backend: backend) }
+                        // Only self-install when the user has explicitly opted in
+                        // (Settings -> "Install updates automatically"). Otherwise just
+                        // raise the banner and let them press Update & Restart, or ignore
+                        // it. Never swap the app out from under someone mid-session.
+                        if Self.autoInstallEnabled, let backend, !dmgDownload.isEmpty {
+                            self.install(backend: backend)
+                        }
                     }
                 }
             } catch {

@@ -888,6 +888,7 @@ struct ComponentToggleRow: View {
 
 struct DiagnoseSettingsTab: View {
     @EnvironmentObject var backend: BackendClient
+    @AppStorage(UpdateChecker.autoInstallKey) private var autoInstallUpdates = false
     @State private var diagnosis: CheeseDiagnosis?
     @State private var isDiagnosing = false
     @State private var pendingRepair: CheeseRepairAction?
@@ -962,6 +963,16 @@ struct DiagnoseSettingsTab: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.orange)
                         .disabled(isDiagnosing || isRepairing)
+                    }
+                    .padding(6)
+                }
+
+                GroupBox(L("Updates")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(L("Install updates automatically"), isOn: $autoInstallUpdates)
+                        Text(L("Off: new versions show a banner and wait for you. On: MacNCheese downloads the update and restarts itself on launch."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(6)
                 }

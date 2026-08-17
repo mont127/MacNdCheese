@@ -8,9 +8,14 @@ struct AppUpdateBanner: View {
     @EnvironmentObject var backend: BackendClient
     @EnvironmentObject var updateChecker: UpdateChecker
     @State private var dismissed = false
+    /// Versions the user pressed "Skip this version" on. Without this the X only
+    /// silenced the banner for one session and it came straight back next launch,
+    /// which is just nagging by another name.
+    @AppStorage(UpdateChecker.skippedVersionKey) private var skippedVersion = ""
 
     var body: some View {
-        if updateChecker.updateAvailable && !dismissed {
+        if updateChecker.updateAvailable && !dismissed
+            && skippedVersion != updateChecker.latestVersion {
             HStack(spacing: 12) {
                 Image(systemName: updateChecker.installFailed
                       ? "exclamationmark.triangle.fill" : "arrow.down.circle.fill")
@@ -50,6 +55,11 @@ struct AppUpdateBanner: View {
                     if let url = URL(string: updateChecker.releaseURL) {
                         Link(L("Release notes"), destination: url).font(.caption)
                     }
+                    Button(L("Skip this version")) {
+                        skippedVersion = updateChecker.latestVersion
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
                     Button {
                         dismissed = true
                     } label: {

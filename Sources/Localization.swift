@@ -86,6 +86,12 @@ func L(_ key: String) -> String { LocalizationManager.shared.tr(key) }
 ///   Backend names (DXVK, DXMT, D3DMetal, GPTK, Monado, OpenXR) stay as-is.
 enum Localization {
     static let zh: [String: String] = [
+        // ── Updates ──────────────────────────────────────────────────────
+        "Updates": "更新",
+        "Install updates automatically": "自动安装更新",
+        "Off: new versions show a banner and wait for you. On: MacNCheese downloads the update and restarts itself on launch.": "关闭：有新版本时显示横幅并等待你操作。开启：MacNCheese 启动时自动下载更新并重启。",
+        "Skip this version": "跳过此版本",
+
         // ── Common / chrome ──────────────────────────────────────────────
         "Settings": "设置",
         "Language": "语言",
