@@ -174,7 +174,7 @@ struct OpenExeSheet: View {
     }
 
     private func setAsDefaultHandler() {
-        let bundleID = (Bundle.main.bundleIdentifier ?? "com.marcel.macncheese") as CFString
+        let bundleID = (Bundle.main.bundleIdentifier ?? "com.mont127.macndcheese") as CFString
         for uti in ["com.microsoft.windows-executable", "com.microsoft.windows-installer"] {
             LSSetDefaultRoleHandlerForContentType(uti as CFString, .all, bundleID)
         }

@@ -219,3 +219,7 @@ assets
 For_Claude/
 # Local-only release builder — must never be committed
 dmgndappbuilder.sh
+
+# build artifacts (a stray `git add -A` would commit ~2 GB)
+*.dmg
+MacNCheese-arm64.dmg

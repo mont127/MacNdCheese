@@ -675,7 +675,7 @@ def _resolve_components(tokens: "list[str]") -> "list[dict]":
     return out
 
 
-APP_BUNDLE_ID = "com.marcel.macncheese"
+APP_BUNDLE_ID = "com.mont127.macndcheese"
 
 
 def _defaults_read(key: str, default: str) -> str:

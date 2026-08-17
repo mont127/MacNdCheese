@@ -24,7 +24,8 @@ cask "macndcheese" do
 
   zap trash: [
     "~/Library/Application Support/MacNdCheese",
-    "~/Library/Preferences/com.marcel.macncheese.plist",
+    "~/Library/Preferences/com.mont127.macndcheese.plist",
+    "~/Library/Preferences/com.marcel.macncheese.plist",   # pre-rename installs
   ]
 
   caveats <<~EOS

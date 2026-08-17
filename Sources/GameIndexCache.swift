@@ -26,7 +26,7 @@ struct CachedBottle: Codable {
 /// AppIntent EntityQuery reads from it on any thread without hitting @MainActor.
 ///
 /// NOTE: If an IntentExtension target is ever added, migrate to
-/// UserDefaults(suiteName: "group.com.marcel.macncheese") + App Group entitlement.
+/// UserDefaults(suiteName: "group.com.mont127.macndcheese") + App Group entitlement.
 enum GameIndexCache {
     private static let gamesKey = "GameIndexCache.games.v1"
     private static let bottlesKey = "GameIndexCache.bottles.v1"

@@ -11,9 +11,9 @@ import Foundation
 ///     scan returns the same installed games, so we need one deduped entry.
 ///   • Amazon/Nile games: "amazon:::\(amazonId)"        — global, same reasoning.
 enum SpotlightIndexer {
-    static let steamDomainPrefix = "com.marcel.macncheese.steam."
-    static let epicDomain        = "com.marcel.macncheese.epic"
-    static let amazonDomain      = "com.marcel.macncheese.amazon"
+    static let steamDomainPrefix = "com.mont127.macndcheese.steam."
+    static let epicDomain        = "com.mont127.macndcheese.epic"
+    static let amazonDomain      = "com.mont127.macndcheese.amazon"
 
     static func domainForBottle(_ bottlePath: String) -> String {
         let safe = bottlePath
