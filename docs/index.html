@@ -251,6 +251,12 @@
       max-width: 540px; margin: 0 auto 44px; line-height: 1.55;
     }
     .hero-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+    .hero-brew { margin-top: 18px; font-size: 14px; color: var(--text-dim); }
+    .hero-brew code {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--surface-2); padding: 2px 7px; border-radius: 6px; font-size: .92em;
+      border: 1px solid var(--border); color: var(--text);
+    }
     .hero-meta {
       margin-top: 52px;
       display: flex; align-items: center; justify-content: center;
@@ -614,6 +620,7 @@
           GitHub
         </a>
       </div>
+      <p class="hero-brew">or via Homebrew: <code>brew install --cask realmaitreal/macndcheese/macndcheese</code></p>
       <div class="hero-meta" aria-label="At a glance">
         <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Apple Silicon M1&ndash;M4</span>
         <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Windows Steam Games</span>

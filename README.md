@@ -30,6 +30,11 @@ Go to [store.steampowered.com](https://store.steampowered.com/about/) and downlo
 3. Drag **MacNCheese** into your **Applications** folder
 4. Open the app from Applications
 
+Or install via [Homebrew](https://brew.sh/):
+```bash
+brew install --cask realmaitreal/macndcheese/macndcheese
+```
+
 ### Mac says the app "can't be verified"?
 That's just macOS being overprotective. Here's how to fix it:
 
