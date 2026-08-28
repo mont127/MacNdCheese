@@ -2215,10 +2215,7 @@ quick_setup() {
   install_portable_tools
   install_portable_wine
   install_wine_unified
-  stage_mnc_fonts
-  stage_mnc_tls
-  stage_mnc_vulkan
-  stage_mnc_sdl
+  stage_all_mnc_libs
   install_dxmt
 }
 
@@ -2321,6 +2318,7 @@ install_wine_unified() {
     disable_builtin_d3d_slots "$dst"
     stage_redist_pack
     sign_unified_wine "$dst"
+    stage_all_mnc_libs
     echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
     return 0
   fi
@@ -2346,7 +2344,21 @@ install_wine_unified() {
   disable_builtin_d3d_slots "$dst"
   stage_redist_pack
   sign_unified_wine "$dst"
+  stage_all_mnc_libs
   echo "install_wine_unified: done ($(du -sh "$dst" 2>/dev/null | cut -f1))"
+}
+
+stage_all_mnc_libs() {
+  # Every bundled x86_64 lib wine dlopens by BARE SONAME. These have to be provisioned
+  # by every path that installs wine, not just fresh onboarding -- an existing user who
+  # updates the app and hits "reinstall Wine" used to get a new wine and NO libs, so
+  # crypt32 had no gnutls, could not verify the steam cert chain, and steam reported
+  # "Steam needs to be online to update" on a perfectly good connection. That is why
+  # shipping the packs in the dmg was only half the fix.
+  stage_mnc_fonts
+  stage_mnc_tls
+  stage_mnc_vulkan
+  stage_mnc_sdl
 }
 
 relink_bundled_pack() {
@@ -2632,10 +2644,7 @@ case "$ACTION" in
     # Onboarding (the only fresh-box path) and the wine version gate both request this
     # single action, so anything not called here never reaches a new install -- which is
     # exactly how the TLS/Vulkan/SDL packs would have shipped unreachable.
-    stage_mnc_fonts
-    stage_mnc_tls
-    stage_mnc_vulkan
-    stage_mnc_sdl
+    stage_all_mnc_libs
     ;;
   stage_mnc_tls)
     stage_mnc_tls
