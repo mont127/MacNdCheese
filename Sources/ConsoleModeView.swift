@@ -379,9 +379,10 @@ struct ConsoleModeView: View {
     }
 
     private func move(_ delta: Int) {
-        let n = selected + delta
-        guard n >= 0, n < games.count else { playEdge(); return }
-        selected = n
+        guard !games.isEmpty else { return }
+        let target = selected + delta
+        guard target >= 0, target < games.count else { playEdge(); return }
+        selected = target
         playMove()
     }
 
