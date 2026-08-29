@@ -411,9 +411,9 @@ final class BackendClient: ObservableObject {
                 "prefix": prefix, "retina_mode": retinaMode,
                 "auto_stop_steam": UserDefaults.standard.object(forKey: "auto_stop_steam") as? Bool ?? true,
             ])
-            if let dict = result as? [String: Any] {
+            if let _ = result as? [String: Any] {
                 steamRunning = true
-                let _ = dict["already_running"] as? Bool ?? false
+                focusWineWindow()
             }
         } catch {
             lastError = String(format: L("Failed to launch Steam: %@"), error.localizedDescription)
