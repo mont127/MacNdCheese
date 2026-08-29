@@ -108,9 +108,8 @@ final class AnnouncementChecker: ObservableObject {
     }
 
     nonisolated private static func extractLinkHref(_ xml: String) -> String? {
-        // <link type="text/html" rel="alternate" href="https://..."/>
         guard let linkRange = xml.range(of: "<link") else { return nil }
-        guard let linkEnd = xml.range(of: "/>", range: linkRange.lowerBound..<xml.endIndex)?.upperBound else { return nil }
+        guard let linkEnd = xml.range(of: ">", range: linkRange.lowerBound..<xml.endIndex)?.upperBound else { return nil }
         let linkTag = String(xml[linkRange.lowerBound..<linkEnd])
 
         guard let hrefStart = linkTag.range(of: "href=\"")?.upperBound else { return nil }
