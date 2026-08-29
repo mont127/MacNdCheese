@@ -136,6 +136,7 @@ _legendary_installs: Dict[str, Any] = {}  # app_name -> (Popen, file, log_path, 
 _legendary_paused: Dict[str, str] = {}    # app_name -> prefix (paused downloads)
 _legendary_failed: Dict[str, Dict[str, Any]] = {}  # app_name -> {"error": str, "prefix": str}
 _legendary_games_cache: Dict[str, Any] = {}  # prefix -> {"games": [], "ts": float, "scanning": bool}
+_legendary_cache_lock = threading.Lock()
 _LEGENDARY_CACHE_TTL = 300  # seconds before a background re-fetch is triggered
 
 
