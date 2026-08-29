@@ -68,7 +68,9 @@ final class LocalizationManager: ObservableObject {
 
     /// Translate an English source string for the current language.
     func tr(_ key: String) -> String {
-        language == .zh ? (Localization.zh[key] ?? key) : key
+        guard language == .zh else { return key }
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Localization.zh[key] ?? Localization.zh[trimmed] ?? key
     }
 }
 
