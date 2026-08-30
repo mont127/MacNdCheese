@@ -3738,6 +3738,31 @@ def _rosetta_x87_loader() -> Optional[str]:
     return str(loader)
 
 
+def _native_d3d9_staged(prefix: str) -> bool:
+    """True only when a NATIVE d3d9 is realy sat in this prefix's system32.
+
+    "d3d9=n" means native ONLY. It does not mean "prefer native" -- if no native d3d9 is
+    there, wine does not quietly fall back to its builtin, the load fails outright with
+    c0000135 and every game that links d3d9 dies before it draws anything. CS2 links it from
+    rendersystemdx11.dll, so it died on "FATAL ERROR: Failed to load rendersystemdx11.dll,
+    which is the default rendersystem and should not fail to load", which points at the game
+    files and not at us. Games started FROM Steam inherit Steam's environment, so the override
+    reached them too, whether or not they were launched through the launcher.
+
+    We were setting it on every Apple Silicon machine while d3d9_dxmt.dll shipped in no pack
+    at all, so the promised native d3d9 could never be staged. Key the override on the file
+    being present insted of on the intent to stage one.
+    """
+    src = _unified_d3d_dir()
+    if src is None or not (src / "d3d9_dxmt.dll").is_file():
+        return False
+    dst = Path(prefix) / "drive_c" / "windows" / "system32" / "d3d9.dll"
+    try:
+        return dst.is_file() and dst.stat().st_size == (src / "d3d9_dxmt.dll").stat().st_size
+    except Exception:
+        return False
+
+
 def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  for_steam: bool = False, gst_debug: str = "",
                  cef_safe_mode: bool = False,
@@ -3815,7 +3840,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     # builtin. The switch is the override alone: _stage_unified_d3d9() only drops the
     # native DXMT d3d9 into the prefix on Apple Silicon, and without "=n" wine loads its
     # own builtin from the wine tree regardless of what sits in system32.
-    if _is_apple_silicon():
+    if _is_apple_silicon() and _native_d3d9_staged(prefix):
         dll_ovr += ";d3d9=n"
     env.pop("ROSETTA_X87_PATH", None)   # never inherit a stale one from the shell
     if x87_jit:
