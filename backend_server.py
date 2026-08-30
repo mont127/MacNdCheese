@@ -4120,6 +4120,13 @@ def _ea_app_dir(prefix) -> Path:
 _STEAM_SEED_EXCLUDES = ["steamapps/", "userdata/", "config/", "logs/", "dumps/",
                         "appcache/", ".crash", "ssfn*", "*.log"]
 # a COMPLETE Steam client has all of these -- used to reject a half-built template + validate a source
+# Valves client-update CDN, in the order the bootstrapper itself prefers them. Any one of these
+# serves both the manifest and the packages, so we just walk the list until one answers.
+_STEAM_CLIENT_CDN_HOSTS = (
+    "https://client-update.akamai.steamstatic.com",
+    "https://client-update.fastly.steamstatic.com",
+    "https://client-update.steamstatic.com",
+)
 _STEAM_CLIENT_CRIT = ("steamclient.dll", "steamclient64.dll", "steam.exe")
 _STEAM_CLIENT_CRIT_DIRS = ("bin", "steamui", "clientui")
 _steam_tmpl_lock = threading.Lock()
@@ -4242,6 +4249,14 @@ def _steam_client_template() -> Optional[Path]:
                     best_key = key
                     best = d
         if not best:
+            # Nothing local to clone from -- a first-ever install. Rather than hand the bottle to
+            # the broken bootstrapper first-run, fetch the client from Valves CDN into the same
+            # template slot, so this costs one download ever and every later bottle is an instant
+            # clone exactly as if the user had allready had Steam.
+            if _build_steam_client_from_cdn(cache):
+                try: marker.write_text("cdn")
+                except Exception: pass
+                return cache
             return None
         cache.mkdir(parents=True, exist_ok=True)
         log(f"_steam_client_template: building cached clean Steam client from {best} (one-time, ~1.4G)")
@@ -4261,6 +4276,123 @@ def _steam_client_template() -> Optional[Path]:
         try: marker.write_text("built")
         except Exception: pass
         return cache
+
+
+def _build_steam_client_from_cdn(dest: Path) -> bool:
+    """Build a COMPLETE, CURRENT Steam client in `dest` straight from Valves client-update CDN.
+
+    This exists because of a chicken-and-egg gap that made MacNdCheese unusable for brand new
+    users. The Steam bootstrappers first-run download does not work under our wine, so we seed a
+    bottle by cloning a cached template insted -- but that template can only be built from a
+    working client the user ALLREADY has. Someone installing for the first time has none, so
+    _steam_client_template() returned None, seeding no-oped, and the bottle fell back to the very
+    bootstrapper path thats broken. Steam then sat there insisting it "needs to be online to
+    update" on a perfectly good connection, and no amount of reinstalling wine could help, since
+    wine was never the problem. In other words the workaround for the broken path was only
+    reachable by the people who did not need it.
+
+    So do what the bootstrapper would have done, ourselves. The manifest lists every package with
+    a plain .zip as well as the LZMA .zip.vz, and curl plus zipfile handle those fine -- no VZ
+    decoder, and no 32-bit NSIS installer either, since steam.exe ships in the packages too.
+
+    Packages are cached under deps/steam-pkgcache so a re-run (or a second bottle) re-uses them.
+    Returns True only when the result passes _steam_client_complete."""
+    import hashlib, zipfile
+    cachedir = PORTABLE_DIR / "steam-pkgcache"
+    cachedir.mkdir(parents=True, exist_ok=True)
+
+    def _get(path: str, dst: Path) -> bool:
+        for host in _STEAM_CLIENT_CDN_HOSTS:
+            try:
+                rc = subprocess.run(["/usr/bin/curl", "-fsSL", "--max-time", "900",
+                                     "-o", str(dst), f"{host}/{path}"],
+                                    capture_output=True, timeout=960).returncode
+                if rc == 0 and dst.is_file() and dst.stat().st_size > 0:
+                    return True
+            except Exception as exc:
+                log(f"_build_steam_client_from_cdn: {host} failed for {path}: {exc}")
+        return False
+
+    man = cachedir / "steam_client_win64.vdf"
+    if not _get("steam_client_win64", man):
+        log("_build_steam_client_from_cdn: could not fetch the client manifest")
+        return False
+    text = man.read_text(errors="replace")
+    mv = re.search(r'"version"\s*"(\d+)"', text)
+    version = mv.group(1) if mv else "unknown"
+
+    pkgs = []
+    for m in re.finditer(r'^\t"(\w+)"\s*\n\t\{(.*?)^\t\}', text, re.S | re.M):
+        body = m.group(2)
+        f = re.search(r'"file"\s*"([^"]+)"', body)
+        sha = re.search(r'"sha2"\s*"([0-9a-f]+)"', body)
+        if f:
+            pkgs.append((m.group(1), f.group(1), sha.group(1) if sha else None))
+    if not pkgs:
+        log("_build_steam_client_from_cdn: manifest parsed to zero packages")
+        return False
+
+    log(f"_build_steam_client_from_cdn: fetching Steam client {version} "
+        f"({len(pkgs)} packages) -- first run only, later bottles clone the cached template")
+    # Extract to a staging dir and only swap it in once its verified complete, so an interrupted
+    # download can never leave a half-client that the presence checks would happily accept.
+    staging = dest.parent / (dest.name + ".mnc-partial")
+    subprocess.run(["rm", "-rf", str(staging)], capture_output=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    for i, (name, fn, sha) in enumerate(pkgs, 1):
+        blob = cachedir / fn
+        if sha and blob.is_file():
+            try:
+                if hashlib.sha256(blob.read_bytes()).hexdigest() != sha:
+                    blob.unlink()
+            except Exception:
+                pass
+        if not blob.is_file():
+            log(f"_build_steam_client_from_cdn: [{i}/{len(pkgs)}] {name}")
+            if not _get(fn, blob):
+                log(f"_build_steam_client_from_cdn: failed to fetch {name}")
+                return False
+        if sha:
+            try:
+                if hashlib.sha256(blob.read_bytes()).hexdigest() != sha:
+                    log(f"_build_steam_client_from_cdn: checksum mismatch on {name}")
+                    blob.unlink()
+                    return False
+            except Exception as exc:
+                log(f"_build_steam_client_from_cdn: could not checksum {name}: {exc}")
+                return False
+        try:
+            with zipfile.ZipFile(blob) as z:
+                for info in z.infolist():
+                    # entry names carry WINDOWS separators, so a plain extractall would write
+                    # single files literaly called "steam\cached\foo" insted of a tree
+                    rel = info.filename.replace("\\", "/")
+                    if not rel or rel.endswith("/"):
+                        continue
+                    tgt = staging / rel
+                    tgt.parent.mkdir(parents=True, exist_ok=True)
+                    with z.open(info) as src, open(tgt, "wb") as out:
+                        shutil.copyfileobj(src, out)
+        except Exception as exc:
+            log(f"_build_steam_client_from_cdn: could not unpack {name}: {exc}")
+            return False
+
+    # Steam reads this back to decide whether it is current; without it the client thinks it has
+    # no version and goes straight back to the update path we are avoiding.
+    try:
+        (staging / "package").mkdir(parents=True, exist_ok=True)
+        (staging / "package" / "steam_client_win64.manifest").write_text(text)
+    except Exception:
+        pass
+
+    if not _steam_client_complete(staging):
+        log("_build_steam_client_from_cdn: assembled client is incomplete -- discarding")
+        subprocess.run(["rm", "-rf", str(staging)], capture_output=True)
+        return False
+    subprocess.run(["rm", "-rf", str(dest)], capture_output=True)
+    staging.rename(dest)
+    log(f"_build_steam_client_from_cdn: built a complete Steam client {version}")
+    return True
 
 
 def _seed_steam_client(prefix: str) -> bool:
