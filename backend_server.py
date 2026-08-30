@@ -3025,9 +3025,14 @@ def _unified_available() -> bool:
 
 
 def _unified_d3d_dir() -> Optional[Path]:
-    """Locate the bundled d3d DLL pack the unified loader routes to."""
+    """Locate the bundled d3d DLL pack the unified loader routes to.
+
+    Keyed on winemetal.dll, which is OURS. It used to key on d3d11.dll, but that slot holds
+    Apples D3DMetal stub and we do not redistribute that any more -- so on a fresh install
+    the pack exists, is full of our own DLLs, and would have looked entirely absent.
+    """
     for d in (UNIFIED_D3D_DIR, UNIFIED_D3D_DEV):
-        if (d / "d3d11.dll").exists():
+        if (d / "winemetal.dll").exists() or (d / "d3d11.dll").exists():
             return d
     return None
 
@@ -6894,6 +6899,158 @@ def cmd_detect_exes(params: Dict[str, Any]) -> Any:
     return _detect_all_exes(Path(install_dir))
 
 
+# Apples D3DMetal ships inside the Game Porting Toolkit and we are not licensed to
+# redistribute it, so the user points us at their own copy and we lay it out ourselves.
+# Left = the name Apple ships in lib/wine/x86_64-windows, right = every slot we write it to.
+# d3d11/dxgi/d3d12 land in the canonical slot AS WELL as the _d3dm one, because a game with
+# no backend chosen falls through to canonical and that slot is the D3DMetal stub too.
+D3DMETAL_REDIST_MAP = {
+    "d3d11.dll": ("d3d11_d3dm.dll", "d3d11.dll"),
+    "dxgi.dll":  ("dxgi_d3dm.dll",  "dxgi.dll"),
+    "d3d12.dll": ("d3d12_d3dm.dll", "d3d12.dll"),
+    "d3d10.dll": ("d3d10_d3dm.dll",),
+}
+D3DMETAL_REDIST_NATIVE = ("libd3dshared.dylib", "D3DMetal.framework")
+
+
+def _d3dmetal_installed() -> bool:
+    """True when the users D3DMetal is already laid out in the pack, so we can stay quiet.
+
+    We only ever prompt on a FRESH install -- if these are present the user has already done
+    this once (or is upgrading from a build that still bundled them) and must not be asked
+    again.
+    """
+    d = _unified_d3d_dir()
+    if d is None:
+        return False
+    return ((d / "d3d11_d3dm.dll").is_file()
+            and (d / "libd3dshared.dylib").is_file()
+            and (d / "D3DMetal.framework").is_dir())
+
+
+def _find_d3dmetal_redist(root: Path) -> Optional[Path]:
+    """Find the redist root under (or at, or just above) whatever the user picked.
+
+    People will point at the redist folder, at its parent, at the unpacked GPTK, or straight
+    at lib/. Accept all of them rather than making them guess which level we wanted.
+    """
+    def ok(c: Path) -> bool:
+        return ((c / "lib" / "wine" / "x86_64-windows" / "d3d11.dll").is_file()
+                and (c / "lib" / "external" / "libd3dshared.dylib").is_file())
+    cands = [root, root / "redist", root.parent]
+    if root.name == "lib":
+        cands.append(root.parent)
+    for c in cands:
+        try:
+            if ok(c):
+                return c
+        except Exception:
+            continue
+    # last resort: a shallow search, so a folder holding the redist still works
+    try:
+        for sub in sorted(root.glob("*/")):
+            if ok(sub):
+                return sub
+    except Exception:
+        pass
+    return None
+
+
+def _install_d3dmetal_redist(user_path: str) -> Dict[str, Any]:
+    """Copy the users D3DMetal out of a GPTK redist and into our pack, renaming as we go.
+
+    Apple names them d3d11.dll / dxgi.dll / d3d12.dll / d3d10.dll; our loader routes to the
+    _d3dm column, so the copy IS the rename. The native runtime (the framework and
+    libd3dshared) goes next to them because the stubs link @rpath/libd3dshared.dylib.
+    """
+    dest = _unified_d3d_dir()
+    if dest is None:
+        return {"ok": False, "error": "The unified Wine isn't installed yet -- run Setup first."}
+    src_root = Path(user_path).expanduser()
+    if src_root.is_file() and src_root.suffix.lower() == ".dmg":
+        return _install_d3dmetal_from_dmg(src_root, dest)
+    if not src_root.is_dir():
+        return {"ok": False, "error": f"{src_root} isn't a folder."}
+    root = _find_d3dmetal_redist(src_root)
+    if root is None:
+        return {"ok": False, "error": ("That folder doesn't look like a D3DMetal redist -- "
+                                       "expected lib/wine/x86_64-windows/d3d11.dll and "
+                                       "lib/external/libd3dshared.dylib inside it.")}
+    return _copy_d3dmetal_redist(root, dest)
+
+
+def _copy_d3dmetal_redist(root: Path, dest: Path) -> Dict[str, Any]:
+    """Do the actual copy+rename from a verified redist root into the pack."""
+    pe_dir = root / "lib" / "wine" / "x86_64-windows"
+    ext_dir = root / "lib" / "external"
+    written = []
+    try:
+        for apple_name, slots in D3DMETAL_REDIST_MAP.items():
+            src = pe_dir / apple_name
+            if not src.is_file():
+                continue
+            for slot in slots:
+                shutil.copy2(str(src), str(dest / slot))
+                written.append(slot)
+        for name in D3DMETAL_REDIST_NATIVE:
+            src = ext_dir / name
+            if not src.exists():
+                continue
+            dst = dest / name
+            if src.is_dir():
+                if dst.exists():
+                    shutil.rmtree(dst, ignore_errors=True)
+                shutil.copytree(str(src), str(dst), symlinks=True)
+            else:
+                shutil.copy2(str(src), str(dst))
+            written.append(name)
+        subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(dest)],
+                       capture_output=True)
+    except Exception as exc:
+        return {"ok": False, "error": f"Copy failed: {exc}"}
+    if not _d3dmetal_installed():
+        return {"ok": False, "error": "Copied, but the pack still looks incomplete.",
+                "written": written}
+    log(f"d3dmetal: installed the users D3DMetal from {root} ({len(written)} items)")
+    return {"ok": True, "written": written, "source": str(root)}
+
+
+def _install_d3dmetal_from_dmg(dmg: Path, dest: Path) -> Dict[str, Any]:
+    """Mount a GPTK .dmg read-only, take what we need, and always unmount again."""
+    mnt = Path(tempfile.mkdtemp(prefix="mnc-gptk-"))
+    attached = False
+    try:
+        r = subprocess.run(["hdiutil", "attach", str(dmg), "-nobrowse", "-readonly",
+                            "-quiet", "-mountpoint", str(mnt)],
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            return {"ok": False, "error": f"Could not mount {dmg.name}: {r.stderr.strip()[:200]}"}
+        attached = True
+        root = _find_d3dmetal_redist(mnt)
+        if root is None:
+            return {"ok": False, "error": f"No D3DMetal redist inside {dmg.name}."}
+        return _copy_d3dmetal_redist(root, dest)
+    except Exception as exc:
+        return {"ok": False, "error": f"{exc}"}
+    finally:
+        if attached:
+            subprocess.run(["hdiutil", "detach", str(mnt), "-quiet"], capture_output=True)
+        shutil.rmtree(mnt, ignore_errors=True)
+
+
+def cmd_d3dmetal_status(_params: Dict[str, Any]) -> Any:
+    """Does the user still need to point us at their D3DMetal? Drives the setup prompt."""
+    return {"installed": _d3dmetal_installed(), "unified": _unified_available()}
+
+
+def cmd_install_d3dmetal(params: Dict[str, Any]) -> Any:
+    """Install D3DMetal from a redist folder (or GPTK .dmg) the user picked."""
+    path = params.get("path") or ""
+    if not path:
+        raise ValueError("Missing 'path'")
+    return _install_d3dmetal_redist(str(path))
+
+
 def cmd_list_backends(params: Dict[str, Any]) -> Any:
     """Return available graphics backends and which is auto-selected."""
     all_backends = [
@@ -10581,6 +10738,8 @@ COMMANDS: Dict[str, Any] = {
     "remove_manual_game": cmd_remove_manual_game,
     "detect_exes": cmd_detect_exes,
     "list_backends": cmd_list_backends,
+    "d3dmetal_status": cmd_d3dmetal_status,
+    "install_d3dmetal": cmd_install_d3dmetal,
     "get_components_status": cmd_get_components_status,
     "check_audio_input": cmd_chek_audio_inpit,
     "open_sound_settings": cmd_open_sund_setings,

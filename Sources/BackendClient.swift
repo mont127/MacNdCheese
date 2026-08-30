@@ -887,6 +887,35 @@ final class BackendClient: ObservableObject {
         return nil
     }
 
+    /// Has the user's own D3DMetal been laid into the pack yet? We do not ship Apple's
+    /// copy, so on a fresh install this comes back false and the setup banner appears.
+    func d3dmetalStatus() async -> (installed: Bool, unified: Bool)? {
+        do {
+            let result = try await send(cmd: "d3dmetal_status")
+            if let d = result as? [String: Any] {
+                return ((d["installed"] as? Bool) ?? false, (d["unified"] as? Bool) ?? false)
+            }
+        } catch {
+            lastError = String(format: L("Failed to check D3DMetal: %@"), error.localizedDescription)
+        }
+        return nil
+    }
+
+    /// Copy D3DMetal out of the GPTK redist the user picked, renaming Apple's DLLs into our
+    /// slots. Returns nil on success, or the reason it did not work.
+    func installD3DMetal(path: String) async -> String? {
+        do {
+            let result = try await send(cmd: "install_d3dmetal", params: ["path": path])
+            if let d = result as? [String: Any] {
+                if (d["ok"] as? Bool) == true { return nil }
+                return (d["error"] as? String) ?? L("Could not install D3DMetal.")
+            }
+            return L("Could not install D3DMetal.")
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     func listBackends() async -> BackendsResponse? {
         do {
             let result = try await send(cmd: "list_backends")
