@@ -218,6 +218,7 @@ enum Localization {
         "Play": "开始游戏",
         "Default (uses global backend)": "默认（使用全局后端）",
         "Wine Devel (OpenGL games)": "Wine Devel（OpenGL 游戏）",
+        "OpenGL (SDL3 / GL 3.2)": "OpenGL（SDL3 / GL 3.2）",
         "DXMT (Balanced)": "DXMT（均衡）",
         "DXMT + OpenXR (VR, monofunc)": "DXMT + OpenXR（VR，monofunc）",
         "VR (OpenXR)": "VR (OpenXR)",

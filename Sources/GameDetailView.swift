@@ -323,7 +323,7 @@ struct GameDetailView: View {
                     Text(L("Detecting...")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                let mainIds: [String] = ["auto", "wine_devel", "dxmt", "vr", "d3dmetal3", "dxvk", "vkd3d-proton"]
+                let mainIds: [String] = ["auto", "wine_devel", "opengl", "dxmt", "vr", "d3dmetal3", "dxvk", "vkd3d-proton"]
                 let experimentalIds: [String] = ["wine", "gptk_full"]
                 let mainBackends = availableBackends.filter { mainIds.contains($0.backendId) }
                     .sorted { mainIds.firstIndex(of: $0.backendId) ?? 99 < mainIds.firstIndex(of: $1.backendId) ?? 99 }
@@ -597,7 +597,7 @@ struct GameDetailView: View {
     private func engineLabel(_ b: GraphicsBackend) -> String {
         switch b.backendId {
         case "auto":          return L("Auto (recommended)")
-        case "wine_devel":    return L("Wine Devel (OpenGL games)")
+        case "wine_devel", "opengl": return L("OpenGL (SDL3 / GL 3.2)")
         case "dxmt":          return L("DXMT (Balanced)")
         case "vr", "dxmt_openxr": return L("VR (OpenXR)")
         case "d3dmetal3":     return L("D3DMetal (Best Performance)")

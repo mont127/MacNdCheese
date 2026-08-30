@@ -296,6 +296,7 @@ struct ConsoleModeView: View {
         case "dxmt": return "DXMT"
         case "d3dmetal", "gptk", "gptk_full": return "D3DMETAL"
         case "vr", "dxmt_openxr": return "VR"
+        case "wine_devel", "opengl": return "OPENGL"
         default: return nil
         }
     }

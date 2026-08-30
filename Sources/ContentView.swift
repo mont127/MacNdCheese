@@ -32,7 +32,10 @@ struct ContentView: View {
     // so EVERY game in it render thru the chosen backend (the per-game launch sheet can still
     // override one game, unless its own selector is left on "Default"). VR = the openxr-DXMT
     // stack (wineopenxr bridge + x86_64 monado runtime).
-    private static let toolbarBackendIds: Set<String> = ["d3dmetal3", "dxmt", "dxvk", "vr"]
+    // "opengl" is the id the loader uses, "wine_devel" the one the backend advertises for the
+    // same thing (it predates the OpenGL path being folded into the unified wine). Accept both
+    // or a bottle allready saved under either name renders the picker blank.
+    private static let toolbarBackendIds: Set<String> = ["d3dmetal3", "dxmt", "dxvk", "vr", "wine_devel", "opengl"]
 
     @ViewBuilder private var globalBackendPicker: some View {
         if !showStore, backend.activePrefix != nil, activeBottle?.isEpicBottle != true {
@@ -42,7 +45,9 @@ struct ContentView: View {
                     // storing the per-game "auto" sentinel) don't match any tag below,
                     // which made SwiftUI render the picker blank. Fall back to a real
                     // default instead — a pop-up button must always show a selection.
-                    let stored = activeBottle?.defaultBackend ?? "d3dmetal3"
+                    var stored = activeBottle?.defaultBackend ?? "d3dmetal3"
+                    // both names mean the OpenGL backend; the tag below is the advertised one
+                    if stored == "opengl" { stored = "wine_devel" }
                     return Self.toolbarBackendIds.contains(stored) ? stored : "d3dmetal3"
                 },
                 set: { newVal in
@@ -54,6 +59,7 @@ struct ContentView: View {
                 Text("DXMT").tag("dxmt")
                 Text("DXVK").tag("dxvk")
                 Text(L("VR (OpenXR)")).tag("vr")
+                Text(L("OpenGL (SDL3 / GL 3.2)")).tag("wine_devel")
             } label: {
                 Label(L("Backend"), systemImage: "cpu")
             }
