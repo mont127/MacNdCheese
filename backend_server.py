@@ -4226,6 +4226,56 @@ def _refresh_seed_if_bottle_newer(prefix: str) -> bool:
     return False
 
 
+_STEAM_CDN_VER_TTL = 6 * 3600
+_steam_cdn_ver_cache: Dict[str, Any] = {}
+
+
+def _cdn_steam_client_version() -> Optional[int]:
+    """The CURRENT Steam client version per Valves manifest, or None if unreachable.
+
+    Cached for a few hours so this costs one 7KB fetch a day, not one per launch, and so
+    being offline never slows a launch down.
+    """
+    hit = _steam_cdn_ver_cache.get("v")
+    if hit and (time.time() - hit[0]) < _STEAM_CDN_VER_TTL:
+        return hit[1]
+    for host in _STEAM_CLIENT_CDN_HOSTS:
+        try:
+            out = subprocess.run(["/usr/bin/curl", "-fsSL", "--max-time", "20",
+                                  f"{host}/steam_client_win64"],
+                                 capture_output=True, text=True, timeout=25).stdout
+            m = re.search(r'"version"\s*"(\d+)"', out or "")
+            if m:
+                ver = int(m.group(1))
+                _steam_cdn_ver_cache["v"] = (time.time(), ver)
+                return ver
+        except Exception:
+            continue
+    return None
+
+
+def _steam_template_outdated(cache: Path) -> bool:
+    """True when the cached template is behind the client Valve is currently shipping.
+
+    A seeded bottle inherits the templates version, and once Valve makes a client update
+    MANDATORY an outdated client cannot just run -- it has to update itself first, and that
+    is the path that ends on "Steam needs to be online to update". Fetching the client fresh
+    is the whole point of the CDN seed, but that only ever fired when there was no template
+    at all, so anyone who had built one earlier stayed pinned to it forever.
+
+    Fail OPEN: if we cannot reach the CDN we keep whatever we have rather than refuse to
+    seed, since an old client still beats no client.
+    """
+    try:
+        local = _steam_client_version(cache)
+    except Exception:
+        return False
+    if not local:
+        return False
+    remote = _cdn_steam_client_version()
+    return bool(remote and remote > local)
+
+
 def _steam_client_template() -> Optional[Path]:
     """Cached CLEAN Steam client (no games / userdata / login) used to SEED fresh bottles, because the
     Steam bootstrapper's first-run download is BROKEN under our wine (32-bit HACK22 storm on the
@@ -4238,6 +4288,16 @@ def _steam_client_template() -> Optional[Path]:
     cache = PORTABLE_DIR / "steam-client"
     marker = cache / ".mnc_steam_client_ok"
     if marker.is_file() and _steam_client_complete(cache):
+        # Refresh a template Valve has moved on from, else every bottle seeded off it starts
+        # life needing a mandatory update it may not survive.
+        if _steam_template_outdated(cache):
+            log("_steam_client_template: cached client is behind the current one -> refreshing from the CDN")
+            with _steam_tmpl_lock:
+                if _build_steam_client_from_cdn(cache):
+                    try: marker.write_text("cdn")
+                    except Exception: pass
+                else:
+                    log("_steam_client_template: refresh failed, keeping the client we have")
         return cache
     if _steam_client_complete(cache):            # complete but unmarked (older build) -> adopt
         try: marker.write_text("adopted")
@@ -4477,6 +4537,26 @@ def _reseed_steam_client(prefix: str) -> bool:
     return True
 
 
+def _bottle_client_outdated(steam_dir: Path) -> bool:
+    """True when a bottle's own Steam client is behind the one Valve ships now.
+
+    Distinct from _steam_client_complete: this client is not broken, it is just OLD, so
+    neither the seed (needs a missing steamclient.dll) nor the completeness repair fires --
+    and yet once an update is mandatory an old client still cannot start, it sits on "Steam
+    needs to be online to update" while it tries the first-run download path that does not
+    work under our wine. Observed exactly that: a FRESH bottle worked while the same users
+    existing bottle kept failing. Fail open when the CDN is unreachable.
+    """
+    try:
+        local = _steam_client_version(steam_dir)
+    except Exception:
+        return False
+    if not local:
+        return False
+    remote = _cdn_steam_client_version()
+    return bool(remote and remote > local)
+
+
 def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
     """Launch Steam through the unified wine so its CEF renders via DXMT."""
     global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
@@ -4497,6 +4577,13 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         log("_launch_steam_unified: Steam client is incomplete -> repairing it from the template")
         if not _reseed_steam_client(str(prefix)):
             log("_launch_steam_unified: could not repair the Steam client")
+    elif steam_dir.is_dir() and _bottle_client_outdated(steam_dir):
+        # Complete but OLD. Left alone it has to run the mandatory self-update, which is the
+        # broken path, so bring it up to date from the template ourselves instead. This is why
+        # making a new bottle "fixed" it for people while their existing one stayed broken.
+        log("_launch_steam_unified: Steam client is out of date -> updating it from the template")
+        if not _reseed_steam_client(str(prefix)):
+            log("_launch_steam_unified: could not update the Steam client")
     # SELF-HEAL: client present but the PREVIOUS launch crash-STORMED -> re-seed clean (the launch cmd
     # below wipes dumps each run, so dumps here are from the last run). _seed_steam_client is
     # presence-idempotent so it never repairs a present-but-broken client (the steamtest gap).
