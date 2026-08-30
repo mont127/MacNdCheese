@@ -3949,15 +3949,22 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     # GStreamer is GAMES ONLY. Steam must never touch it (its CEF crashes) so strip
     # any inherited plugin path. For games force software H.264 (avdec_h264) and disable
     # VideoToolbox vtdec which crashes the decode under Rosetta x86_64.
+    # The macdrv OpenGL 3.2 clamp, so SDL3 / OpenGL 3.2 titles (Mewgenics) get a workin
+    # forward-compat core context insted of ERROR_INVALID_VERSION. env-gated inside
+    # winemac.drv, so it is a no-op for anything that never asks for a GL context.
+    #
+    # Set it for STEAM as well, not just games. A game started from inside Steam inherits
+    # Steam's environment, so while this lived on the game-only branch Mewgenics never saw
+    # it -- launching from the Steam library gave "Could not create gl context" no matter
+    # which backend was picked. Steam's own UI is unaffected: its CEF is driven through
+    # ANGLE on d3d11, so it never takes the GL path this touches.
+    env["WINE_MAC_GL_CONTEXT_CLAMP"] = "1"
     if for_steam:
+        # GStreamer stays OFF for steam itself (a second gst core crashes the client); games
+        # get it below for their intro videos.
         for var in ("GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH"):
             env.pop(var, None)
     else:
-        # Bradar enable the macdrv OpenGL 3.2 clamp for games so SDL3 / OpenGL 3.2 titles
-        # (Mewgenics) get a workin forward-compat core context insted of ERROR_INVALID_VERSION.
-        # env-gated in winemac.drv so its a no-op for non-GL games. this is the wine-staging 11.8
-        # macdrv GL 3.2 patch, now built into the unified wine's winemac.so.
-        env["WINE_MAC_GL_CONTEXT_CLAMP"] = "1"
         env["GST_PLUGIN_SYSTEM_PATH_1_0"] = gst
         env["GST_PLUGIN_PATH"] = gst
         env["GST_PLUGIN_FEATURE_RANK"] = "vtdec:NONE,vtdec_hw:NONE,avdec_h264:MAX,openh264dec:SECONDARY"
