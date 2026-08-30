@@ -4460,6 +4460,18 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     # fails under wine). no-op if a full client is already present or theres no seed source.
     _seed_steam_client(str(prefix))
     steam_dir = _steam_dir(prefix)
+    # HEAL a client thats PRESENT but INCOMPLETE. Neither guard around this one catches that
+    # state: the seed above only fires when steamclient.dll is missing outright, and the crash
+    # self-heal below needs real dumps to trigger. A bottle left half-populated by the broken
+    # bootstrapper first-run does neither -- it does not crash and it does not look empty, Steam
+    # just sits on "needs to be online to update" forever. Repair it from the template (which can
+    # now be built from Valves CDN when theres nothing local to clone), so an allready-broken
+    # install fixes ITSELF on the next launch insted of the user having to recreate the bottle.
+    # rsync-over keeps steamapps/userdata/config/login, so this never costs anyone their games.
+    if steam_dir.is_dir() and not _steam_client_complete(steam_dir):
+        log("_launch_steam_unified: Steam client is incomplete -> repairing it from the template")
+        if not _reseed_steam_client(str(prefix)):
+            log("_launch_steam_unified: could not repair the Steam client")
     # SELF-HEAL: client present but the PREVIOUS launch crash-STORMED -> re-seed clean (the launch cmd
     # below wipes dumps each run, so dumps here are from the last run). _seed_steam_client is
     # presence-idempotent so it never repairs a present-but-broken client (the steamtest gap).
