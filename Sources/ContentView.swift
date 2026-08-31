@@ -369,7 +369,6 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .top) {
             AppUpdateBanner()
-            D3DMetalSetupBanner()
         }
         // Re-render the entire main UI when the language changes (Settings is a
         // separate scene, so its window is unaffected). Switching is live.
