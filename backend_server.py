@@ -4149,7 +4149,8 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  for_steam: bool = False, gst_debug: str = "",
                  cef_safe_mode: bool = False,
                  debug: bool = False, x87_jit: bool = True,
-                 x87_opts: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+                 x87_opts: Optional[Dict[str, Any]] = None,
+                 msync: Optional[bool] = None) -> Dict[str, str]:
     """Env for the unified wine. Steam exes always render via DXMT (loader gate);
     non-steam games follow MNC_GAME_BACKEND. GStreamer (MF/H.264 video) is wired for
     GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none.
@@ -4261,7 +4262,11 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         # keep it dormant. Steam goes thru _unified_env n never calls _apply_sync_env, so
         # this value governs the Steam path outright. Flip back to "1" (n re-default
         # game_msync True) once the cold-boot msync fix lands. See steam-msync-port.
-        "WINEMSYNC": "0",
+        # msync: whoever starts the wineserver for this prefix decides it for
+        # everything that joins later, so a game launched with the toggle on has to
+        # be able to hand its answer to the Steam it drags up first. msync=None
+        # keeps the historical default of off.
+        "WINEMSYNC": "1" if msync else "0",
         # Bradar the Debug toggle was a no-op for wine logging on the whole unified engine:
         # this was hardcoded "-all", and the Epic path's verbose flag only fed gst_debug.
         # So turning Debug on produced GStreamer chatter and not one extra wine line, on
@@ -5048,7 +5053,14 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         _run_shared_commonredist(str(prefix), game_backend)
     except Exception as exc:
         log(f"shared redist (steam launch) skipped: {exc}")
-    env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True)
+    # A game that wants msync launches Steam first; take its answer when it gives one
+    # so the wineserver this call creates is the mode the game needs. Falling back to
+    # the bottle keeps a bare "Open Steam" consistent with that bottle's games.
+    _msync = params.get("msync")
+    if _msync is None:
+        _msync = bottle_cfg.get("game_msync", False)
+    env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True,
+                       msync=bool(_msync))
     # Bradar wire the MoltenVK vulkan ICD into steam.exe's env so DXVK games launchd from Steams OWN
     # UI (they inherit steam.exe's env, NOT our per-game _launch_game_unified env) can create a Vulkan
     # instance. without it a Steam-launchd dxvk game crashs in d3d11_dxvk (vkCreateInstance fails ->
@@ -5972,6 +5984,9 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
                 "backend": backend,
                 "silent": (steam_mode == "silent"),
                 "wait_ready": True,
+                # This Steam is what creates the wineserver the game then joins, so it
+                # has to start in the game's msync mode or the game can never get it.
+                "msync": msync,
             })
             if steam_result.get("already_running"):
                 log("Steam already running, proceeding to game launch")
