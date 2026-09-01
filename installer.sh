@@ -1423,9 +1423,9 @@ install_vr() {
     [ -f "$c/d3d11.dll" ] && { dxo="$c"; break; }
   done
   if [ -n "$dxo" ] && [ -d "$wineruut/mnc-d3d" ]; then
-    cp -f "$dxo/d3d11.dll"     "$wineruut/mnc-d3d/d3d11_openxr.dll"     2>/dev/null || true
-    cp -f "$dxo/dxgi.dll"      "$wineruut/mnc-d3d/dxgi_openxr.dll"      2>/dev/null || true
-    cp -f "$dxo/d3d10core.dll" "$wineruut/mnc-d3d/d3d10core_openxr.dll" 2>/dev/null || true
+    for f in d3d11.dll dxgi.dll d3d10core.dll; do
+      cp -f "$dxo/$f" "$(d3d_pack_slot "$wineruut/mnc-d3d" openxr "$f")" 2>/dev/null || true
+    done
     echo "install_vr: staged openxr-DXMT d3d DLLs into mnc-d3d"
   fi
   # (2) the wineopenxr bridge PE (the .so builtin ships in the wine bundle at dlls/wineopenxr)
@@ -1433,7 +1433,7 @@ install_vr() {
   for c in "$wineruut/dlls/wineopenxr/x86_64-windows/wineopenxr.dll" "$res/wineopenxr/wineopenxr.dll" "$HOME/macndcheese/mnc-d3d/wineopenxr.dll"; do
     [ -f "$c" ] && { woxdll="$c"; break; }
   done
-  [ -n "$woxdll" ] && [ -d "$wineruut/mnc-d3d" ] && cp -f "$woxdll" "$wineruut/mnc-d3d/wineopenxr.dll" 2>/dev/null || true
+  [ -n "$woxdll" ] && [ -d "$wineruut/mnc-d3d" ] && cp -f "$woxdll" "$(d3d_pack_slot "$wineruut/mnc-d3d" openxr wineopenxr.dll wineopenxr.dll)" 2>/dev/null || true
   # (3) OpenXR-runtime manifest -> PORTABLE_DIR/wineopenxr (register_wineopenxr_in_prefix reads this)
   for c in "$res/wineopenxr/wineopenxr64.json" "$HOME/macndcheese/wineopenxr/wineopenxr64.json" "$wineruut/wineopenxr/wineopenxr64.json"; do
     if [ -f "$c" ]; then mkdir -p "$PORTABLE_DIR/wineopenxr"; cp -f "$c" "$PORTABLE_DIR/wineopenxr/wineopenxr64.json"; echo "install_vr: wineopenxr manifest staged"; break; fi
@@ -2504,6 +2504,29 @@ disable_builtin_d3d_slots() {
   return 0
 }
 
+# --- mnc-d3d pack layout ----------------------------------------------------
+# Layout 2 gives each backend its own folder with canonical DLL names inside
+# (mnc-d3d/dxmt/d3d11.dll); layout 1 is the old flat mnc-d3d/d3d11_dxmt.dll.
+# Echo 2 or 1 for a pack root.
+d3d_pack_layout() {
+  if [ -f "$1/base/d3d11.dll" ] || [ -f "$1/dxmt/d3d11.dll" ]; then echo 2; else echo 1; fi
+}
+
+# Destination path for one slot: d3d_pack_slot <root> <backend> <name> [flat-name]
+#   d3d_pack_slot .../mnc-d3d openxr d3d11.dll        -> openxr/d3d11.dll  | d3d11_openxr.dll
+#   d3d_pack_slot .../mnc-d3d openxr wineopenxr.dll wineopenxr.dll
+#                                                     -> openxr/wineopenxr.dll | wineopenxr.dll
+# The 4th argument is for slots whose flat name is not "<base>_<backend>.dll" --
+# the OpenXR bridge PE is unsuffixed in layout 1 even though it belongs to that backend.
+d3d_pack_slot() {
+  if [ "$(d3d_pack_layout "$1")" = 2 ]; then
+    mkdir -p "$1/$2"
+    echo "$1/$2/$3"
+  else
+    echo "$1/${4:-${3%.dll}_$2.dll}"
+  fi
+}
+
 stage_unified_d3d_pack() {
   # copy the d3d DLL pack the unified loader routes to into deps/wine-unified/mnc-d3d
   # source order: env, Resources next to us, the dev steam prefix system32
@@ -2515,13 +2538,31 @@ stage_unified_d3d_pack() {
     "${RESOURCES_DIR:-}/mnc-d3d" \
     "$HOME/macndcheese/mnc-d3d" \
     "/Volumes/ASAFE/steam-clean2/drive_c/windows/system32"; do
-    [ -n "$c" ] && [ -f "$c/d3d11.dll" ] && { d3dsrc="$c"; break; }
+    [ -n "$c" ] || continue
+    if [ -f "$c/d3d11.dll" ] || [ -f "$c/base/d3d11.dll" ] || [ -f "$c/dxmt/d3d11.dll" ]; then
+      d3dsrc="$c"; break
+    fi
   done
   if [ -z "$d3dsrc" ]; then
     echo "stage_unified_d3d_pack: WARNING no d3d DLL pack found (set MNC_UNIFIED_DLL_DIR)"
     return 0
   fi
   mkdir -p "$dst/mnc-d3d"
+
+  if [ "$(d3d_pack_layout "$d3dsrc")" = 2 ]; then
+    # Layout 2: copy the tree as-is. The folder names ARE the manifest, so adding a
+    # backend or a second GPTK never needs the file list below edited again. -a keeps
+    # the D3DMetal.framework symlinks (Versions/Current), which a plain cp would follow.
+    rsync -a --exclude='.DS_Store' "$d3dsrc/" "$dst/mnc-d3d/"
+    # drop a flat pack left by an older install -- superseded, and 200MB of it
+    rm -f "$dst/mnc-d3d"/*_dxmt.dll "$dst/mnc-d3d"/*_dxmt32.dll "$dst/mnc-d3d"/*_d3dm.dll \
+          "$dst/mnc-d3d"/*_dxvk.dll "$dst/mnc-d3d"/*_opengl.dll "$dst/mnc-d3d"/*_openxr.dll \
+          "$dst/mnc-d3d"/libd3dshared.dylib 2>/dev/null || true
+    rm -rf "$dst/mnc-d3d/D3DMetal.framework" 2>/dev/null || true
+    echo "stage_unified_d3d_pack: staged layout-2 d3d pack from $d3dsrc"
+    return 0
+  fi
+
   # winegstreamer_game.dll is the game-side MF video bridge staged + re-pointed at launch.
   # the *_dxmt trio is LOAD-BEARING for Steam: the loader (HACK30 steam_dxmt_redirect) routes
   # steam.exe's d3d11/dxgi/d3d10core to these _dxmt slots. omiting them here (they WERE omited,

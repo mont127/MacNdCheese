@@ -31,6 +31,7 @@ import html as html_lib
 import io
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -3163,15 +3164,122 @@ def _unified_available() -> bool:
     return _unified_build_dir() is not None
 
 
+# --- mnc-d3d pack layout ----------------------------------------------------
+#
+# Layout 2 gives each backend its own folder and keeps the canonical Windows DLL
+# name inside it, so refreshing a backend is a plain copy with no renaming:
+#
+#   mnc-d3d/dxmt/d3d11.dll          was  mnc-d3d/d3d11_dxmt.dll
+#   mnc-d3d/opengl/wined3d.dll      was  mnc-d3d/wined3d_opengl.dll
+#   mnc-d3d/base/d3d11.dll          was  mnc-d3d/d3d11.dll
+#   mnc-d3d/d3dm/external/...       was  mnc-d3d/{libd3dshared.dylib,D3DMetal.framework}
+#
+# Layout 1 (the flat naming) is still read, so an older pack keeps working. What
+# the wrapper WRITES is unchanged either way: a prefix still gets
+# system32/d3d11_dxmt.dll, because that is the name the engine's redirect table
+# resolves. The engine needs no change for this -- mnc-d3d is a staging source,
+# not a loader search path.
+#
+# Slots whose flat name is not "<base>_<backend>.dll":
+_D3D_PACK_SPECIAL = {
+    # d3d9's second copy is an ARCH variant, not a backend one
+    "d3d9_dxmt.dll": ("dxmt", "d3d9.dll"),
+    "d3d9_dxmt32.dll": ("dxmt", "d3d9-32.dll"),
+    # the OpenXR bridge PE is unsuffixed but belongs to the openxr backend
+    "wineopenxr.dll": ("openxr", "wineopenxr.dll"),
+}
+_D3D_PACK_BACKENDS = ("d3dm", "dxmt", "dxvk", "opengl", "openxr")
+
+# Canonical (unsuffixed) slots that ARE the GPTK stubs -- verified byte-identical
+# to their _d3dm twins. They must come from the SAME toolkit as the
+# libd3dshared.dylib/D3DMetal.framework pair they link against, or a 26.4+ Mac
+# would pair GPTK 3.0 stubs with GPTK 4.0b2's runtime. The rest of the canonical
+# set (d3d10, d3d10_1, d3d10core, d3d12core) is wine's own builtins and lives in
+# base/.
+_D3D_PACK_GPTK_CANONICAL = ("d3d11.dll", "d3d12.dll", "dxgi.dll")
+
+# GPTK 4.0b2's D3DMetal.framework is built against the macOS 26.4 SDK
+# (DTPlatformVersion 26.4); 3.0 against 15.4. Older systems stay on 3.0.
+_GPTK4_MIN_MACOS = (26, 4)
+
+
+def _macos_version() -> Tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in platform.mac_ver()[0].split(".")[:2])
+    except Exception:
+        return (0, 0)
+
+
+def _d3d_pack_layout(d: Path) -> int:
+    """2 = folder layout, 1 = flat layout, 0 = not a d3d pack.
+
+    Probe several slots rather than one. base/d3d11.dll does not exist in a
+    layout-2 pack at all (the canonical d3d11 is a GPTK stub and is resolved out
+    of the selected d3dm folder), and keying on any single Apple-supplied slot is
+    what made the old d3d11.dll check misreport a pack full of our own DLLs as
+    absent."""
+    for probe in ("dxmt/d3d11.dll", "base/winemetal.dll", "d3dm/d3d11.dll", "base/d3d11.dll"):
+        if (d / probe).exists():
+            return 2
+    if (d / "winemetal.dll").exists() or (d / "d3d11.dll").exists():
+        return 1
+    return 0
+
+
+def _d3dm_dir_name(d: Path) -> str:
+    """Which GPTK folder the d3dmetal backend should use in a layout-2 pack."""
+    if _macos_version() >= _GPTK4_MIN_MACOS and (d / "d3dm-gptk4" / "d3d11.dll").exists():
+        return "d3dm-gptk4"
+    return "d3dm"
+
+
+def _d3d_pack_file(d: Path, flat: str) -> Optional[Path]:
+    """Resolve one pack slot by its flat name, whichever layout the pack uses.
+
+    Callers keep speaking the flat vocabulary ("d3d11_dxmt.dll") because that is
+    what the loader expects to find in system32; this only decides where the
+    bytes are read FROM. Returns None when the pack does not carry that slot."""
+    if _d3d_pack_layout(d) == 2:
+        found = _D3D_PACK_SPECIAL.get(flat)
+        if found is None:
+            stem = flat[:-4] if flat.endswith(".dll") else flat
+            for backend in _D3D_PACK_BACKENDS:
+                if stem.endswith("_" + backend):
+                    found = (backend, stem[: -(len(backend) + 1)] + ".dll")
+                    break
+            else:
+                found = ("d3dm" if flat in _D3D_PACK_GPTK_CANONICAL else "base", flat)
+        sub, name = found
+        if sub == "d3dm":
+            sub = _d3dm_dir_name(d)
+        p = d / sub / name
+        if p.exists():
+            return p
+        # a pack that keeps its own canonical copy still wins over nothing
+        p = d / "base" / name
+        if p.exists():
+            return p
+    p = d / flat
+    return p if p.exists() else None
+
+
+def _d3d_external_dir(d: Path) -> Path:
+    """Where libd3dshared.dylib and D3DMetal.framework live in this pack."""
+    if _d3d_pack_layout(d) == 2:
+        return d / _d3dm_dir_name(d) / "external"
+    return d
+
+
 def _unified_d3d_dir() -> Optional[Path]:
     """Locate the bundled d3d DLL pack the unified loader routes to.
 
-    Keyed on winemetal.dll, which is OURS. It used to key on d3d11.dll, but that slot holds
-    Apples D3DMetal stub and we do not redistribute that any more -- so on a fresh install
-    the pack exists, is full of our own DLLs, and would have looked entirely absent.
+    Probed by _d3d_pack_layout(), which keys on slots that are OURS. It used to key
+    on d3d11.dll alone, but that slot holds Apples D3DMetal stub -- so a pack full of
+    our own DLLs could look entirely absent. That reasoning carries into the folder
+    layout, where the canonical d3d11.dll does not sit at the pack root at all.
     """
     for d in (UNIFIED_D3D_DIR, UNIFIED_D3D_DEV):
-        if (d / "winemetal.dll").exists() or (d / "d3d11.dll").exists():
+        if _d3d_pack_layout(d):
             return d
     return None
 
@@ -3187,7 +3295,8 @@ def _opengl_available() -> bool:
     there. Key on the real capability (the _opengl slots in the unified d3d
     pack) n keep the legacy app as a fallbak for older installs that have it."""
     d3ddir = _unified_d3d_dir()
-    if d3ddir and (d3ddir / "d3d11_opengl.dll").exists() and (d3ddir / "wined3d_opengl.dll").exists():
+    if (d3ddir and _d3d_pack_file(d3ddir, "d3d11_opengl.dll")
+            and _d3d_pack_file(d3ddir, "wined3d_opengl.dll")):
         return True
     return _find_wine_devel() is not None
 
@@ -3223,14 +3332,16 @@ def _d3dmetal_native_dir() -> Path:
     d3dmetal launch under the unified engine asserted. Checking both here makes it fall
     through to a pack that is actually complete instead."""
     for d in (UNIFIED_D3D_DIR, D3DMETAL_NATIVE_DIR):
-        if (d / "libd3dshared.dylib").exists() and (d / "D3DMetal.framework").exists():
-            return d
+        ext = _d3d_external_dir(d)
+        if (ext / "libd3dshared.dylib").exists() and (ext / "D3DMetal.framework").exists():
+            return ext
     # nothing complete -- warn loudly rather than silently returning a broken pack
     for d in (UNIFIED_D3D_DIR, D3DMETAL_NATIVE_DIR):
-        if (d / "libd3dshared.dylib").exists():
-            log(f"d3dmetal: {d} has libd3dshared.dylib but NO D3DMetal.framework next to it "
+        ext = _d3d_external_dir(d)
+        if (ext / "libd3dshared.dylib").exists():
+            log(f"d3dmetal: {ext} has libd3dshared.dylib but NO D3DMetal.framework next to it "
                 f"-> d3dmetal launches will assert in shared.mm; copy the framework there")
-            return d
+            return ext
     return D3DMETAL_NATIVE_DIR
 
 
@@ -3266,7 +3377,7 @@ def _disable_shadowing_builtins() -> int:
         return 0
     moved = 0
     for mod in ("dxgi", "d3d11", "d3d10core"):
-        if not (d3d_dir / f"{mod}.dll").exists():
+        if _d3d_pack_file(d3d_dir, f"{mod}.dll") is None:
             continue    # no canonical replacement staged -> leave wine's builtin alone
         builtin = bt / "dlls" / mod / "x86_64-windows" / f"{mod}.dll"
         if not builtin.exists():
@@ -3305,8 +3416,8 @@ def _stage_unified_dlls(prefix: str) -> None:
         return
     staged = 0
     for dll in UNIFIED_D3D_DLLS:
-        src = src_dir / dll
-        if not src.exists():
+        src = _d3d_pack_file(src_dir, dll)
+        if src is None:
             continue
         dst = sys32 / dll
         try:
@@ -3348,9 +3459,9 @@ def _stage_unified_d3d9(prefix: str, src_dir: Path) -> None:
     win_dir = Path(prefix) / "drive_c" / "windows"
     for src_name, sys_dir in (("d3d9_dxmt.dll", "system32"),
                               ("d3d9_dxmt32.dll", "syswow64")):
-        src = src_dir / src_name
+        src = _d3d_pack_file(src_dir, src_name)
         dst_dir = win_dir / sys_dir
-        if not src.exists() or not dst_dir.is_dir():
+        if src is None or not dst_dir.is_dir():
             continue
         dst = dst_dir / "d3d9.dll"
         try:
@@ -3732,8 +3843,8 @@ def _stage_unified_mf(prefix: str) -> None:
     src_dir = _unified_d3d_dir()
     if src_dir is None:
         return
-    src = src_dir / UNIFIED_MF_BRIDGE
-    if not src.exists():
+    src = _d3d_pack_file(src_dir, UNIFIED_MF_BRIDGE)
+    if src is None:
         return
     sys32 = Path(prefix) / "drive_c" / "windows" / "system32"
     if not sys32.is_dir():
@@ -3896,13 +4007,21 @@ def _native_d3d9_staged(prefix: str) -> bool:
     We were setting it on every Apple Silicon machine while d3d9_dxmt.dll shipped in no pack
     at all, so the promised native d3d9 could never be staged. Key the override on the file
     being present insted of on the intent to stage one.
+
+    Resolved through _d3d_pack_file() rather than by joining the flat name: in a
+    layout-2 pack that file is dxmt/d3d9.dll, so a direct join would find nothing,
+    this would answer False on every machine, and DXMT d3d9 would go quietly
+    unused. (The pack gap this gate was written for is itself fixed there --
+    stage_unified_d3d_pack copies the tree wholesale instead of walking a list
+    that never named d3d9.)
     """
-    src = _unified_d3d_dir()
-    if src is None or not (src / "d3d9_dxmt.dll").is_file():
+    src_dir = _unified_d3d_dir()
+    src = _d3d_pack_file(src_dir, "d3d9_dxmt.dll") if src_dir else None
+    if src is None:
         return False
     dst = Path(prefix) / "drive_c" / "windows" / "system32" / "d3d9.dll"
     try:
-        return dst.is_file() and dst.stat().st_size == (src / "d3d9_dxmt.dll").stat().st_size
+        return dst.is_file() and dst.stat().st_size == src.stat().st_size
     except Exception:
         return False
 
