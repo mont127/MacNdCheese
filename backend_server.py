@@ -2161,8 +2161,113 @@ def _detect_exe(game_dir: Path, install_dir_name: str, game_name: str) -> Option
     return None
 
 
-def _detect_all_exes(game_dir: Path) -> List[str]:
-    """Return all plausible game executables in a game directory."""
+# ---------------------------------------------------------------------------
+# Steam's own answer to "which exe is the game"
+# ---------------------------------------------------------------------------
+
+_APPINFO_MAGIC_V29 = 0x07564429
+
+
+def _steam_launch_exes(steam_dir: Path, appid: str) -> List[Tuple[str, str]]:
+    """[(executable, description)] from Steam's appcache/appinfo.vdf, in Steam's
+    own order, or [] when we cannot read it.
+
+    This is what Steam itself would run, so it beats any guess we could make from
+    the filesystem. Train Simulator Classic is the motivating case: its real exes
+    are ~0.4MB (the engine lives in DLLs) while a mesh converter beside them is
+    1MB, so "largest file wins" picks a tool. Steam lists RailWorks64.exe.
+
+    appinfo.vdf is an undocumented binary VDF whose layout changes between client
+    versions; only v29 (string-table) is parsed and anything unexpected returns
+    [] so callers fall back to the heuristic rather than crash.
+    """
+    path = steam_dir / "appcache" / "appinfo.vdf"
+    try:
+        if not path.is_file() or not str(appid).isdigit():
+            return []
+        want = int(appid)
+        data = path.read_bytes()
+        magic, _universe = struct.unpack_from("<II", data, 0)
+        if magic != _APPINFO_MAGIC_V29:
+            return []
+        (tbl_off,) = struct.unpack_from("<q", data, 8)
+        (count,) = struct.unpack_from("<I", data, tbl_off)
+        off = tbl_off + 4
+        strings: List[str] = []
+        for _ in range(count):
+            end = data.index(b"\x00", off)
+            strings.append(data[off:end].decode("utf-8", "replace"))
+            off = end + 1
+
+        def parse_kv(pos: int, limit: int):
+            out: Dict[str, Any] = {}
+            while pos < limit:
+                t = data[pos]; pos += 1
+                if t == 0x08:
+                    return out, pos
+                (ki,) = struct.unpack_from("<I", data, pos); pos += 4
+                key = strings[ki] if ki < len(strings) else str(ki)
+                if t == 0x00:
+                    out[key], pos = parse_kv(pos, limit)
+                elif t == 0x01:
+                    end = data.index(b"\x00", pos)
+                    out[key] = data[pos:end].decode("utf-8", "replace"); pos = end + 1
+                elif t == 0x02:
+                    (out[key],) = struct.unpack_from("<i", data, pos); pos += 4
+                elif t == 0x07:
+                    (out[key],) = struct.unpack_from("<Q", data, pos); pos += 8
+                else:
+                    raise ValueError("unknown vdf type")
+            return out, pos
+
+        pos = 16
+        while pos < tbl_off:
+            (this_id,) = struct.unpack_from("<I", data, pos)
+            if this_id == 0:
+                break
+            (size,) = struct.unpack_from("<I", data, pos + 4)
+            body = pos + 8
+            if this_id == want:
+                # infoState, lastUpdated, picsToken, sha1(text), changeNumber, sha1(vdf)
+                kv, _ = parse_kv(body + 4 + 4 + 8 + 20 + 4 + 20, body + size)
+                launch = (kv.get("appinfo", {}).get("config", {}).get("launch")
+                          or kv.get("config", {}).get("launch") or {})
+                out: List[Tuple[str, str]] = []
+                for _k, v in sorted(launch.items(), key=lambda kv2: str(kv2[0])):
+                    if not isinstance(v, dict):
+                        continue
+                    exe = str(v.get("executable", "")).strip().replace("\\", "/")
+                    if not exe:
+                        continue
+                    oslist = str(v.get("config", {}).get("oslist", "")).lower()
+                    if oslist and "windows" not in oslist:
+                        continue          # a macOS/Linux entry is not what wine runs
+                    out.append((exe, str(v.get("description", ""))))
+                return out
+            pos = body + size
+    except Exception as exc:
+        log(f"_steam_launch_exes({appid}): {exc}")
+    return []
+
+
+# Names that are shipped beside a game but are not the game: asset converters,
+# editors, crash handlers. Matched on the stem, case-insensitively.
+_EXE_TOOL_HINTS = ("convert", "editor", "blueprint", "logmate", "utilit", "serz",
+                   "luac", "extractor", "optimiser", "optimizer", "namemy",
+                   "crash", "report", "unins", "setup", "install", "redist",
+                   "dxsetup", "vcredist", "benchmark", "config", "settings")
+
+
+def _detect_all_exes(game_dir: Path, steam_dir: Optional[Path] = None,
+                     appid: str = "") -> List[str]:
+    """Plausible game executables, best first.
+
+    Steam's own launch list wins when we can read it -- it is what Steam would
+    run, and it distinguishes the 64-bit build from the 32-bit one by name.
+    Otherwise fall back to a ranking, because the old "largest file wins" rule
+    breaks on any engine that keeps its code in DLLs: Train Simulator Classic's
+    real exes are ~0.4MB while the mesh converter next to them is 1MB.
+    """
     if not game_dir.exists():
         return []
     results: List[Path] = []
@@ -2172,9 +2277,43 @@ def _detect_all_exes(game_dir: Path) -> List[str]:
                 results.append(exe)
     except Exception:
         pass
-    # Sort by size descending (largest = most likely the real game)
-    results.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
-    return [str(p) for p in results]
+
+    # Steam's launch entries, resolved against what is actually on disk.
+    preferred: List[Path] = []
+    if steam_dir is not None and appid:
+        by_name = {p.name.lower(): p for p in results}
+        for exe_rel, _desc in _steam_launch_exes(steam_dir, appid):
+            hit = by_name.get(Path(exe_rel).name.lower())
+            if hit is not None and hit not in preferred:
+                preferred.append(hit)
+        # Steam lists the 32-bit entry first for some titles; 64-bit avoids the
+        # 2GB cap and the x87 path entirely, so prefer it among Steam's own.
+        preferred.sort(key=lambda p: 0 if _exe_is_64bit(p) else 1)
+
+    dir_stem = game_dir.name.lower()
+
+    def rank(p: Path) -> Tuple[int, int]:
+        stem = p.stem.lower()
+        score = 0
+        if stem.startswith(dir_stem) or dir_stem.startswith(stem):
+            score -= 40                      # named after the game directory
+        if any(h in stem for h in _EXE_TOOL_HINTS):
+            score += 60                      # a tool shipped beside the game
+        if _exe_is_64bit(p):
+            score -= 20                      # prefer the 64-bit build
+        try:
+            size = p.stat().st_size
+        except Exception:
+            size = 0
+        return (score, -size)                # tie-break on size, descending
+
+    rest = sorted((p for p in results if p not in preferred), key=rank)
+    return [str(p) for p in preferred + rest]
+
+
+def _exe_is_64bit(exe: Path) -> bool:
+    info = _pe_header_info(str(exe))
+    return bool(info and info[0] != _PE_MACHINE_I386)
 
 
 # ---------------------------------------------------------------------------
@@ -3771,7 +3910,8 @@ def _native_d3d9_staged(prefix: str) -> bool:
 def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  for_steam: bool = False, gst_debug: str = "",
                  cef_safe_mode: bool = False,
-                 debug: bool = False, x87_jit: bool = True) -> Dict[str, str]:
+                 debug: bool = False, x87_jit: bool = True,
+                 x87_opts: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """Env for the unified wine. Steam exes always render via DXMT (loader gate);
     non-steam games follow MNC_GAME_BACKEND. GStreamer (MF/H.264 video) is wired for
     GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none.
@@ -3848,10 +3988,32 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     if _is_apple_silicon() and _native_d3d9_staged(prefix):
         dll_ovr += ";d3d9=n"
     env.pop("ROSETTA_X87_PATH", None)   # never inherit a stale one from the shell
+    for _stale in ("ROSETTA_X87_EXTENDED_FPR_SCRATCH", "ROSETTA_X87_FAST_ROUND",
+                   "ROSETTA_X87_F32_ARITH", "ROSETTA_X87_F32_NARROW",
+                   "ROSETTA_X87_FAST_RECIP_DIV"):
+        env.pop(_stale, None)
     if x87_jit:
         _x87 = _rosetta_x87_loader()
         if _x87:
             env["ROSETTA_X87_PATH"] = _x87
+            # Opt-in tuning flags, surfaced in the UI only while x87 is enabled.
+            # Every one is off unless the bottle asks for it: the first two are
+            # semantics-preserving, the last three are explicitly not bit-exact
+            # (f32_arith changes
+            # intermediate precision, fast_recip_div is up to 1 ULP off -- and a
+            # 1 ULP error inside a convergence loop is a hang, not a wrong pixel).
+            for _key, _var in (("x87_extended_fpr",   "ROSETTA_X87_EXTENDED_FPR_SCRATCH"),
+                               ("x87_fast_round",     "ROSETTA_X87_FAST_ROUND"),
+                               ("x87_f32_arith",      "ROSETTA_X87_F32_ARITH"),
+                               ("x87_fast_recip_div", "ROSETTA_X87_FAST_RECIP_DIV")):
+                if (x87_opts or {}).get(_key):
+                    env[_var] = "1"
+            # F32_ARITH's chain pass is gated on F32_NARROW upstream
+            # (X87IROptimize: f32_chain_on = f32_narrow_on && f32_arith), and
+            # narrowing is opt-in since a345363d. Setting ARITH alone is a
+            # silent no-op, so the one UI switch turns on both.
+            if (x87_opts or {}).get("x87_f32_arith"):
+                env["ROSETTA_X87_F32_NARROW"] = "1"
     env.update({
         "WINEPREFIX": str(prefix),
         # msync OFF by default. The bundled unified wine is msync-capable (server
@@ -5297,7 +5459,11 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     # a title the patched handlers upset, not a thing users should have to find.
     env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"),
                        cef_safe_mode=force_cef, debug=debug,
-                       x87_jit=bool(params.get("x87_jit", bottle_cfg.get("x87_jit", True))))
+                       x87_jit=bool(params.get("x87_jit", bottle_cfg.get("x87_jit", True))),
+                       x87_opts={k: bool(params.get(k, bottle_cfg.get(k, False)))
+                                 for k in ("x87_extended_fpr", "x87_fast_round",
+                                           "x87_f32_arith",
+                                           "x87_fast_recip_div")})
     # Rockstar: make d3d12 cleanly ABSENT. The Social Club CEF resolves D3D12CreateDevice
     # dynamicaly and calls it through an UNGUARDED proc-table slot -- with our half-alive
     # d3d12 stub loaded the slot ends up NULL and every helper dies calling address 0
@@ -6898,12 +7064,76 @@ def cmd_open_prefix_folder(params: Dict[str, Any]) -> Any:
     return None
 
 
-def cmd_detect_exes(params: Dict[str, Any]) -> Any:
-    """List all plausible game executables in a game's install directory."""
+def cmd_exe_arch(params: Dict[str, Any]) -> Any:
+    """Is this exe 32-bit (i386)?  {"is32": true|false|null}
+
+    null means "we could not tell" -- not a PE, unreadable, or a stub we cannot
+    parse -- and callers should treat that the same way _apply_4gb_patch does:
+    leave the decision alone rather than guess.
+
+    The UI uses this to hide settings that are meaningless on a 64-bit title:
+    the 4GB patch (64-bit is large-address-aware by definition) and the x87 JIT
+    (wine only engages the loader for a 32-bit PE, see use_rosetta_x87_loader).
+    """
+    exe = params.get("exe") or ""
+    if not exe or not os.path.isfile(exe):
+        return {"is32": None}
+    info = _pe_header_info(exe)
+    if not info:
+        return {"is32": None}
+    return {"is32": info[0] == _PE_MACHINE_I386}
+
+
+def cmd_detect_exes_labeled(params: Dict[str, Any]) -> Any:
+    """Like detect_exes, but each entry carries a human label.
+
+    For a Steam title the label is Steam's own launch description ("Train
+    Simulator 64-bit Edition"), which says far more than a filename does --
+    especially for games that ship a 32-bit and a 64-bit build side by side.
+    Falls back to the file name when Steam has nothing to say."""
     install_dir = params.get("install_dir")
     if not install_dir:
         raise ValueError("Missing 'install_dir' parameter")
-    return _detect_all_exes(Path(install_dir))
+    steam_dir = None
+    prefix = params.get("prefix")
+    if prefix:
+        try:
+            steam_dir = _steam_dir(str(prefix))
+        except Exception:
+            steam_dir = None
+    appid = str(params.get("steam_appid", "") or "")
+    paths = _detect_all_exes(Path(install_dir), steam_dir, appid)
+    labels: Dict[str, str] = {}
+    if steam_dir is not None and appid:
+        for exe_rel, desc in _steam_launch_exes(steam_dir, appid):
+            if desc:
+                labels[Path(exe_rel).name.lower()] = desc
+    out = []
+    for p in paths:
+        name = Path(p).name
+        out.append({"path": p, "label": labels.get(name.lower(), ""),
+                    "is32": (lambda i: None if not i else i[0] == _PE_MACHINE_I386)(
+                        _pe_header_info(p))})
+    return out
+
+
+def cmd_detect_exes(params: Dict[str, Any]) -> Any:
+    """List all plausible game executables in a game's install directory.
+
+    Pass prefix + steam_appid when known: Steam's own launch list is far more
+    reliable than guessing from the filesystem (see _detect_all_exes)."""
+    install_dir = params.get("install_dir")
+    if not install_dir:
+        raise ValueError("Missing 'install_dir' parameter")
+    steam_dir = None
+    prefix = params.get("prefix")
+    if prefix:
+        try:
+            steam_dir = _steam_dir(str(prefix))
+        except Exception:
+            steam_dir = None
+    return _detect_all_exes(Path(install_dir), steam_dir,
+                            str(params.get("steam_appid", "") or ""))
 
 
 def cmd_list_backends(params: Dict[str, Any]) -> Any:
@@ -10592,6 +10822,8 @@ COMMANDS: Dict[str, Any] = {
     "remove_manual_app": cmd_remove_manual_app,
     "remove_manual_game": cmd_remove_manual_game,
     "detect_exes": cmd_detect_exes,
+    "detect_exes_labeled": cmd_detect_exes_labeled,
+    "exe_arch": cmd_exe_arch,
     "list_backends": cmd_list_backends,
     "get_components_status": cmd_get_components_status,
     "check_audio_input": cmd_chek_audio_inpit,

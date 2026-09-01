@@ -316,7 +316,9 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, gameMode: Bool = true, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false, forceDxmtCef: Bool = false, dpiAware: Bool? = nil) async {
+    func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, gameMode: Bool = true, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false, forceDxmtCef: Bool = false, dpiAware: Bool? = nil,
+                    largeAddressAware: Bool = true, x87Jit: Bool = true, x87ExtendedFpr: Bool = false, x87FastRound: Bool = false,
+                    x87F32Arith: Bool = false, x87FastRecipDiv: Bool = false) async {
         do {
             let screenInfo = NSScreen.screens.map { s in
                 "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"
@@ -328,6 +330,10 @@ final class BackendClient: ObservableObject {
                 "steam_mode": steamMode, "custom_env": customEnv, "debug": debug,
                 "auto_stop_steam": UserDefaults.standard.object(forKey: "auto_stop_steam") as? Bool ?? true,
                 "force_dxmt_cef": forceDxmtCef,
+                "large_address_aware": largeAddressAware,
+                "x87_jit": x87Jit, "x87_extended_fpr": x87ExtendedFpr,
+                "x87_fast_round": x87FastRound, "x87_f32_arith": x87F32Arith,
+                "x87_fast_recip_div": x87FastRecipDiv,
                 // omitted entirely when nil so the backend's per-title detection still runs
                 "dpi_aware": dpiAware as Any? ?? NSNull(),
             ])
@@ -1057,6 +1063,48 @@ final class BackendClient: ObservableObject {
             }
         } catch {}
         return nil
+    }
+
+    /// True if `exe` is a 32-bit PE, false if 64-bit, nil if we cannot tell
+    /// (not a PE, unreadable, unparsable stub). Callers should treat nil as
+    /// "leave it alone" rather than assuming either way.
+    func exeIs32Bit(exe: String) async -> Bool? {
+        do {
+            let result = try await send(cmd: "exe_arch", params: ["exe": exe])
+            if let d = result as? [String: Any] { return d["is32"] as? Bool }
+        } catch { }
+        return nil
+    }
+
+    /// One candidate executable, with Steam's own description when the title is
+    /// a Steam game (e.g. "Train Simulator 64-bit Edition") and its bitness.
+    struct DetectedExe: Identifiable, Hashable {
+        let path: String
+        let label: String
+        let is32: Bool?
+        var id: String { path }
+        /// What to show in the picker: Steam's description beats a bare filename.
+        var display: String {
+            let name = (path as NSString).lastPathComponent
+            if label.isEmpty { return name }
+            return "\(label) — \(name)"
+        }
+    }
+
+    func detectExesLabeled(installDir: String, prefix: String, steamAppId: String) async -> [DetectedExe] {
+        do {
+            let result = try await send(cmd: "detect_exes_labeled", params: [
+                "install_dir": installDir, "prefix": prefix, "steam_appid": steamAppId,
+            ])
+            if let arr = result as? [[String: Any]] {
+                return arr.compactMap { d in
+                    guard let p = d["path"] as? String else { return nil }
+                    return DetectedExe(path: p, label: d["label"] as? String ?? "",
+                                       is32: d["is32"] as? Bool)
+                }
+            }
+        } catch { }
+        return []
     }
 
     func detectExes(installDir: String) async -> [String] {

@@ -14,7 +14,7 @@ struct GameDetailView: View {
     var onClose: () -> Void
 
     @State private var selectedExe: String = ""
-    @State private var detectedExes: [String] = []
+    @State private var detectedExes: [BackendClient.DetectedExe] = []
     @State private var extraArgs = ""
     @State private var isLaunching = false
     @State private var loadingExes = true
@@ -27,6 +27,20 @@ struct GameDetailView: View {
     @State private var gameMode: Bool = true
     @State private var advancedDebug: Bool = false
     @State private var enableEsync: Bool = true
+    // x87 JIT acceleration (rosettax87). Master switch is on by default;
+    // the tuning flags are opt-in and only shown while it is enabled.
+    // ntcore-style 4GB patch: sets IMAGE_FILE_LARGE_ADDRESS_AWARE on a 32-bit
+    // exe that lacks it. Backend default is on; it edits the exe and keeps a
+    // .mnc-orig backup, so it is worth surfacing rather than doing silently.
+    // nil = unknown (not a PE / unreadable). Only HIDE the 32-bit-only
+    // settings when we positively know the exe is 64-bit.
+    @State private var exeIs32Bit: Bool? = nil
+    @State private var largeAddressAware: Bool = true
+    @State private var x87Jit: Bool = true
+    @State private var x87ExtendedFpr: Bool = false
+    @State private var x87FastRound: Bool = false
+    @State private var x87F32Arith: Bool = false
+    @State private var x87FastRecipDiv: Bool = false
     @State private var enableMsync: Bool = true
     @State private var advertiseAVX: Bool = false
     @State private var customEnv: String = ""
@@ -37,6 +51,30 @@ struct GameDetailView: View {
     @State private var screenshots: [String] = []   // full-size URLs
     @State private var thumbnails: [String] = []     // thumbnail URLs
     @State private var fullScreenshot: String?       // tapped screenshot → viewer
+
+    /// One row of the EXE menu. Steam's description leads, with the actual file
+    /// name after it so the choice is never ambiguous; a bare executable shows
+    /// just its name.
+    @ViewBuilder
+    private func exeMenuRow(_ e: BackendClient.DetectedExe) -> some View {
+        let name = (e.path as NSString).lastPathComponent
+        Button {
+            selectedExe = e.path
+            Task { await refreshExeArch() }
+        } label: {
+            Text(e.label.isEmpty ? name : "\(e.label)  (\(name))")
+        }
+    }
+
+    /// What the collapsed EXE button shows: Steam's description when we have one,
+    /// otherwise the bare filename. The filename is still visible in the open list.
+    private var selectedExeDisplay: String {
+        guard !effectiveExe.isEmpty else { return L("Select…") }
+        if let hit = detectedExes.first(where: { $0.path == effectiveExe }), !hit.label.isEmpty {
+            return hit.label
+        }
+        return (effectiveExe as NSString).lastPathComponent
+    }
 
     private var effectiveExe: String {
         if !selectedExe.isEmpty { return selectedExe }
@@ -93,6 +131,7 @@ struct GameDetailView: View {
             await loadBackends()
             await loadBottleDefaults()
             await loadGameConfig()
+            await refreshExeArch()
             await loadSteamMedia()
         }
     }
@@ -265,6 +304,16 @@ struct GameDetailView: View {
             gameModeToggle
             advancedDebugToggle
             synchronizationSection
+            // The 4GB patch and the x87 JIT are both 32-bit-only: 64-bit PEs are
+            // large-address-aware by definition, and wine only engages the x87
+            // loader for a 32-bit image. Showing them for a 64-bit game would
+            // offer switches that cannot do anything.
+            // 4GB patch: 32-bit only (64-bit PEs are large-address-aware already),
+            // but it applies on any Mac. x87 JIT: 32-bit AND Apple Silicon only.
+            if exeIs32Bit != false {
+                largeAddressSection
+                if isAppleSilicon { x87Section }
+            }
             environmentSection
         }
         .padding(16)
@@ -301,13 +350,34 @@ struct GameDetailView: View {
                     Text(L("Scanning...")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                Picker("", selection: $selectedExe) {
-                    Text(L("Auto-detect")).tag("")
-                    ForEach(detectedExes, id: \.self) { exe in
-                        Text(abbreviateExe(exe)).tag(exe)
+                // A Menu rather than a Picker so the collapsed button can show the
+                // friendly name alone while the open list stays explicit about
+                // which file each entry is. macOS flattens a menu item's layout to
+                // one line, so the filename goes IN the row text rather than under it.
+                Menu {
+                    let official = detectedExes.filter { !$0.label.isEmpty }
+                    let others   = detectedExes.filter { $0.label.isEmpty }
+                    if !official.isEmpty {
+                        Section(L("Official game launchers")) {
+                            ForEach(official) { e in exeMenuRow(e) }
+                        }
                     }
+                    if !others.isEmpty {
+                        Section(official.isEmpty ? L("Executables") : L("Other executables")) {
+                            ForEach(others) { e in exeMenuRow(e) }
+                        }
+                    }
+                } label: {
+                    Text(selectedExeDisplay)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.primary)   // not the app tint: this is a value, not an action
                 }
-                .labelsHidden()
+                .menuStyle(.borderlessButton)
+                .tint(.primary)   // control tint, not text colour: .foregroundStyle
+                                  // loses to the accent colour on a borderless menu
+                .fixedSize()
+
                 Button(L("Browse…")) { browseExe() }
                     .buttonStyle(.bordered).controlSize(.small)
             }
@@ -418,6 +488,72 @@ struct GameDetailView: View {
         }
     }
 
+    private var largeAddressSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: $largeAddressAware) {
+                Text(L("4GB patch (large address aware)")).font(.caption).fontWeight(.semibold)
+            }
+            Text(L("Lets a 32-bit game use the full 4GB Wine offers instead of being capped at 2GB — some titles simply run out and crash without it. Edits the game's .exe, keeping the original alongside as .mnc-orig. No effect on 64-bit games."))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// x87 JIT acceleration only exists on Apple Silicon -- there is no Rosetta to
+    /// patch on an Intel Mac, and the backend's _rosetta_x87_loader() returns None
+    /// there. Asking about hw.optional.arm64 rather than the build architecture is
+    /// deliberate: the machine is what matters, and the app may itself be running
+    /// translated.
+    private var isAppleSilicon: Bool {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 { return value == 1 }
+        return false
+    }
+
+    private var x87Section: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle(isOn: $x87Jit) {
+                    Text(L("x87 JIT acceleration")).font(.caption).fontWeight(.semibold)
+                }
+                Text(L("Speeds up 32-bit games that do their float maths on the x87 stack (most Delphi/Pascal-era titles). Turn off if a game misbehaves."))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if x87Jit {
+                VStack(alignment: .leading, spacing: 6) {
+                    x87Option($x87ExtendedFpr,
+                              L("Extended register pool"),
+                              L("Uses 16 scratch FP registers instead of 8. Safe: does not change results."))
+                    x87Option($x87FastRound,
+                              L("Fast rounding"),
+                              L("Skips rounding-mode dispatch. Safe only for games that stay on round-to-nearest."))
+                    x87Option($x87F32Arith,
+                              L("32-bit arithmetic chains"),
+                              L("Keeps single-precision chains in 32-bit (also enables narrowing, which it depends on). Not bit-exact; upstream turned both off by default after game misbehaviour."))
+                    x87Option($x87FastRecipDiv,
+                              L("Fast reciprocal divide"),
+                              L("Turns division by a constant into a multiply. Up to 1 ULP off; can break convergence loops."))
+                }
+                .padding(.leading, 14)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func x87Option(_ isOn: Binding<Bool>, _ title: String, _ caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: isOn) { Text(title).font(.caption).fontWeight(.semibold) }
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var environmentSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(L("Environment Variables:")).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
@@ -459,6 +595,12 @@ struct GameDetailView: View {
         if let m = cfg["msync"] as? Bool { enableMsync = m }
         if let env = cfg["custom_env"] as? String { customEnv = env }
         if let avx = cfg["rosetta_avx"] as? Bool { advertiseAVX = avx }
+        if let v = cfg["large_address_aware"] as? Bool { largeAddressAware = v }
+        if let v = cfg["x87_jit"] as? Bool { x87Jit = v }
+        if let v = cfg["x87_extended_fpr"] as? Bool { x87ExtendedFpr = v }
+        if let v = cfg["x87_fast_round"] as? Bool { x87FastRound = v }
+        if let v = cfg["x87_f32_arith"] as? Bool { x87F32Arith = v }
+        if let v = cfg["x87_fast_recip_div"] as? Bool { x87FastRecipDiv = v }
         if let sm = cfg["steam_mode"] as? String { steamMode = sm }
     }
 
@@ -470,6 +612,10 @@ struct GameDetailView: View {
             "retina_mode": retinaMode, "metal_hud": metalHud, "game_mode": gameMode, "debug": advancedDebug,
             "esync": sync.esync, "msync": sync.msync, "custom_env": customEnv,
             "rosetta_avx": advertiseAVX, "steam_mode": steamMode,
+            "large_address_aware": largeAddressAware,
+            "x87_jit": x87Jit, "x87_extended_fpr": x87ExtendedFpr,
+            "x87_fast_round": x87FastRound, "x87_f32_arith": x87F32Arith,
+            "x87_fast_recip_div": x87FastRecipDiv,
             "dpi_aware": dpiAware,
         ])
         // Written separately: "auto" must leave the key ABSENT so the backend's
@@ -481,9 +627,37 @@ struct GameDetailView: View {
 
     private func loadExes() async {
         loadingExes = true
-        detectedExes = await backend.detectExes(installDir: game.installDir)
-        if let exe = game.exe, !exe.isEmpty { selectedExe = "" }
+        detectedExes = await backend.detectExesLabeled(
+            installDir: game.installDir,
+            prefix: backend.activePrefix ?? "",
+            steamAppId: game.appid)
+        // No "Auto-detect" row any more, so something must be selected. Order of
+        // preference:
+        //   1. game.exe  -- MNC's own scanned choice for this title. It is not a
+        //      guess and it can differ from the obvious pick: OMSI 2 must start
+        //      via Launcher.exe, while Omsi.exe alone renders a black window.
+        //      Ranking used to be irrelevant here because an empty selection fell
+        //      through to game.exe; now that the row is gone it has to be explicit.
+        //   2. the first ranked candidate (Steam's launch list, else the heuristic).
+        if selectedExe.isEmpty {
+            if let known = game.exe, !known.isEmpty {
+                selectedExe = known
+                if !detectedExes.contains(where: { $0.path == known }) {
+                    detectedExes.insert(.init(path: known, label: "", is32: nil), at: 0)
+                }
+            } else if let first = detectedExes.first {
+                selectedExe = first.path
+            }
+        }
         loadingExes = false
+    }
+
+    /// Resolve whether the exe we would actually launch is 32-bit, so the
+    /// 32-bit-only settings can hide themselves for a 64-bit title.
+    private func refreshExeArch() async {
+        let exe = effectiveExe
+        guard !exe.isEmpty else { exeIs32Bit = nil; return }
+        exeIs32Bit = await backend.exeIs32Bit(exe: exe)
     }
 
     private func loadBackends() async {
@@ -573,7 +747,10 @@ struct GameDetailView: View {
                     installDir: game.installDir, retinaMode: retinaMode, metalHud: metalHud, gameMode: gameMode,
                     esync: sync.esync, msync: sync.msync, gameName: game.name,
                     steamAppId: game.appid, steamMode: steamMode, customEnv: env, debug: advancedDebug,
-                    dpiAware: dpiAware)
+                    dpiAware: dpiAware,
+                    largeAddressAware: largeAddressAware,
+                    x87Jit: x87Jit, x87ExtendedFpr: x87ExtendedFpr, x87FastRound: x87FastRound,
+                    x87F32Arith: x87F32Arith, x87FastRecipDiv: x87FastRecipDiv)
             }
             isLaunching = false
             onClose()
@@ -589,8 +766,11 @@ struct GameDetailView: View {
         if !game.installDir.isEmpty { panel.directoryURL = URL(fileURLWithPath: game.installDir) }
         if panel.runModal() == .OK, let url = panel.url {
             let path = url.path
-            if !detectedExes.contains(path) { detectedExes.insert(path, at: 0) }
+            if !detectedExes.contains(where: { $0.path == path }) {
+                detectedExes.insert(.init(path: path, label: "", is32: nil), at: 0)
+            }
             selectedExe = path
+            Task { await refreshExeArch() }
         }
     }
 

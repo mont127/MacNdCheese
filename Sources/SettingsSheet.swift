@@ -139,6 +139,13 @@ struct BottleSettingsTab: View {
     @State private var iconPath = ""
     @State private var wineBinary = "auto"
     @State private var metalHud = false
+    // x87 JIT acceleration (rosettax87). The master switch is on by default;
+    // the tuning flags below are opt-in and only shown while it is enabled.
+    @State private var x87Jit = true
+    @State private var x87ExtendedFpr = false
+    @State private var x87FastRound = false
+    @State private var x87F32Arith = false
+    @State private var x87FastRecipDiv = false
     @State private var unifiedEngine = true
     @State private var globalBackend = "d3dmetal3"
     @State private var isInitializing = false
@@ -209,6 +216,52 @@ struct BottleSettingsTab: View {
                             .font(.body)
                     }
                     .onChange(of: metalHud) { _ in saveBottleConfig() }
+
+                    // ── x87 JIT acceleration (rosettax87) ────────────────────
+                    // Rosetta emulates x87 through a slow generic path; 32-bit
+                    // titles (Delphi/Pascal especially) do their float maths on
+                    // the x87 stack, so this is worth ~2x on them. The tuning
+                    // flags are only revealed while it is on, because every one
+                    // of them is meaningless otherwise.
+                    // Apple Silicon only: there is no Rosetta to patch on Intel.
+                    if isAppleSilicon {
+                    Toggle(isOn: $x87Jit) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("x87 JIT acceleration"))
+                                .font(.body)
+                            Text(L("Speeds up 32-bit games that use the x87 FPU. Turn off if a game misbehaves."))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .onChange(of: x87Jit) { _ in saveBottleConfig() }
+
+                    if x87Jit {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(L("Tuning"))
+                                .font(.caption).bold()
+                                .foregroundColor(.secondary)
+
+                            x87Option($x87ExtendedFpr,
+                                      L("Extended register pool"),
+                                      L("Uses 16 scratch FP registers instead of 8. Safe: does not change results."))
+
+                            x87Option($x87FastRound,
+                                      L("Fast rounding"),
+                                      L("Skips rounding-mode dispatch. Safe only for games that stay on round-to-nearest."))
+
+
+                            x87Option($x87F32Arith,
+                                      L("32-bit arithmetic chains"),
+                                      L("Keeps single-precision chains in 32-bit (also enables narrowing, which it depends on). Not bit-exact; upstream turned both off by default after game misbehaviour."))
+
+                            x87Option($x87FastRecipDiv,
+                                      L("Fast reciprocal divide"),
+                                      L("Turns division by a constant into a multiply. Up to 1 ULP off; can break convergence loops."))
+                        }
+                        .padding(.leading, 18)
+                    }
+                    }
 
                     // Unified Steam engine: one wine renders Steam via DXMT and
                     // routes games to the global backend below. Steam stays DXMT.
@@ -344,6 +397,25 @@ struct BottleSettingsTab: View {
         .onChange(of: backend.activePrefix) { _ in loadFields() }
     }
 
+    // One tuning row: toggle + caption, saved immediately like the others.
+    @ViewBuilder
+    private func x87Option(_ isOn: Binding<Bool>, _ title: String, _ caption: String) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout)
+                Text(caption).font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .onChange(of: isOn.wrappedValue) { _ in saveBottleConfig() }
+    }
+
+    private var isAppleSilicon: Bool {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 { return value == 1 }
+        return false
+    }
+
     private func loadWineDetection() {
         isDetectingWine = true
         Task {
@@ -361,6 +433,11 @@ struct BottleSettingsTab: View {
             Task {
                 if let config = await backend.getBottleConfig(path: bottle.path) {
                     metalHud = config["metal_hud"] as? Bool ?? false
+                    x87Jit = config["x87_jit"] as? Bool ?? true
+                    x87ExtendedFpr = config["x87_extended_fpr"] as? Bool ?? false
+                    x87FastRound = config["x87_fast_round"] as? Bool ?? false
+                    x87F32Arith = config["x87_f32_arith"] as? Bool ?? false
+                    x87FastRecipDiv = config["x87_fast_recip_div"] as? Bool ?? false
                     unifiedEngine = (config["engine"] as? String ?? "unified") != "classic"
                     globalBackend = config["default_backend"] as? String ?? "d3dmetal3"
                 }
@@ -377,6 +454,11 @@ struct BottleSettingsTab: View {
                 "icon_path": iconPath,
                 "wine_binary": wineBinary,
                 "metal_hud": metalHud,
+                "x87_jit": x87Jit,
+                "x87_extended_fpr": x87ExtendedFpr,
+                "x87_fast_round": x87FastRound,
+                "x87_f32_arith": x87F32Arith,
+                "x87_fast_recip_div": x87FastRecipDiv,
                 "engine": unifiedEngine ? "unified" : "classic",
             ]
             if unifiedEngine { vals["default_backend"] = globalBackend }
