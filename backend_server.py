@@ -3186,6 +3186,18 @@ def _unified_available() -> bool:
     return _unified_build_dir() is not None
 
 
+def _mnc_fonts_staged() -> bool:
+    """True once the bundled freetype/fontconfig closure is in deps/mnc-fonts.
+
+    Asked separately from the engine because the two stopped moving together. Onboarding
+    used to gate stage_mnc_fonts on has_wine_unified, which was sound while the engine
+    only ever arrived by being installed into deps/: no engine meant a fresh box meant
+    stage the fonts. With the engine shipping inside the .app, has_wine_unified is true
+    on a box that has never run anything, so that gate would skip the fonts forever and
+    no-Homebrew machines would hit "Wine cannot find the FreeType font library"."""
+    return any((PORTABLE_DIR / "mnc-fonts").glob("*.dylib"))
+
+
 # --- mnc-d3d pack layout ----------------------------------------------------
 #
 # Layout 2 gives each backend its own folder and keeps the canonical Windows DLL
@@ -7518,6 +7530,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_d3dmetal3": _d3dmetal3_available(),
         "has_wine_d3dmetal": _wine_d3dmetal_installed(),
         "has_wine_unified": _unified_available(),
+        "has_mnc_fonts": _mnc_fonts_staged(),
         "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
         "has_rpc_bridge": _rpc_bridge_available(),

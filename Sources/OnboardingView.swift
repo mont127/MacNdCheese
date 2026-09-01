@@ -404,12 +404,17 @@ struct OnboardingView: View {
         // nothing on a fresh box needs it (the gnutls it used to supply is bundled as
         // mnc-tls), so it is opt-in via "install everything" insted of a default download.
         add(s?.hasWineUnified ?? false, "install_wine_unified")
-        // stage the bundled freetype whenever we set up the unified wine (fresh box) --
-        // without mnc-fonts, no-Homebrew boxes hit the "cannot find the FreeType font
-        // library" error. cheap (tiny copy) n runs after install_wine_unified. onboarding is
+        // stage the bundled freetype -- without mnc-fonts, no-Homebrew boxes hit the
+        // "cannot find the FreeType font library" error. cheap (tiny copy). onboarding is
         // the ONLY fresh-box path, so if this isnt here a fresh install ships without it
         // (the version gate only fires on a LATER app-version bump).
-        add(s?.hasWineUnified ?? false, "stage_mnc_fonts")
+        //
+        // Gated on the fonts themselves, not on hasWineUnified. That worked while the
+        // engine only ever arrived by being installed into deps/, so "no engine" implied
+        // "fresh box". Now the engine ships inside the .app and hasWineUnified is true on
+        // a box that has never run anything -- the old gate would have skipped the fonts
+        // on exactly the fresh installs it exists for.
+        add(s?.hasMncFonts ?? false, "stage_mnc_fonts")
         if installEverything {
             add(s?.hasWineStable ?? false, "install_wine")
             add(s?.hasWineStaging ?? false, "install_wine_staging")
