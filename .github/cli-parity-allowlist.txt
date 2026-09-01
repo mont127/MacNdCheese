@@ -17,8 +17,10 @@ add_manual_game
 apply_app_update          # drives the in-app self-update banner; CLI has no update-check/apply flow yet
 check_audio_input         # mic-quality guard warning (sub-48kHz Bluetooth input), UI-only
 detect_exes               # populates a file-picker's exe suggestions
+detect_exes_labeled       # same picker as detect_exes, with Steam's own description + bitness per entry
 diagnose_cheese
 ea_app_install_status     # drives the "Installing EA App…" loading screen; same shape as steam_install_status below, no CLI equivalent either
+exe_arch                  # UI-only: 32/64-bit probe that decides whether to show the x87 switches
 get_exe_icon              # UI-only: icon for the game grid
 get_game_order
 get_setup_pid
