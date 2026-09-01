@@ -358,12 +358,6 @@ D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
 # bundled build (build64 layout: loader/wine + dlls + server). DEV path is a fallback.
 WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
 WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
-# The engine ships inside the app. backend_server.py itself lives at
-# <App>.app/Contents/Resources/, so the bundled tree sits next to this file. deps/ still
-# wins when it is there, because WineVersionGate.reconcileEngines() only leaves a deps
-# copy in place while it is NEWER than the one we ship -- otherwise it deletes it. Running
-# from the repo this resolves to a path that does not exist, so dev falls through to deps.
-WINE_UNIFIED_BUNDLED = Path(__file__).resolve().parent / "wine-unified"
 UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk", "vr", "opengl")
 
 # Bradar redist runtimes we PRE-PROVISION into a prefix insted of runnin the 32-bit
@@ -3159,27 +3153,11 @@ def _ensure_steam_sdl_resolvable(prefix: str) -> None:
 
 
 def _unified_build_dir() -> Optional[Path]:
-    """Locate the unified wine build (build64 layout).
-
-    deps/ first, then the copy bundled in the .app, then the dev tree. Keyed on the
-    loader rather than the directory so a half-copied tree does not win."""
-    for d in (WINE_UNIFIED_DIR, WINE_UNIFIED_BUNDLED, WINE_UNIFIED_DEV):
+    """Locate the bundled unified wine build (build64 layout)."""
+    for d in (WINE_UNIFIED_DIR, WINE_UNIFIED_DEV):
         if (d / "loader" / "wine").exists():
             return d
     return None
-
-
-def _d3d_pack_candidates() -> Tuple[Path, ...]:
-    """Pack locations, best first. The pack ships INSIDE the engine tree, so whichever
-    engine won above owns the pack that goes with it -- pairing a deps engine with a
-    bundled pack (or the reverse) is how you get a DXMT build talking to the wrong
-    winemetal."""
-    build = _unified_build_dir()
-    seen: List[Path] = []
-    for d in ([build / "mnc-d3d"] if build else []) + [UNIFIED_D3D_DIR, UNIFIED_D3D_DEV]:
-        if d not in seen:
-            seen.append(d)
-    return tuple(seen)
 
 
 def _unified_available() -> bool:
@@ -3300,7 +3278,7 @@ def _unified_d3d_dir() -> Optional[Path]:
     our own DLLs could look entirely absent. That reasoning carries into the folder
     layout, where the canonical d3d11.dll does not sit at the pack root at all.
     """
-    for d in _d3d_pack_candidates():
+    for d in (UNIFIED_D3D_DIR, UNIFIED_D3D_DEV):
         if _d3d_pack_layout(d):
             return d
     return None
@@ -3353,12 +3331,12 @@ def _d3dmetal_native_dir() -> Path:
     the dylib but not the framework (the wine-installer overlay had both), so every
     d3dmetal launch under the unified engine asserted. Checking both here makes it fall
     through to a pack that is actually complete instead."""
-    for d in _d3d_pack_candidates() + (D3DMETAL_NATIVE_DIR,):
+    for d in (UNIFIED_D3D_DIR, D3DMETAL_NATIVE_DIR):
         ext = _d3d_external_dir(d)
         if (ext / "libd3dshared.dylib").exists() and (ext / "D3DMetal.framework").exists():
             return ext
     # nothing complete -- warn loudly rather than silently returning a broken pack
-    for d in _d3d_pack_candidates() + (D3DMETAL_NATIVE_DIR,):
+    for d in (UNIFIED_D3D_DIR, D3DMETAL_NATIVE_DIR):
         ext = _d3d_external_dir(d)
         if (ext / "libd3dshared.dylib").exists():
             log(f"d3dmetal: {ext} has libd3dshared.dylib but NO D3DMetal.framework next to it "

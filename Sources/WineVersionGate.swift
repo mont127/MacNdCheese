@@ -19,91 +19,14 @@ final class WineVersionGate: ObservableObject {
     /// wine components refreshed when the app version moves forward. Each is a real
     /// installer.sh ACTION. The pre-HACK22 installer overlay used to be rebuilt here too;
     /// it is gone — installers run on the unified engine now.
-    ///
-    /// install_wine_unified is only in the list when deps/ is the engine we are actually
-    /// running. Running it while the bundled engine is active would recreate the deps copy
-    /// reconcileEngines() has just deleted, and the two would fight on every launch.
-    private var wineActions: [String] {
-        var actions = ["stage_mnc_fonts", "install_dxmt"]
-        if !Self.bundledEngineAvailable { actions.insert("install_wine_unified", at: 0) }
-        return actions
-    }
+    private let wineActions = ["install_wine_unified", "stage_mnc_fonts", "install_dxmt"]
 
     static var markerPath: String { MacNCheeseSupport.directory + "/wine_version" }
 
-    // MARK: - Where the engine lives
-    //
-    // Two possible homes. The copy in Resources ships inside the .app, so its version IS
-    // this app's version. The copy in deps/ is an out-of-band install and records the app
-    // version that put it there, in the same wine_version marker the update gate uses.
-    //
-    // deps/ wins when it is present, because reconcileEngines() only leaves it there when
-    // it is strictly newer than what we ship.
-
-    /// <App>.app/Contents/Resources/wine-unified
-    static var bundledEnginePath: String {
-        (Bundle.main.resourcePath ?? Bundle.main.bundlePath) + "/wine-unified"
-    }
-
-    /// ~/Library/Application Support/MacNCheese/deps/wine-unified
-    static var depsEnginePath: String {
-        MacNCheeseSupport.directory + "/deps/wine-unified"
-    }
-
-    /// Keyed on the loader rather than the directory: a half-deleted or half-copied tree
-    /// has the directory and nothing that can run.
-    private static func enginePresent(at path: String) -> Bool {
-        FileManager.default.fileExists(atPath: path + "/loader/wine")
-    }
-
-    static var bundledEngineAvailable: Bool { enginePresent(at: bundledEnginePath) }
-    static var depsEngineAvailable: Bool { enginePresent(at: depsEnginePath) }
-
-    /// The unified wine loader — if neither copy is there yet its a fresh box, so
-    /// onboarding (not the gate) owns the first install.
+    /// The unified wine loader — if this isnt there yet its a fresh box, so onboarding
+    /// (not the gate) owns the first install.
     private static var wineInstalled: Bool {
-        bundledEngineAvailable || depsEngineAvailable
-    }
-
-    enum EngineReconcile: String {
-        case bundleMissing   = "no bundled engine — deps/ is all we have"
-        case bundleOnly      = "running the bundled engine"
-        case depsNewer       = "keeping deps/ — it is newer than the bundled engine"
-        case depsRemoved     = "removed the redundant deps/ engine"
-        case depsRemoveFailed = "could not remove the deps/ engine"
-    }
-
-    /// Keep one engine on disk, not two.
-    ///
-    /// The bundled copy is refreshed by every app update and cannot drift, so it wins on
-    /// newer OR equal. deps/ survives only while it is strictly newer — someone dropped a
-    /// newer engine in by hand, or a hotfix landed between releases. Otherwise deps/ is a
-    /// duplicate of what we already ship, and it is several GB of duplicate.
-    ///
-    /// A deps/ engine with no marker is the pre-bundling state every existing install is
-    /// in. That is the case this migration exists to clean up, so it counts as not-newer
-    /// and goes.
-    ///
-    /// We never delete out of Resources, whichever way the comparison lands. The bundle is
-    /// ad-hoc signed and `codesign --verify --deep --strict` runs over it, the app may be
-    /// running from a read-only DMG, and the next app update would put the files back — so
-    /// the space would not stay reclaimed even where the delete is possible.
-    @discardableResult
-    static func reconcileEngines() -> EngineReconcile {
-        guard bundledEngineAvailable else { return .bundleMissing }
-        guard depsEngineAvailable else { return .bundleOnly }
-
-        let deps = installedVersion
-        if !deps.isEmpty && compareVersions(deps, isNewerThan: UpdateChecker.currentVersion) {
-            return .depsNewer
-        }
-        do {
-            try FileManager.default.removeItem(atPath: depsEnginePath)
-            stampInstalled()
-            return .depsRemoved
-        } catch {
-            return .depsRemoveFailed
-        }
+        FileManager.default.fileExists(atPath: MacNCheeseSupport.directory + "/deps/wine-unified/wine")
     }
 
     private static var installedVersion: String {
@@ -127,11 +50,8 @@ final class WineVersionGate: ObservableObject {
         try? UpdateChecker.currentVersion.write(toFile: markerPath, atomically: true, encoding: .utf8)
     }
 
-    /// Fire from the app's launch onAppear. Reconciles the two engine copies first, then
-    /// no-ops unless a stale wine is detected.
+    /// Fire from the app's launch onAppear. No-op unless a stale wine is detected.
     func check(with backend: BackendClient) {
-        let outcome = Self.reconcileEngines()
-        if outcome != .bundleOnly { NSLog("MacNCheese: engine — %@", outcome.rawValue) }
         guard Self.needsUpdate, !updating else { return }
         updating = true
         currentStep = L("Preparing wine update…")
