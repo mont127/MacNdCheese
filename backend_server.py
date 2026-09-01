@@ -919,7 +919,85 @@ def _apply_gecko_regedit(wine: str, env: dict) -> None:
 
 
 
-def _apply_sync_env(env: Dict[str, str], esync: Optional[bool], msync: Optional[bool]) -> Dict[str, str]:
+# --- msync must be uniform per wineserver -------------------------------- WIP
+#
+# do_msync() is read once per process from WINEMSYNC, on BOTH sides: the client in
+# ntdll and the wineserver itself. The server's answer is fixed the moment it
+# starts, and every later process joining that prefix inherits a server that
+# already decided.
+#
+# Mixing the two is not a degraded mode, it is silent corruption.
+# server/inproc_sync.c only fills reply->shm_idx when the SERVER has msync on:
+#
+#     if (do_msync()) reply->shm_idx = (unsigned int)fd;
+#
+# while a client with msync on reads that field regardless:
+#
+#     if (do_msync()) sync->fd = reply->shm_idx;
+#
+# so the client ends up using whatever happened to be in an unfilled reply as its
+# sync-object index, for every wait and signal it makes.
+#
+# Live case, 2026-09-01: opening Steam starts the wineserver with msync off
+# (_unified_env hardcodes 0 for that path and Steam never reaches
+# _apply_sync_env), then launching Schedule I into the same prefix with the
+# per-game toggle on made every wait in the game operate on a garbage index.
+# Unity's asset loader took a premature wake and died reading level0 with
+# "Position out of bounds" -- on a file that was byte-perfect on disk.
+#
+# WIP: this makes the toggle honest rather than making it work everywhere. The
+# first launch into a cold prefix picks the mode and records it; anything joining
+# a live server is forced to match and told so. Turning msync on for a prefix
+# still means closing everything in it first. The real fix is for the Steam path
+# to honour the same per-bottle toggle so the question stops arising.
+
+
+def _wineserver_msync_mode(prefix: str) -> Optional[bool]:
+    """msync mode of the wineserver already serving this prefix, or None if none is.
+
+    Keyed the way wine keys it: the socket directory is named from the prefix
+    directory's device and inode, so this asks the same question the loader does
+    rather than guessing from a process list."""
+    try:
+        st = os.stat(prefix)
+    except OSError:
+        return None
+    sock = Path(f"/tmp/.wine-{os.getuid()}") / f"server-{st.st_dev:x}-{st.st_ino:x}" / "socket"
+    if not sock.exists():
+        return None
+    try:
+        return (Path(prefix) / ".mnc_msync").read_text().strip() == "1"
+    except OSError:
+        # A live server with no marker predates this code. It was started by a path
+        # that hardcoded msync off, so that is the safe assumption.
+        return False
+
+
+def _reconcile_msync(env: Dict[str, str], prefix: Optional[str]) -> Dict[str, str]:
+    """Force WINEMSYNC to agree with the wineserver already serving this prefix."""
+    if not prefix:
+        return env
+    want = env.get("WINEMSYNC", "0") == "1"
+    live = _wineserver_msync_mode(prefix)
+    if live is None:
+        try:
+            (Path(prefix) / ".mnc_msync").write_text("1" if want else "0")
+        except OSError:
+            pass
+        return env
+    if live != want:
+        log(f"msync: this prefix already has a wineserver running with msync "
+            f"{'on' if live else 'off'}; forcing this launch to match instead of "
+            f"{'enabling' if want else 'disabling'} it "
+            f"(mixing the two corrupts every sync object -- close everything in the "
+            f"prefix first to change it)")
+        env = dict(env)
+        env["WINEMSYNC"] = "1" if live else "0"
+    return env
+
+
+def _apply_sync_env(env: Dict[str, str], esync: Optional[bool], msync: Optional[bool],
+                    prefix: Optional[str] = None) -> Dict[str, str]:
     """Apply optional per-launch esync/msync flags.
 
     If a value is None, leave the current environment setting unchanged.
@@ -930,7 +1008,7 @@ def _apply_sync_env(env: Dict[str, str], esync: Optional[bool], msync: Optional[
         env["WINEESYNC"] = "1" if esync else "0"
     if msync is not None:
         env["WINEMSYNC"] = "1" if msync else "0"
-    return env
+    return _reconcile_msync(env, prefix)
 
 
 
@@ -3275,6 +3353,7 @@ def _d3d_pack_file(d: Path, flat: str) -> Optional[Path]:
     bytes are read FROM. Returns None when the pack does not carry that slot."""
     if _d3d_pack_layout(d) == 2:
         found = _D3D_PACK_SPECIAL.get(flat)
+        canonical = False
         if found is None:
             stem = flat[:-4] if flat.endswith(".dll") else flat
             for backend in _D3D_PACK_BACKENDS:
@@ -3282,6 +3361,7 @@ def _d3d_pack_file(d: Path, flat: str) -> Optional[Path]:
                     found = (backend, stem[: -(len(backend) + 1)] + ".dll")
                     break
             else:
+                canonical = True
                 found = ("d3dm" if flat in _D3D_PACK_GPTK_CANONICAL else "base", flat)
         sub, name = found
         if sub == "d3dm":
@@ -3289,10 +3369,15 @@ def _d3d_pack_file(d: Path, flat: str) -> Optional[Path]:
         p = d / sub / name
         if p.exists():
             return p
-        # a pack that keeps its own canonical copy still wins over nothing
-        p = d / "base" / name
-        if p.exists():
-            return p
+        # Only a CANONICAL slot may fall back to base/. A backend-suffixed one must
+        # not: base/ holds wine's own builtins, so letting d3d10core_openxr.dll fall
+        # through to base/d3d10core.dll would stage wine's d3d10core into the VR slot
+        # and the loader would route MNC_GAME_BACKEND=vr straight at it. An absent
+        # backend slot has to stay absent so the caller skips it.
+        if canonical:
+            p = d / "base" / name
+            if p.exists():
+                return p
     p = d / flat
     return p if p.exists() else None
 
@@ -4287,6 +4372,10 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
             env["GST_DEBUG"] = gst_debug
             env["GST_DEBUG_NO_COLOR"] = "1"
             env["GST_DEBUG_FILE"] = str(LOG_DIR / "gstreamer.log")
+    # Steam comes through here and never reaches _apply_sync_env, so this is the
+    # only place its msync mode is decided -- and it is the launch that usually
+    # starts the wineserver every later game inherits.
+    env = _reconcile_msync(env, str(prefix))
     return env
 
 
@@ -5922,7 +6011,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
 
     env = _wine_env(prefix)
     env = _apply_backend_env(env, backend, verbose_debug)
-    env = _apply_sync_env(env, esync, msync)
+    env = _apply_sync_env(env, esync, msync, prefix=str(prefix))
 
     # VR: point the OpenXR loader at our x86_64 Monado runtime (XR_RUNTIME_JSON)
     # so a stale arm64 system runtime can't be picked — that would fail to dlopen
@@ -10352,7 +10441,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         if backend == BACKEND_D3DMETAL3:
             wine_bin = _write_d3dmetal_legendary_wrapper(prefix_expanded, metal_hud, verbose_debug)
 
-    env = _apply_sync_env(env, esync, msync)
+    env = _apply_sync_env(env, esync, msync, prefix=str(prefix))
     for line in (custom_env_str or "").splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
@@ -10502,7 +10591,7 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
         if backend == BACKEND_D3DMETAL3:
             wine_bin = _write_d3dmetal_legendary_wrapper(prefix_expanded, metal_hud, verbose_debug)
 
-    env = _apply_sync_env(env, esync, msync)
+    env = _apply_sync_env(env, esync, msync, prefix=str(prefix))
     for line in (custom_env_str or "").splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
