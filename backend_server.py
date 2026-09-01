@@ -5058,7 +5058,7 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     # the bottle keeps a bare "Open Steam" consistent with that bottle's games.
     _msync = params.get("msync")
     if _msync is None:
-        _msync = bottle_cfg.get("game_msync", False)
+        _msync = bottle_cfg.get("msync", bottle_cfg.get("game_msync", False))
     env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True,
                        msync=bool(_msync))
     # Bradar wire the MoltenVK vulkan ICD into steam.exe's env so DXVK games launchd from Steams OWN
@@ -5615,6 +5615,13 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     chosen backend while Steam stays on DXMT."""
     bt = _unified_build_dir()
     exe_path = Path(exe)
+    # The UI sends the per-game toggle as "msync"; older bottles carry "game_msync".
+    # Resolved here rather than at the env build below because the Steam launch further
+    # down needs the same answer -- it is what actually starts the wineserver.
+    _launch_msync = params.get("msync")
+    if _launch_msync is None:
+        _launch_msync = bottle_cfg.get("msync", bottle_cfg.get("game_msync", False))
+    _launch_msync = bool(_launch_msync)
     # SteamSetup.exe is a 32-bit NSIS stub that fault-storms on the unified HACK22 wine -> a Play
     # would spin forever with NO window (the storm is the HACK22 WINE, not the d3dmetal/dxmt backend,
     # so switchin backend wouldnt help at all). route it to the unified installer wine + /S so
@@ -5699,9 +5706,13 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
             log(f"unified: Steam already running -> waited for auth: ready={ready} ({status})")
         else:
             try:
+                # This Steam creates the wineserver the game then joins, and the server
+                # fixes msync for everything in the prefix, so it has to start in the
+                # mode the game wants -- otherwise the toggle can never take effect.
                 _launch_steam_unified(prefix, bottle_cfg,
                                       {"silent": (steam_mode == "silent"), "wait_ready": True,
-                                       "backend": params.get("backend", "")})
+                                       "backend": params.get("backend", ""),
+                                       "msync": _launch_msync})
             except Exception as exc:
                 log(f"unified: steam auto-launch failed: {exc} (continuing)")
     # 4GB patch before we launch, not after: the flag is read by the loader when the
@@ -5712,7 +5723,7 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     # x87+JIT is on by default; the per-bottle/per-launch flag is an escape hatch for
     # a title the patched handlers upset, not a thing users should have to find.
     env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"),
-                       cef_safe_mode=force_cef, debug=debug,
+                       cef_safe_mode=force_cef, debug=debug, msync=_launch_msync,
                        x87_jit=bool(params.get("x87_jit", bottle_cfg.get("x87_jit", True))),
                        x87_opts={k: bool(params.get(k, bottle_cfg.get(k, False)))
                                  for k in ("x87_extended_fpr", "x87_fast_round",
