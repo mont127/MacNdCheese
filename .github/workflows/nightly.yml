@@ -68,6 +68,16 @@ jobs:
             echo "bundled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Check the token can actually reach the engine repo before doing anything with
+          # it, so a permissions problem says what to fix instead of surfacing as a bare
+          # "gh: Resource not accessible by personal access token (HTTP 403)" halfway
+          # through. Fine-grained PATs are per-repository, so the usual cause is the
+          # engine repo simply not being listed on the token -- not a wrong repo name.
+          if ! gh api "repos/$ENGINE_REPO" --silent 2>/dev/null; then
+            echo "::error::RELEASE_CI cannot read $ENGINE_REPO (HTTP 403/404). Fine-grained PAT: add that repo under 'Repository access' and grant 'Contents: Read-only'. Classic PAT: it needs the 'repo' scope. Also check the token has not expired."
+            exit 1
+          fi
+
           mkdir -p payload
 
           # Newest release carrying an engine asset, chosen by ASSET NAME rather than
