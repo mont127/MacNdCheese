@@ -149,9 +149,39 @@ jobs:
               || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
           done
 
+          # The engine is only half of what an official DMG carries. The rest of
+          # Resources -- mnc-d3d, mnc-fonts, redist, gstreamer-portable, the OpenXR/VR
+          # runtimes, wine-installer-payload -- is too big for git and lives in the
+          # engine repo's newest payload-* release. Without it a nightly installs an
+          # engine and nothing else: no bundled freetype (so "Wine cannot find the
+          # FreeType font library" on any box without Homebrew), no gstreamer, no
+          # redists, no VR.
+          PAYLOAD_PICK="$(gh api "repos/$ENGINE_REPO/releases?per_page=100" --paginate \
+            --jq '[ .[] | . as $r
+                    | ($r.assets[]? | select(.name == "mnc-payload.tar.xz"))
+                    | {tag: $r.tag_name, asset: .name,
+                       at: ($r.published_at // $r.created_at)} ]
+                  | sort_by(.at) | reverse | .[0] // empty')"
+          if [ -n "$PAYLOAD_PICK" ]; then
+            PTAG="$(printf '%s' "$PAYLOAD_PICK" | jq -r .tag)"
+            echo "app payload: $PTAG"
+            gh release download "$PTAG" --repo "$ENGINE_REPO" \
+              --pattern mnc-payload.tar.xz --dir "${RUNNER_TEMP:-/tmp}"
+            # Straight into payload/ -- buildapp.sh copies that dir's entries verbatim
+            # into Resources, wich is exactly where each of these belongs.
+            tar -xJf "${RUNNER_TEMP:-/tmp}/mnc-payload.tar.xz" -C payload
+            for req in mnc-d3d mnc-fonts redist gstreamer-portable.tar.xz; do
+              [ -e "payload/$req" ] \
+                || { echo "::error::app payload incomplete: $req missing"; exit 1; }
+            done
+            echo "app_payload_tag=$PTAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no mnc-payload.tar.xz release found - the DMG will ship the engine only"
+          fi
+
           echo "engine_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "bundled=true"   >> "$GITHUB_OUTPUT"
-          ls -lh payload/
+          du -sh payload/*
 
       - name: Build universal DMG
         env:
