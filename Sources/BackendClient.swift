@@ -639,20 +639,6 @@ final class BackendClient: ObservableObject {
     /// launchers) -- so under the unified engine it always forces DXMT rather than
     /// the bottle's configured default backend, avoiding the D3DMetal/CEF crash
     /// found with EA App's own helper processes this session.
-    /// Effective msync for a launch in this bottle: the game's own override when it has
-    /// one, otherwise the bottle's switch.
-    ///
-    /// The per-game sites used to default to `true` when a game had no stored value,
-    /// while the bottle default is false -- so the two disagreed and the bottle switch
-    /// could not govern any game that had never been configured. It has to: msync is
-    /// decided by whichever process starts the prefix's wineserver and then fixed for
-    /// everything that joins, so it is a property of the bottle, not of one game.
-    func effectiveMsync(prefix: String, gameConfig cfg: [String: Any]) async -> Bool {
-        if let m = cfg["msync"] as? Bool { return m }
-        let bottle = await getBottleConfig(path: prefix)
-        return bottle?["game_msync"] as? Bool ?? false
-    }
-
     func launchApp(prefix: String, app: WineApp) async {
         let bottle = bottles.first { $0.path == prefix }
         let backendId = bottle?.defaultBackend ?? "auto"
@@ -665,10 +651,9 @@ final class BackendClient: ObservableObject {
         let cfg = await getBottleConfig(path: prefix)
         let metalHud = cfg?["metal_hud"] as? Bool ?? false
         // Same reasoning as metalHud: Applications have no per-app store, so the bottle's
-        // own switch is the only source. Without reading it here launchGame's msync
-        // parameter defaulted to TRUE, so every Application asked for msync no matter what
-        // the bottle said -- the one launch class that ignored the setting entirely.
-        let msync = cfg?["game_msync"] as? Bool ?? false
+        // own switch is the only source. Its own key, not the per-game one -- games are
+        // configured individually in their detail view and are not governed from here.
+        let msync = cfg?["apps_msync"] as? Bool ?? true
         // Bradar same bug as metalHud, for retinaMode: launchGame()'s parameter silently
         // defaulted to false, so every Application ran non-Retina regardless of the actual
         // display -- blurry UI, and (per Wine's own long-standing RetinaMode mismatch bugs)

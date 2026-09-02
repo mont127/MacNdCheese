@@ -408,7 +408,7 @@ struct ConsoleModeView: View {
             let exe = (cfg["exe"] as? String ?? "").isEmpty ? (g.exe ?? "") : (cfg["exe"] as? String ?? "")
             guard !exe.isEmpty else { launching = false; return }
             let esync = cfg["esync"] as? Bool ?? true
-            let msync = await backend.effectiveMsync(prefix: prefix, gameConfig: cfg)
+            let msync = cfg["msync"] as? Bool ?? true
             await backend.launchGame(
                 prefix: prefix, exe: exe, args: cfg["args"] as? String ?? "",
                 backend: cfg["backend"] as? String ?? "auto", installDir: g.installDir,

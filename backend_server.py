@@ -5066,7 +5066,9 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
     # the bottle keeps a bare "Open Steam" consistent with that bottle's games.
     _msync = params.get("msync")
     if _msync is None:
-        _msync = bottle_cfg.get("msync", bottle_cfg.get("game_msync", False))
+        # A game hands its own answer down (the server has to match it). Otherwise this is
+        # a bare "Open Steam" or an app launch, which the bottle's Applications switch owns.
+        _msync = bottle_cfg.get("apps_msync", True)
     env = _unified_env(prefix, game_backend, bottle_cfg.get("metal_hud", False), for_steam=True,
                        msync=bool(_msync))
     # Bradar wire the MoltenVK vulkan ICD into steam.exe's env so DXVK games launchd from Steams OWN
@@ -6905,6 +6907,9 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     config = dict(bottles.get(key, {}))
     config.setdefault("game_esync", True)
     config.setdefault("game_msync", False)  # msync dormant by default (see WINEMSYNC note); cold-boot Steam crash otherwise
+    # Applications and the launcher, set from the Applications section. Separate from
+    # game_msync: games are configured one at a time in their own detail view.
+    config.setdefault("apps_msync", True)
     config.setdefault("discord_rpc", True)
     config.setdefault("metal_hud", False)
     return config

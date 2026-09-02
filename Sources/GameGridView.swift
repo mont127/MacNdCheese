@@ -591,7 +591,7 @@ struct GameCardView: View {
             let exe = (cfg["exe"] as? String ?? "").isEmpty ? (game.exe ?? "") : (cfg["exe"] as! String)
             guard !exe.isEmpty else { isLaunching = false; return }
             let esync = cfg["esync"] as? Bool ?? true
-            let msync = await backend.effectiveMsync(prefix: prefix, gameConfig: cfg)
+            let msync = cfg["msync"] as? Bool ?? true
             let finalEsync = msync ? false : esync
             await backend.launchGame(
                 prefix: prefix,
@@ -637,10 +637,11 @@ struct AppsSectionView: View {
     /// the action buttons in the same row are kept either way.
     var showsTitle: Bool = true
     @State private var showWinetricksStore = false
-    /// Bottle-wide, not per-app. msync is decided by whoever starts the prefix's
-    /// wineserver and fixed for everything that joins it afterwards, so a per-app
-    /// switch could not mean anything -- the launcher usually gets there first.
-    @State private var msyncOn = false
+    /// Bottle-wide for APPLICATIONS and the launcher; games are configured one by one
+    /// in their own detail view and are not governed from here. Bottle-wide rather than
+    /// per-app because msync is decided by whoever starts the prefix's wineserver and is
+    /// then fixed for everything that joins it -- the launcher usually gets there first.
+    @State private var msyncOn = true
     @State private var msyncLoaded = false
 
     private let columns = [
@@ -672,10 +673,10 @@ struct AppsSectionView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .disabled(!msyncLoaded)
-                    .help(L("Faster in-process synchronisation for everything in this bottle -- games, applications and the launcher alike. Takes effect on the next cold start: the first process to run decides it for the whole prefix, so close what is already running in this bottle first."))
+                    .help(L("Faster in-process synchronisation for this bottle's applications and its launcher. Games have their own switch in each game's detail view. Takes effect on the next cold start: the first process to run decides it for the whole prefix, so close what is already running in this bottle first."))
                     .onChange(of: msyncOn) { on in
                         guard msyncLoaded, let prefix = backend.activePrefix else { return }
-                        Task { await backend.setBottleConfig(path: prefix, values: ["game_msync": on]) }
+                        Task { await backend.setBottleConfig(path: prefix, values: ["apps_msync": on]) }
                     }
             }
             .padding(.horizontal, 24)
@@ -683,7 +684,7 @@ struct AppsSectionView: View {
                 msyncLoaded = false
                 guard let prefix = backend.activePrefix else { return }
                 let cfg = await backend.getBottleConfig(path: prefix)
-                msyncOn = cfg?["game_msync"] as? Bool ?? false
+                msyncOn = cfg?["apps_msync"] as? Bool ?? true
                 msyncLoaded = true
             }
 

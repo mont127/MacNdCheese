@@ -437,7 +437,7 @@ struct AmazonGameCard: View {
         Task {
             let cfg = await backend.getGameConfig(prefix: prefix, appid: game.appid)
             let esync = cfg["esync"] as? Bool ?? true
-            let msync = await backend.effectiveMsync(prefix: prefix, gameConfig: cfg)
+            let msync = cfg["msync"] as? Bool ?? true
             await backend.amazonLaunchGame(
                 prefix: prefix,
                 amazonId: amazonId,
