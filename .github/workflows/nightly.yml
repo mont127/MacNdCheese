@@ -51,18 +51,20 @@ jobs:
         # downloading wine itself. Installing = replacing deps/wine-unified
         # wholesale, which is what installer.sh already does (rm -rf then extract).
         #
-        # WINE_ENGINE_TOKEN is a fine-grained PAT with Contents: read-only on the
-        # engine repo -- it is private, so the workflow's own GITHUB_TOKEN cannot
-        # see it. Absent secret = launcher-only build rather than a hard failure,
-        # so a fork without the secret still produces a usable nightly.
+        # RELEASE_CI is the PAT that can read the engine repo -- it is private, so the
+        # workflow's own GITHUB_TOKEN cannot see it. Absent secret = launcher-only build
+        # rather than a hard failure, so a fork without the secret still produces a
+        # usable nightly. It is only ever handed to gh through the environment (gh sends
+        # it as a header); nothing here echoes it, and `set -x` is deliberately not used
+        # in this step so it cannot reach the log.
         id: payload
         env:
-          GH_TOKEN: ${{ secrets.WINE_ENGINE_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_CI }}
           ENGINE_REPO: mont127/MacNdCheese-WineEngine-PRIVATE
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::WINE_ENGINE_TOKEN not set - building launcher-only (no bundled engine)"
+            echo "::warning::RELEASE_CI secret not set - building launcher-only (no bundled engine)"
             echo "bundled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
