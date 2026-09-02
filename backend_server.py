@@ -4310,20 +4310,28 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         # documents single-process as debug-only; don't reach for it.
         # Bradar GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
         # this is the exact load-bearing set from the proven steam-unified-run.sh
-        # Bradar THE BLACK-WINDOW FIX (2026-08-13, user-confirmed "oh it renders").
-        # Steam does NOT let CEF draw to the window: it renders offscreen and composites the
-        # result itself (CBrowserComposerSystem). With gpu compositing ON, CEF hands that
-        # result over as a d3d11 SHARED TEXTURE -- and that handoff produces nothing through
-        # DXMT, so steam composited an empty surface. Every log stayed clean the whole time
-        # (window shown 1337x782 titled 'Steam', FriendsUI ReadyToRender, zero CEF errors,
-        # metal presenting) which is exactly why this hid for so long: nothing FAILED, the
-        # pixels just never arrived. --disable-gpu-compositing makes CEF hand over plain CPU
-        # bitmaps insted, which steam blits fine.
         #
-        # --disable-software-rasterizer had to GO at the same time: it forbids the software
-        # path that cpu compositing needs. The two only work as a pair.
+        # CEF composites on the GPU, for every app. There is no per-app carve-out here and
+        # there should not be one: whatever renders through this path renders the same way.
+        #
+        # --disable-gpu-compositing used to sit here, from b6a93c3 (2026-08-13, "Fix the
+        # black Steam window"). Steam renders CEF offscreen and composites the result itself
+        # through CBrowserComposerSystem, and with gpu compositing on CEF hands that result
+        # over as a d3d11 SHARED TEXTURE. That handoff produced nothing through the DXMT of
+        # the time, so steam composited an empty surface with no error anywhere -- nothing
+        # failed, the pixels just never arrived. CPU bitmaps were the workaround.
+        #
+        # The cost of that workaround is that the UI composite never touches a CAMetalLayer,
+        # so no Metal HUD can appear over Steam or the EA App however the bottle is set, and
+        # the compositing work lands on the CPU. Removed: the shipped DXMT is v0.80-172
+        # against v0.80-13x when that was written and now carries real shared-resource
+        # machinery (CreateSharedHandle, OpenSharedResource, IDXGIResource1) rather than
+        # stubs. If a CEF window comes up black again, this is the first thing to put back.
+        #
+        # --disable-software-rasterizer stays out. It was dropped alongside the original
+        # change because it forbids the software path cpu compositing needed; leaving it out
+        # keeps that path available as a fallback rather than forcing GPU or nothing.
         "MNC_WEBHELPER_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
-            "--disable-gpu-compositing "
             "--ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds "
             "--disable-gpu-watchdog --disable-gpu-process-crash-limit --gpu-no-context-lost "
             "--disable-gpu-process-for-dx12-info-collection --no-delay-for-dx12-vulkan-info-collection "
