@@ -119,12 +119,17 @@ jobs:
           # listing must stay OUT of payload/ -- buildapp.sh copies that dir verbatim
           # into Resources, so a stray file there ends up shipped inside the app.
           BUNDLE_LIST="${RUNNER_TEMP:-/tmp}/engine-bundle.list"
-          tar -tJf payload/wine-unified-bundle.tar.xz > "$BUNDLE_LIST"
+          # One leading component is stripped off every path, exactly as installer.sh
+          # extracts it (--strip-components=1), so what we check is what gets installed.
+          # The engine bundle is rooted at "./" rather than at a wine-unified/ directory,
+          # so the paths this used to look for could never match -- it only ever looked
+          # like it worked becuse the fetch above was failing before it ran.
+          tar -tJf payload/wine-unified-bundle.tar.xz | sed 's|^[^/]*/||' > "$BUNDLE_LIST"
 
           # Matches the entry itself or anything underneath it, so a directory that the
           # archive only represents through its children (D3DMetal.framework) still counts.
           bundle_has() {
-            grep -q -e "^wine-unified/$1\$" -e "^wine-unified/$1/" "$BUNDLE_LIST"
+            grep -q -e "^$1\$" -e "^$1/" "$BUNDLE_LIST"
           }
           # The d3d slots are named differantly per pack layout -- layout 1 is flat
           # (d3d11_dxmt.dll), layout 2 is foldered (dxmt/d3d11.dll). installer.sh and the
