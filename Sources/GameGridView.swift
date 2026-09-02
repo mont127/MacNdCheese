@@ -17,6 +17,33 @@ enum LibrarySection: String, CaseIterable, Identifiable {
     }
 }
 
+/// The Games/Applications switcher. Steam bottles had it while Epic and Amazon
+/// stacked the apps under the games grid, so reaching an app in those meant
+/// scrolling past the entire library first -- and on a bottle with many games it
+/// was effectively hidden. Shared so every pane behaves the same way.
+struct LibrarySectionSwitcher: View {
+    @Binding var selection: LibrarySection
+    let gamesCount: Int
+    let appsCount: Int
+
+    var body: some View {
+        Picker("", selection: $selection) {
+            ForEach(LibrarySection.allCases) { section in
+                // Counts are of everything in the bottle, not of the current
+                // search results — a "Games 12" that drops to "Games 0" while
+                // typing reads as if the library emptied out.
+                Text("\(section.title)  \(section == .games ? gamesCount : appsCount)")
+                    .tag(section)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 320)
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+    }
+}
+
 struct GameGridView: View {
     @EnvironmentObject var backend: BackendClient
     let games: [Game]
@@ -86,19 +113,9 @@ struct GameGridView: View {
 
     @ViewBuilder
     private var sectionSwitcher: some View {
-        Picker("", selection: sectionBinding) {
-            ForEach(LibrarySection.allCases) { section in
-                // Counts are of everything in the bottle, not of the current
-                // search results — a "Games 12" that drops to "Games 0" while
-                // typing reads as if the library emptied out.
-                Text("\(section.title)  \(sectionCount(section))").tag(section)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(maxWidth: 320)
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
+        LibrarySectionSwitcher(selection: sectionBinding,
+                               gamesCount: backend.games.count,
+                               appsCount: backend.apps.count)
     }
 
     private var launcherName: String {
@@ -574,7 +591,7 @@ struct GameCardView: View {
             let exe = (cfg["exe"] as? String ?? "").isEmpty ? (game.exe ?? "") : (cfg["exe"] as! String)
             guard !exe.isEmpty else { isLaunching = false; return }
             let esync = cfg["esync"] as? Bool ?? true
-            let msync = cfg["msync"] as? Bool ?? true
+            let msync = await backend.effectiveMsync(prefix: prefix, gameConfig: cfg)
             let finalEsync = msync ? false : esync
             await backend.launchGame(
                 prefix: prefix,
@@ -620,6 +637,11 @@ struct AppsSectionView: View {
     /// the action buttons in the same row are kept either way.
     var showsTitle: Bool = true
     @State private var showWinetricksStore = false
+    /// Bottle-wide, not per-app. msync is decided by whoever starts the prefix's
+    /// wineserver and fixed for everything that joins it afterwards, so a per-app
+    /// switch could not mean anything -- the launcher usually gets there first.
+    @State private var msyncOn = false
+    @State private var msyncLoaded = false
 
     private let columns = [
         GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 16)
@@ -645,8 +667,25 @@ struct AppsSectionView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L("Add a Windows .exe to this bottle's Applications"))
+
+                Toggle(L("msync"), isOn: $msyncOn)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .disabled(!msyncLoaded)
+                    .help(L("Faster in-process synchronisation for everything in this bottle -- games, applications and the launcher alike. Takes effect on the next cold start: the first process to run decides it for the whole prefix, so close what is already running in this bottle first."))
+                    .onChange(of: msyncOn) { on in
+                        guard msyncLoaded, let prefix = backend.activePrefix else { return }
+                        Task { await backend.setBottleConfig(path: prefix, values: ["game_msync": on]) }
+                    }
             }
             .padding(.horizontal, 24)
+            .task(id: backend.activePrefix) {
+                msyncLoaded = false
+                guard let prefix = backend.activePrefix else { return }
+                let cfg = await backend.getBottleConfig(path: prefix)
+                msyncOn = cfg?["game_msync"] as? Bool ?? false
+                msyncLoaded = true
+            }
 
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(apps) { app in

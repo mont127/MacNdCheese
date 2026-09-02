@@ -11,6 +11,17 @@ struct EpicLibraryView: View {
     @State private var gameOrder: [String] = []
     @State private var draggingAppid: String? = nil
     @State private var dropTargetAppid: String? = nil
+    /// nil until the user picks, so a bottle with no games opens straight on its apps.
+    @State private var pickedSection: LibrarySection? = nil
+
+    private var effectiveSection: LibrarySection {
+        if let pickedSection { return pickedSection }
+        return games.isEmpty && !backend.apps.isEmpty ? .apps : .games
+    }
+
+    private var sectionBinding: Binding<LibrarySection> {
+        Binding(get: { effectiveSection }, set: { pickedSection = $0 })
+    }
 
     private let columns = [
         GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16)
@@ -33,6 +44,21 @@ struct EpicLibraryView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Sits outside the ScrollView so it stays put, matching the Steam pane.
+            if backend.activePrefix != nil {
+                LibrarySectionSwitcher(selection: sectionBinding,
+                                       gamesCount: games.count,
+                                       appsCount: backend.apps.count)
+            }
+            if effectiveSection == .apps {
+                ScrollView {
+                    AppsSectionView(apps: backend.apps, showsTitle: false)
+                        .padding(.bottom, 24)
+                }
+                .contentMarginsTopCompat(20)
+                .scrollClipDisabledCompat()
+            } else {
         ScrollView {
             if isFetching && displayedGames.isEmpty {
                 VStack(spacing: 16) {
@@ -92,13 +118,11 @@ struct EpicLibraryView: View {
                 .padding(.bottom, 24)
             }
 
-            if backend.activePrefix != nil {
-                AppsSectionView(apps: backend.apps)
-                    .padding(.bottom, 24)
-            }
         }
         .contentMarginsTopCompat(20)
         .scrollClipDisabledCompat()
+            }
+        }
         .onAppear { loadGameOrder() }
         .onChange(of: backend.activePrefix) { _ in loadGameOrder() }
         .onChange(of: games) { _ in
@@ -434,7 +458,7 @@ struct EpicGameCard: View {
         Task {
             let cfg = await backend.getGameConfig(prefix: prefix, appid: game.appid)
             let esync = cfg["esync"] as? Bool ?? true
-            let msync = cfg["msync"] as? Bool ?? true
+            let msync = await backend.effectiveMsync(prefix: prefix, gameConfig: cfg)
             await backend.epicLaunchGame(
                 prefix: prefix,
                 appName: appName,
