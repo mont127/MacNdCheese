@@ -649,7 +649,9 @@ final class BackendClient: ObservableObject {
         // etc all read config["metal_hud"]). Without this, launchGame()'s metalHud parameter
         // silently defaults to false and the checkbox has no effect on Application launches.
         let cfg = await getBottleConfig(path: prefix)
-        let metalHud = cfg?["metal_hud"] as? Bool ?? false
+        // Applications read the bottle's Applications-section keys, not the per-game ones:
+        // they have no per-app config store, and these govern apps and the launcher only.
+        let metalHud = cfg?["apps_metal_hud"] as? Bool ?? false
         // Same reasoning as metalHud: Applications have no per-app store, so the bottle's
         // own switch is the only source. Its own key, not the per-game one -- games are
         // configured individually in their detail view and are not governed from here.
@@ -678,7 +680,12 @@ final class BackendClient: ObservableObject {
             // just to run it. if steam happen to be up already it still see it, we just
             // dont START it (steam_mode none skips the launch, not a running instance)
             steamMode: "none",
-            forceDxmtCef: true
+            forceDxmtCef: true,
+            x87Jit: cfg?["apps_x87_jit"] as? Bool ?? true,
+            x87ExtendedFpr: cfg?["apps_x87_extended_fpr"] as? Bool ?? false,
+            x87FastRound: cfg?["apps_x87_fast_round"] as? Bool ?? false,
+            x87F32Arith: cfg?["apps_x87_f32_arith"] as? Bool ?? false,
+            x87FastRecipDiv: cfg?["apps_x87_fast_recip_div"] as? Bool ?? false
         )
     }
 
