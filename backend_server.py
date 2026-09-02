@@ -5676,7 +5676,10 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
         backend = "dxmt"             # generic Applications, per the EA App finding
     else:
         backend = _unified_game_backend(bottle_cfg, params.get("backend", ""))
-    metal_hud = params.get("metal_hud", bottle_cfg.get("metal_hud", False))
+    # No bottle-level fallback: Metal HUD moved to the Applications section under
+    # apps_metal_hud, which governs applications and the launcher. A game either carries
+    # its own value from its detail view or it is off.
+    metal_hud = bool(params.get("metal_hud", False))
     debug = bool(params.get("debug", bottle_cfg.get("debug", False)))
     steam_mode = params.get("steam_mode", "silent")
     is_steam_bottle = bottle_cfg.get("launcher_type", "steam") == "steam"
@@ -5732,12 +5735,14 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     # 64-bit exe and on one that already ships the bit.
     if bool(params.get("large_address_aware", bottle_cfg.get("large_address_aware", True))):
         _apply_4gb_patch(str(exe_path))
-    # x87+JIT is on by default; the per-bottle/per-launch flag is an escape hatch for
-    # a title the patched handlers upset, not a thing users should have to find.
+    # x87+JIT is on by default; the per-launch flag is an escape hatch for a title the
+    # patched handlers upset, not a thing users should have to find. Per-launch only --
+    # the bottle-level copy moved to the Applications section as apps_x87_jit and governs
+    # applications, not games.
     env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"),
                        cef_safe_mode=force_cef, debug=debug, msync=_launch_msync,
-                       x87_jit=bool(params.get("x87_jit", bottle_cfg.get("x87_jit", True))),
-                       x87_opts={k: bool(params.get(k, bottle_cfg.get(k, False)))
+                       x87_jit=bool(params.get("x87_jit", True)),
+                       x87_opts={k: bool(params.get(k, False))
                                  for k in ("x87_extended_fpr", "x87_fast_round",
                                            "x87_f32_arith",
                                            "x87_fast_recip_div")})
@@ -5907,9 +5912,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     retina_mode = params.get("retina_mode", False)
     screen_info = params.get("screen_info", "unknown")
     bottle_cfg = _load_bottles().get(_resolve_key(prefix or ""), {})
-    metal_hud = params.get("metal_hud")
-    if metal_hud is None:
-        metal_hud = bottle_cfg.get("metal_hud", False)
+    metal_hud = bool(params.get("metal_hud", False))
     esync = params.get("esync")
     if esync is None:
         esync = bottle_cfg.get("game_esync")
@@ -6317,7 +6320,8 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
 
     
     metal_hud_line = ""
-    if bottle_cfg.get("metal_hud", False):
+    # Steam is the bottle's launcher, so it follows the Applications section.
+    if bottle_cfg.get("apps_metal_hud", False):
         metal_hud_line = "export MTL_HUD_ENABLED=1\nexport MTL_DEBUG_BUILD=1\n"
 
     
@@ -6915,7 +6919,7 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     config.setdefault("apps_metal_hud", False)
     config.setdefault("apps_x87_jit", True)
     config.setdefault("discord_rpc", True)
-    config.setdefault("metal_hud", False)
+
     return config
 
 
