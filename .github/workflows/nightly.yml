@@ -182,8 +182,23 @@ jobs:
       - name: Compute tag and release notes
         id: tag
         run: |
-          TAG="nightly-$(date +'%Y%m%d')-$(git rev-parse --short HEAD)"
+          set -euo pipefail
+          # The version is read from Sources/Info.plist -- the same single source of
+          # truth bump-version.sh moves -- so a build is named with whatever the
+          # odometer currently sits on (10.8.8 -> 10.8.9 -> 10.9.0 ...).
+          VERSION="$(awk '/<key>CFBundleShortVersionString<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' Sources/Info.plist)"
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::could not read a X.Y.Z version out of Sources/Info.plist (got '$VERSION')"; exit 1 ;;
+          esac
+
+          # The TAG keeps its nightly- prefix so the cleanup step still recognises these,
+          # and keeps date+sha so two builds of the same version can never collide. Only
+          # the release TITLE is the pretty one.
+          TAG="nightly-v$VERSION-$(date +'%Y%m%d')-$(git rev-parse --short HEAD)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=MacNdCheese v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
           # Not using generate_release_notes here: it diffs against the "previous
           # release", but the step below deletes the previous nightly before this
@@ -192,7 +207,7 @@ jobs:
           # instead of "what changed since yesterday's nightly."
           {
             echo "notes<<NOTES_EOF"
-            echo "Automated nightly build, universal (arm64 + x86_64) .dmg."
+            echo "MacNdCheese v$VERSION — automated nightly build, universal (arm64 + x86_64) .dmg."
             echo ""
             echo "Built from $(git rev-parse --short HEAD): $(git log -1 --pretty=%s)"
             echo ""
@@ -217,7 +232,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: Nightly ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
+          # KEEP THIS TRUE unless you mean it: UpdateChecker.swift and the backend both
+          # poll /releases/latest, wich GitHub defines as the newest NON-prerelease. This
+          # flag is the only thing stopping an untested nightly from being auto-pushed to
+          # every user as an in-app update.
           prerelease: true
           body: ${{ steps.tag.outputs.notes }}
           files: MacNCheese-universal.dmg
