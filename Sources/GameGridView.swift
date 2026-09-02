@@ -17,6 +17,33 @@ enum LibrarySection: String, CaseIterable, Identifiable {
     }
 }
 
+/// The Games/Applications switcher. Steam bottles had it while Epic and Amazon
+/// stacked the apps under the games grid, so reaching an app in those meant
+/// scrolling past the entire library first -- and on a bottle with many games it
+/// was effectively hidden. Shared so every pane behaves the same way.
+struct LibrarySectionSwitcher: View {
+    @Binding var selection: LibrarySection
+    let gamesCount: Int
+    let appsCount: Int
+
+    var body: some View {
+        Picker("", selection: $selection) {
+            ForEach(LibrarySection.allCases) { section in
+                // Counts are of everything in the bottle, not of the current
+                // search results — a "Games 12" that drops to "Games 0" while
+                // typing reads as if the library emptied out.
+                Text("\(section.title)  \(section == .games ? gamesCount : appsCount)")
+                    .tag(section)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 320)
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+    }
+}
+
 struct GameGridView: View {
     @EnvironmentObject var backend: BackendClient
     let games: [Game]
@@ -86,19 +113,9 @@ struct GameGridView: View {
 
     @ViewBuilder
     private var sectionSwitcher: some View {
-        Picker("", selection: sectionBinding) {
-            ForEach(LibrarySection.allCases) { section in
-                // Counts are of everything in the bottle, not of the current
-                // search results — a "Games 12" that drops to "Games 0" while
-                // typing reads as if the library emptied out.
-                Text("\(section.title)  \(sectionCount(section))").tag(section)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(maxWidth: 320)
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
+        LibrarySectionSwitcher(selection: sectionBinding,
+                               gamesCount: backend.games.count,
+                               appsCount: backend.apps.count)
     }
 
     private var launcherName: String {
@@ -620,6 +637,26 @@ struct AppsSectionView: View {
     /// the action buttons in the same row are kept either way.
     var showsTitle: Bool = true
     @State private var showWinetricksStore = false
+    /// Bottle-wide for APPLICATIONS and the launcher; games are configured one by one
+    /// in their own detail view and are not governed from here. Bottle-wide rather than
+    /// per-app because msync is decided by whoever starts the prefix's wineserver and is
+    /// then fixed for everything that joins it -- the launcher usually gets there first.
+    @State private var msyncOn = true
+    @State private var metalHudOn = false
+    @State private var x87JitOn = true
+    @State private var x87ExtendedFpr = false
+    @State private var x87FastRound = false
+    @State private var x87F32Arith = false
+    @State private var x87FastRecipDiv = false
+    @State private var optionsLoaded = false
+    @State private var showOptions = false
+
+    private var isAppleSilicon: Bool {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 { return value == 1 }
+        return false
+    }
 
     private let columns = [
         GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 16)
@@ -645,8 +682,29 @@ struct AppsSectionView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L("Add a Windows .exe to this bottle's Applications"))
+
+                Button { showOptions = true } label: {
+                    Label(L("Options"), systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!optionsLoaded)
+                .help(L("Settings for this bottle's applications and its launcher"))
+                .popover(isPresented: $showOptions, arrowEdge: .bottom) { optionsPopover }
             }
             .padding(.horizontal, 24)
+            .task(id: backend.activePrefix) {
+                optionsLoaded = false
+                guard let prefix = backend.activePrefix else { return }
+                let cfg = await backend.getBottleConfig(path: prefix)
+                msyncOn         = cfg?["apps_msync"] as? Bool ?? true
+                metalHudOn      = cfg?["apps_metal_hud"] as? Bool ?? false
+                x87JitOn        = cfg?["apps_x87_jit"] as? Bool ?? true
+                x87ExtendedFpr  = cfg?["apps_x87_extended_fpr"] as? Bool ?? false
+                x87FastRound    = cfg?["apps_x87_fast_round"] as? Bool ?? false
+                x87F32Arith     = cfg?["apps_x87_f32_arith"] as? Bool ?? false
+                x87FastRecipDiv = cfg?["apps_x87_fast_recip_div"] as? Bool ?? false
+                optionsLoaded = true
+            }
 
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(apps) { app in
@@ -658,6 +716,72 @@ struct AppsSectionView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $showWinetricksStore) {
             WinetricksStoreSheet()
+        }
+    }
+
+    /// Settings for this bottle's applications and its launcher. Bottle-wide rather
+    /// than per-app because Applications have no per-app config store, and because msync
+    /// in particular is decided by whichever process starts the prefix's wineserver and
+    /// is then fixed for everything that joins it. Games are configured one at a time in
+    /// their own detail view and are untouched by any of this.
+    @ViewBuilder
+    private var optionsPopover: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(L("Applications & launcher"))
+                .font(.headline)
+
+            appOption($msyncOn, L("msync"),
+                      L("Faster in-process synchronisation. Takes effect on the next cold start: the first process to run decides it for the whole bottle, so close what is already running here first."),
+                      key: "apps_msync")
+
+            appOption($metalHudOn, L("Metal HUD"),
+                      L("Apple's frame-timing overlay. Only appears where the app actually presents through Metal."),
+                      key: "apps_metal_hud")
+
+            if isAppleSilicon {
+                Divider()
+                appOption($x87JitOn, L("x87 JIT acceleration"),
+                          L("Speeds up 32-bit applications that do their float maths on the x87 stack. Turn off if one misbehaves."),
+                          key: "apps_x87_jit")
+
+                if x87JitOn {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L("Tuning")).font(.caption).bold().foregroundColor(.secondary)
+                        appOption($x87ExtendedFpr, L("Extended register pool"),
+                                  L("Uses 16 scratch FP registers instead of 8. Safe: does not change results."),
+                                  key: "apps_x87_extended_fpr")
+                        appOption($x87FastRound, L("Fast rounding"),
+                                  L("Skips rounding-mode dispatch. Safe only where round-to-nearest is never left."),
+                                  key: "apps_x87_fast_round")
+                        appOption($x87F32Arith, L("32-bit arithmetic chains"),
+                                  L("Keeps single-precision chains in 32-bit (also enables narrowing, which it depends on). Not bit-exact."),
+                                  key: "apps_x87_f32_arith")
+                        appOption($x87FastRecipDiv, L("Fast reciprocal divide"),
+                                  L("Turns division by a constant into a multiply. Up to 1 ULP off; can break convergence loops."),
+                                  key: "apps_x87_fast_recip_div")
+                    }
+                    .padding(.leading, 14)
+                }
+            }
+        }
+        .padding(18)
+        .frame(width: 380)
+    }
+
+    /// One row: toggle plus caption, written straight to the bottle on change.
+    private func appOption(_ isOn: Binding<Bool>, _ title: String, _ caption: String,
+                           key: String) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.body)
+                Text(caption).font(.caption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .disabled(!optionsLoaded)
+        .onChange(of: isOn.wrappedValue) { on in
+            guard optionsLoaded, let prefix = backend.activePrefix else { return }
+            Task { await backend.setBottleConfig(path: prefix, values: [key: on]) }
         }
     }
 

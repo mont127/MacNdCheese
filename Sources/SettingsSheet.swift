@@ -137,23 +137,12 @@ struct BottleSettingsTab: View {
     @State private var bottleName = ""
     @State private var launcherExe = ""
     @State private var iconPath = ""
-    @State private var wineBinary = "auto"
-    @State private var metalHud = false
-    // x87 JIT acceleration (rosettax87). The master switch is on by default;
     // the tuning flags below are opt-in and only shown while it is enabled.
-    @State private var x87Jit = true
-    @State private var x87ExtendedFpr = false
-    @State private var x87FastRound = false
-    @State private var x87F32Arith = false
-    @State private var x87FastRecipDiv = false
-    @State private var unifiedEngine = true
     @State private var globalBackend = "d3dmetal3"
     @State private var isInitializing = false
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
     @State private var isMoving = false
-    @State private var wineDetection: WineDetection?
-    @State private var isDetectingWine = false
 
     private var activeBottle: Bottle? {
         guard let prefix = backend.activePrefix else { return nil }
@@ -199,89 +188,21 @@ struct BottleSettingsTab: View {
                         }
                     }
 
-                    // Wine version — detection-driven: reflects which Wine
-                    // builds are actually installed (with their real versions).
-                    WineSelector(
-                        selection: $wineBinary,
-                        detection: wineDetection,
-                        isLoading: isDetectingWine,
-                        onChange: { saveBottleConfig() },
-                        onInstall: { selectedTab = "setup" },
-                        onRefresh: { loadWineDetection() }
-                    )
-
-                    // Metal HUD (global for this prefix)
-                    Toggle(isOn: $metalHud) {
-                        Text(L("Metal HUD"))
-                            .font(.body)
-                    }
-                    .onChange(of: metalHud) { _ in saveBottleConfig() }
-
-                    // ── x87 JIT acceleration (rosettax87) ────────────────────
-                    // Rosetta emulates x87 through a slow generic path; 32-bit
-                    // titles (Delphi/Pascal especially) do their float maths on
-                    // the x87 stack, so this is worth ~2x on them. The tuning
-                    // flags are only revealed while it is on, because every one
-                    // of them is meaningless otherwise.
-                    // Apple Silicon only: there is no Rosetta to patch on Intel.
-                    if isAppleSilicon {
-                    Toggle(isOn: $x87Jit) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(L("x87 JIT acceleration"))
-                                .font(.body)
-                            Text(L("Speeds up 32-bit games that use the x87 FPU. Turn off if a game misbehaves."))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                    // The Wine selector and the "Unified Steam engine" switch are gone:
+                    // the unified engine is the only one now, so there was nothing left to
+                    // choose between and the switch's only remaining effect was to hide the
+                    // backend picker below. Metal HUD and x87 JIT moved to the bottle's
+                    // Applications section, which is what they govern; games carry their
+                    // own copies in each game's detail view.
+                    SettingsRow(label: L("Global game backend")) {
+                        Picker("", selection: $globalBackend) {
+                            Text("D3DMetal").tag("d3dmetal3")
+                            Text("DXMT").tag("dxmt")
+                            Text("DXVK").tag("dxvk")
+                            Text("VR").tag("vr")
                         }
-                    }
-                    .onChange(of: x87Jit) { _ in saveBottleConfig() }
-
-                    if x87Jit {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(L("Tuning"))
-                                .font(.caption).bold()
-                                .foregroundColor(.secondary)
-
-                            x87Option($x87ExtendedFpr,
-                                      L("Extended register pool"),
-                                      L("Uses 16 scratch FP registers instead of 8. Safe: does not change results."))
-
-                            x87Option($x87FastRound,
-                                      L("Fast rounding"),
-                                      L("Skips rounding-mode dispatch. Safe only for games that stay on round-to-nearest."))
-
-
-                            x87Option($x87F32Arith,
-                                      L("32-bit arithmetic chains"),
-                                      L("Keeps single-precision chains in 32-bit (also enables narrowing, which it depends on). Not bit-exact; upstream turned both off by default after game misbehaviour."))
-
-                            x87Option($x87FastRecipDiv,
-                                      L("Fast reciprocal divide"),
-                                      L("Turns division by a constant into a multiply. Up to 1 ULP off; can break convergence loops."))
-                        }
-                        .padding(.leading, 18)
-                    }
-                    }
-
-                    // Unified Steam engine: one wine renders Steam via DXMT and
-                    // routes games to the global backend below. Steam stays DXMT.
-                    Toggle(isOn: $unifiedEngine) {
-                        Text(L("Unified Steam engine (Steam always DXMT)"))
-                            .font(.body)
-                    }
-                    .onChange(of: unifiedEngine) { _ in saveBottleConfig() }
-
-                    if unifiedEngine {
-                        SettingsRow(label: L("Global game backend")) {
-                            Picker("", selection: $globalBackend) {
-                                Text("D3DMetal").tag("d3dmetal3")
-                                Text("DXMT").tag("dxmt")
-                                Text("DXVK").tag("dxvk")
-                                Text("VR").tag("vr")
-                            }
-                            .pickerStyle(.segmented)
-                            .onChange(of: globalBackend) { _ in saveBottleConfig() }
-                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: globalBackend) { _ in saveBottleConfig() }
                     }
 
                     Divider()
@@ -393,20 +314,8 @@ struct BottleSettingsTab: View {
             }
             .padding(20)
         }
-        .onAppear { loadFields(); loadWineDetection() }
+        .onAppear { loadFields() }
         .onChange(of: backend.activePrefix) { _ in loadFields() }
-    }
-
-    // One tuning row: toggle + caption, saved immediately like the others.
-    @ViewBuilder
-    private func x87Option(_ isOn: Binding<Bool>, _ title: String, _ caption: String) -> some View {
-        Toggle(isOn: isOn) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout)
-                Text(caption).font(.caption).foregroundColor(.secondary)
-            }
-        }
-        .onChange(of: isOn.wrappedValue) { _ in saveBottleConfig() }
     }
 
     private var isAppleSilicon: Bool {
@@ -416,29 +325,14 @@ struct BottleSettingsTab: View {
         return false
     }
 
-    private func loadWineDetection() {
-        isDetectingWine = true
-        Task {
-            wineDetection = await backend.detectWine()
-            isDetectingWine = false
-        }
-    }
 
     private func loadFields() {
         if let bottle = activeBottle {
             bottleName = bottle.name
             launcherExe = bottle.launcherExe ?? ""
             iconPath = bottle.iconPath ?? ""
-            wineBinary = bottle.wineBinary ?? "auto"
             Task {
                 if let config = await backend.getBottleConfig(path: bottle.path) {
-                    metalHud = config["metal_hud"] as? Bool ?? false
-                    x87Jit = config["x87_jit"] as? Bool ?? true
-                    x87ExtendedFpr = config["x87_extended_fpr"] as? Bool ?? false
-                    x87FastRound = config["x87_fast_round"] as? Bool ?? false
-                    x87F32Arith = config["x87_f32_arith"] as? Bool ?? false
-                    x87FastRecipDiv = config["x87_fast_recip_div"] as? Bool ?? false
-                    unifiedEngine = (config["engine"] as? String ?? "unified") != "classic"
                     globalBackend = config["default_backend"] as? String ?? "d3dmetal3"
                 }
             }
@@ -452,16 +346,10 @@ struct BottleSettingsTab: View {
                 "name": bottleName,
                 "launcher_exe": launcherExe,
                 "icon_path": iconPath,
-                "wine_binary": wineBinary,
-                "metal_hud": metalHud,
-                "x87_jit": x87Jit,
-                "x87_extended_fpr": x87ExtendedFpr,
-                "x87_fast_round": x87FastRound,
-                "x87_f32_arith": x87F32Arith,
-                "x87_fast_recip_div": x87FastRecipDiv,
-                "engine": unifiedEngine ? "unified" : "classic",
+                // Written unconditionally so a bottle left on "classic" migrates on save.
+                "engine": "unified",
             ]
-            if unifiedEngine { vals["default_backend"] = globalBackend }
+            vals["default_backend"] = globalBackend
             await backend.setBottleConfig(path: prefix, values: vals)
         }
     }
@@ -1555,93 +1443,6 @@ struct LogsSettingsTab: View {
 /// Staging, each annotated with whether that build is actually installed and its
 /// real `wine --version`. Builds that aren't installed can't be selected and
 /// offer a shortcut to the Setup tab to install them.
-struct WineSelector: View {
-    @Binding var selection: String
-    let detection: WineDetection?
-    let isLoading: Bool
-    let onChange: () -> Void
-    let onInstall: () -> Void
-    let onRefresh: () -> Void
-
-    private var autoSubtitle: String {
-        guard let detection else { return L("Picks the best installed Wine.") }
-        if let id = detection.autoResolvedId,
-           let variant = detection.variant(id) {
-            let version = variant.version.map { " (\($0))" } ?? ""
-            return String(format: L("Using %@%@"), variant.label, version)
-        }
-        if let path = detection.autoResolvedPath, !path.isEmpty {
-            return detection.autoResolvedVersion.map { String(format: L("Using %@"), $0) }
-                ?? L("Using a detected Wine build.")
-        }
-        return L("No Wine installed yet — install one below.")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text(L("Wine"))
-                    .font(.caption).fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-                if isLoading { ProgressView().controlSize(.mini) }
-                Spacer()
-                Button { onRefresh() } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .controlSize(.small)
-                .foregroundStyle(.secondary)
-                .help(L("Re-scan installed Wine"))
-                .disabled(isLoading)
-            }
-
-            VStack(spacing: 0) {
-                WineOptionRow(
-                    title: L("Automatic"),
-                    subtitle: autoSubtitle,
-                    installed: true,
-                    version: nil,
-                    selectable: true,
-                    isSelected: selection == "auto",
-                    onSelect: { choose("auto") },
-                    onInstall: nil
-                )
-                Divider().padding(.leading, 34)
-                variantRow("stable", L("Wine Stable"))
-                Divider().padding(.leading, 34)
-                variantRow("staging", L("Wine Staging"))
-                Divider().padding(.leading, 34)
-                variantRow("devel", L("Wine Devel"))
-            }
-            .background(.black.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.06)))
-        }
-    }
-
-    private func variantRow(_ id: String, _ title: String) -> some View {
-        let variant = detection?.variant(id)
-        let installed = variant?.installed ?? false
-        // A not-installed build still renders as selected if it's the saved
-        // preference, so the user can see (and fix) the mismatch.
-        let selectable = installed || selection == id
-        return WineOptionRow(
-            title: title,
-            subtitle: nil,
-            installed: installed,
-            version: variant?.version,
-            selectable: selectable,
-            isSelected: selection == id,
-            onSelect: { choose(id) },
-            onInstall: installed ? nil : onInstall
-        )
-    }
-
-    private func choose(_ id: String) {
-        guard selection != id else { return }
-        selection = id
-        onChange()
-    }
-}
 
 private struct WineOptionRow: View {
     let title: String
