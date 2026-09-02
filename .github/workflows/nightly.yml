@@ -71,28 +71,56 @@ jobs:
           # Newest release carrying an engine asset, chosen by ASSET NAME rather than
           # `--latest`: engine builds are often prereleases and the repo also publishes
           # d3d-pack-only releases, either of which would make --latest pick the wrong one.
-          TAG="$(gh release list --repo "$ENGINE_REPO" --limit 100 --json tagName \
-            --jq '.[].tagName' | while read -r t; do
-              if gh api "repos/$ENGINE_REPO/releases/tags/$t" \
-                   --jq '.assets[].name' 2>/dev/null | grep -q 'unified-osx64\.tar\.xz'; then
-                echo "$t"; break
-              fi
-            done)"
-          [ -n "$TAG" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
-          echo "engine release: $TAG"
+          # One paginated call instead of one API call per release, sorted explicitly so
+          # "newest" never rides on the endpoint's default ordering, and carrying the
+          # asset's real name so the rename below can never glob two files.
+          ENGINE_PICK="$(gh api "repos/$ENGINE_REPO/releases?per_page=100" --paginate \
+            --jq '[ .[] | . as $r
+                    | ($r.assets[]? | select(.name | endswith("unified-osx64.tar.xz")))
+                    | {tag: $r.tag_name, asset: .name,
+                       at: ($r.published_at // $r.created_at)} ]
+                  | sort_by(.at) | reverse | .[0] // empty')"
+          [ -n "$ENGINE_PICK" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
+          TAG="$(printf '%s' "$ENGINE_PICK" | jq -r .tag)"
+          ASSET="$(printf '%s' "$ENGINE_PICK" | jq -r .asset)"
+          echo "engine release: $TAG ($ASSET)"
 
           gh release download "$TAG" --repo "$ENGINE_REPO" \
-            --pattern '*unified-osx64.tar.xz' --dir payload
-          mv payload/*unified-osx64.tar.xz payload/wine-unified-bundle.tar.xz
+            --pattern "$ASSET" --dir payload
+          mv "payload/$ASSET" payload/wine-unified-bundle.tar.xz
 
           # The engine bundle carries mnc-d3d/ itself, so nothing else to fetch. Verify
           # it is complete: a pack missing either half of the D3DMetal runtime loads
           # fine and then dies on "Failed to dlopen D3DMetal" with no hint a file is
           # missing, so fail here rather than shipping it.
-          for req in mnc-d3d/d3d11_dxmt.dll mnc-d3d/dxgi_dxmt.dll \
-                     mnc-d3d/libd3dshared.dylib mnc-d3d/D3DMetal.framework \
+          #
+          # Listed ONCE into a temp file: every `tar -tJf` is a full xz decode of a
+          # ~1.7 GB archive, so the old per-entry loop paid that price six times. The
+          # listing must stay OUT of payload/ -- buildapp.sh copies that dir verbatim
+          # into Resources, so a stray file there ends up shipped inside the app.
+          BUNDLE_LIST="${RUNNER_TEMP:-/tmp}/engine-bundle.list"
+          tar -tJf payload/wine-unified-bundle.tar.xz > "$BUNDLE_LIST"
+
+          # Matches the entry itself or anything underneath it, so a directory that the
+          # archive only represents through its children (D3DMetal.framework) still counts.
+          bundle_has() {
+            grep -q -e "^wine-unified/$1\$" -e "^wine-unified/$1/" "$BUNDLE_LIST"
+          }
+          # The d3d slots are named differantly per pack layout -- layout 1 is flat
+          # (d3d11_dxmt.dll), layout 2 is foldered (dxmt/d3d11.dll). installer.sh and the
+          # backend handle both, so accept either here instead of hard-failing every
+          # nightly on a layout-2 pack that is actually complete.
+          bundle_has_either() {
+            bundle_has "$1" || bundle_has "$2"
+          }
+
+          bundle_has_either mnc-d3d/d3d11_dxmt.dll mnc-d3d/dxmt/d3d11.dll \
+            || { echo "::error::engine bundle incomplete: dxmt d3d11 missing"; exit 1; }
+          bundle_has_either mnc-d3d/dxgi_dxmt.dll mnc-d3d/dxmt/dxgi.dll \
+            || { echo "::error::engine bundle incomplete: dxmt dxgi missing"; exit 1; }
+          for req in mnc-d3d/libd3dshared.dylib mnc-d3d/D3DMetal.framework \
                      loader/wine server/wineserver; do
-            tar -tJf payload/wine-unified-bundle.tar.xz "wine-unified/$req" >/dev/null 2>&1 \
+            bundle_has "$req" \
               || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
           done
 
@@ -111,11 +139,18 @@ jobs:
       - name: Fail if the DMG exceeds GitHub's 2 GB asset limit
         # A bundled nightly is ~1.9 GB; uploads over 2 GB are rejected outright and
         # the failure surfaces late and confusingly, so check it up front.
+        #
+        # The name has to be buildapp.sh's APP_NAME for `universal` -- the same file the
+        # publish step uploads. Statting a name nothing produces, with `|| echo 0` to
+        # swallow the miss, made this guard silently unable to ever fire.
         run: |
-          SZ=$(stat -f%z "MacNdCheese Launcher.dmg" 2>/dev/null || echo 0)
+          set -euo pipefail
+          DMG=MacNCheese-universal.dmg
+          [ -f "$DMG" ] || { echo "::error::$DMG was not produced by buildapp.sh"; exit 1; }
+          SZ=$(stat -f%z "$DMG")
           echo "DMG size: $((SZ/1048576)) MB"
           if [ "$SZ" -gt 2147483648 ]; then
-            echo "::error::DMG is $((SZ/1048576)) MB, over GitHub's 2048 MB asset limit"
+            echo "::error::$DMG is $((SZ/1048576)) MB, over GitHub's 2048 MB asset limit"
             exit 1
           fi
 
