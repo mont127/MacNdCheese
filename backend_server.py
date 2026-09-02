@@ -4569,453 +4569,28 @@ def _ea_app_dir(prefix) -> Path:
         if candidates:
             return candidates[-1].parent
     return dc / "Program Files" / "Electronic Arts" / "EA Desktop"
-
-
-_STEAM_SEED_EXCLUDES = ["steamapps/", "userdata/", "config/", "logs/", "dumps/",
-                        "appcache/", ".crash", "ssfn*", "*.log"]
-# a COMPLETE Steam client has all of these -- used to reject a half-built template + validate a source
-# Valves client-update CDN, in the order the bootstrapper itself prefers them. Any one of these
-# serves both the manifest and the packages, so we just walk the list until one answers.
-_STEAM_CLIENT_CDN_HOSTS = (
-    "https://client-update.akamai.steamstatic.com",
-    "https://client-update.fastly.steamstatic.com",
-    "https://client-update.steamstatic.com",
-)
-_STEAM_CLIENT_CRIT = ("steamclient.dll", "steamclient64.dll", "steam.exe")
-_STEAM_CLIENT_CRIT_DIRS = ("bin", "steamui", "clientui")
-_steam_tmpl_lock = threading.Lock()
-
-
-def _steam_client_complete(d: Path) -> bool:
-    """True if d holds a COMPLETE Steam client (not a half-finished/interrupted rsync). Guards the
-    template cache so an interrupted build never poisons every future seeded bottle."""
-    try:
-        return (all((d / f).is_file() for f in _STEAM_CLIENT_CRIT)
-                and all((d / s).is_dir() for s in _STEAM_CLIENT_CRIT_DIRS))
-    except Exception:
-        return False
-
-
-def _steam_source_crashing(d: Path) -> bool:
-    """True if the Steam dir d shows a crash storm -- dont build the template from a broken client."""
-    try:
-        if (d / ".crash").exists():
-            return True
-        dmp = d / "dumps"
-        if dmp.is_dir() and sum(f.stat().st_size for f in dmp.glob("*.dmp") if f.is_file()) > 5_000_000:
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _steam_client_version(d: Path) -> int:
-    """The installed Steam client version from package/steam_client_win64.manifest, or -1. A NEWER
-    steamclient.dll mtime does NOT mean a newer CLIENT (a partial/old-build copy can have a fresh
-    mtime) -- the manifest version is the authoritative + bootable-currency signal, which is why the
-    template source is ranked on THIS, not dll mtime. Higher = more current = less likely to eat the
-    Valve mandatory-update crash path on a fresh seed."""
-    try:
-        m = (d / "package" / "steam_client_win64.manifest").read_text(errors="ignore")
-        mt = re.search(r'"version"\s*"(\d+)"', m)
-        return int(mt.group(1)) if mt else -1
-    except Exception:
-        return -1
-
-
-def _refresh_seed_if_bottle_newer(prefix: str) -> bool:
-    """Opportunistic re-cache: if a bottle has self-updated to a client NEWER than the cached template
-    (e.g. after Valves next mandatory update finally downloads + applies), refresh deps/steam-client
-    from it so the seed never goes stale + never re-seeds fresh bottles onto a crash-looping old
-    client. Cheap: only fires when the bottles manifest version is STRICTLY higher than the templates,
-    and the bottle is complete + not crash-storming. No-op otherwise. Returns True if it refreshed."""
-    try:
-        cache = PORTABLE_DIR / "steam-client"
-        src = _steam_dir(prefix)
-        if not (src.is_dir() and _steam_client_complete(src)) or _steam_source_crashing(src):
-            return False
-        bv = _steam_client_version(src)
-        tv = _steam_client_version(cache) if cache.is_dir() else -1
-        if bv <= tv or bv < 0:
-            return False
-        with _steam_tmpl_lock:
-            log(f"_refresh_seed_if_bottle_newer: bottle client v{bv} > template v{tv} -> refreshing seed from {src}")
-            cache.mkdir(parents=True, exist_ok=True)
-            cmd = ["rsync", "-a", "--delete"]
-            for ex in _STEAM_SEED_EXCLUDES:
-                cmd += ["--exclude", ex]
-            cmd += [str(src) + "/", str(cache) + "/"]
-            r = subprocess.run(cmd, timeout=1800)
-            if r.returncode in (0, 24) and _steam_client_complete(cache):
-                try: (cache / ".mnc_steam_client_ok").write_text(f"refreshed v{bv}")
-                except Exception: pass
-                return True
-    except Exception as exc:
-        log(f"_refresh_seed_if_bottle_newer failed (non-fatal): {exc}")
-    return False
-
-
-_STEAM_CDN_VER_TTL = 6 * 3600
-_steam_cdn_ver_cache: Dict[str, Any] = {}
-
-
-def _cdn_steam_client_version() -> Optional[int]:
-    """The CURRENT Steam client version per Valves manifest, or None if unreachable.
-
-    Cached for a few hours so this costs one 7KB fetch a day, not one per launch, and so
-    being offline never slows a launch down.
-    """
-    hit = _steam_cdn_ver_cache.get("v")
-    if hit and (time.time() - hit[0]) < _STEAM_CDN_VER_TTL:
-        return hit[1]
-    for host in _STEAM_CLIENT_CDN_HOSTS:
-        try:
-            out = subprocess.run(["/usr/bin/curl", "-fsSL", "--max-time", "20",
-                                  f"{host}/steam_client_win64"],
-                                 capture_output=True, text=True, timeout=25).stdout
-            m = re.search(r'"version"\s*"(\d+)"', out or "")
-            if m:
-                ver = int(m.group(1))
-                _steam_cdn_ver_cache["v"] = (time.time(), ver)
-                return ver
-        except Exception:
-            continue
-    return None
-
-
-def _steam_template_outdated(cache: Path) -> bool:
-    """True when the cached template is behind the client Valve is currently shipping.
-
-    A seeded bottle inherits the templates version, and once Valve makes a client update
-    MANDATORY an outdated client cannot just run -- it has to update itself first, and that
-    is the path that ends on "Steam needs to be online to update". Fetching the client fresh
-    is the whole point of the CDN seed, but that only ever fired when there was no template
-    at all, so anyone who had built one earlier stayed pinned to it forever.
-
-    Fail OPEN: if we cannot reach the CDN we keep whatever we have rather than refuse to
-    seed, since an old client still beats no client.
-    """
-    try:
-        local = _steam_client_version(cache)
-    except Exception:
-        return False
-    if not local:
-        return False
-    remote = _cdn_steam_client_version()
-    return bool(remote and remote > local)
-
-
-def _steam_client_template() -> Optional[Path]:
-    """Cached CLEAN Steam client (no games / userdata / login) used to SEED fresh bottles, because the
-    Steam bootstrapper's first-run download is BROKEN under our wine (32-bit HACK22 storm on the
-    unified wine; 'failed to create updater window' on the pre-HACK22 wine). Built ONCE via rsync (w/
-    excludes) from a working prefixs full client. Cached in deps/steam-client so seeding a new bottle
-    is a ~instant same-volume clone. Marker-guarded (never caches a HALF-built client -> steamclient.dll
-    copies before the big steamui/bin subtrees, so a presence check alone would cache a partial build),
-    lock-serialized (concurrent create+launch cant clobber each other mid-rsync), + picks the NEWEST
-    healthy source. Returns the template dir, or None when theres no source. See steamsetup notes."""
-    cache = PORTABLE_DIR / "steam-client"
-    marker = cache / ".mnc_steam_client_ok"
-    if marker.is_file() and _steam_client_complete(cache):
-        # Refresh a template Valve has moved on from, else every bottle seeded off it starts
-        # life needing a mandatory update it may not survive.
-        if _steam_template_outdated(cache):
-            log("_steam_client_template: cached client is behind the current one -> refreshing from the CDN")
-            with _steam_tmpl_lock:
-                if _build_steam_client_from_cdn(cache):
-                    try: marker.write_text("cdn")
-                    except Exception: pass
-                else:
-                    log("_steam_client_template: refresh failed, keeping the client we have")
-        return cache
-    if _steam_client_complete(cache):            # complete but unmarked (older build) -> adopt
-        try: marker.write_text("adopted")
-        except Exception: pass
-        return cache
-    with _steam_tmpl_lock:
-        if _steam_client_complete(cache):        # another thread just built it
-            if not marker.is_file():
-                try: marker.write_text("adopted")
-                except Exception: pass
-            return cache
-        # pick the HEALTHIEST source: a COMPLETE, non-crashing client with the HIGHEST manifest
-        # VERSION (a fresh dll mtime is NOT currency -- an old-build copy can carry a new mtime; the
-        # manifest version is what decides whether a seeded bottle boots or eats the mandatory-update
-        # crash). tie-break on dll mtime.
-        best = None
-        best_key = (-1, -1.0)  # (client version, dll mtime)
-        try:
-            cands = list(_load_prefixes())
-        except Exception:
-            cands = []
-        for pfx in cands:
-            for sub in ("Program Files (x86)", "Program Files"):
-                d = Path(pfx) / "drive_c" / sub / "Steam"
-                sc = d / "steamclient.dll"
-                if not (sc.is_file() and _steam_client_complete(d)) or _steam_source_crashing(d):
-                    continue
-                try:
-                    mt = sc.stat().st_mtime
-                except Exception:
-                    mt = 0.0
-                key = (_steam_client_version(d), mt)
-                if key > best_key:
-                    best_key = key
-                    best = d
-        if not best:
-            # Nothing local to clone from -- a first-ever install. Rather than hand the bottle to
-            # the broken bootstrapper first-run, fetch the client from Valves CDN into the same
-            # template slot, so this costs one download ever and every later bottle is an instant
-            # clone exactly as if the user had allready had Steam.
-            if _build_steam_client_from_cdn(cache):
-                try: marker.write_text("cdn")
-                except Exception: pass
-                return cache
-            return None
-        cache.mkdir(parents=True, exist_ok=True)
-        log(f"_steam_client_template: building cached clean Steam client from {best} (one-time, ~1.4G)")
-        cmd = ["rsync", "-a", "--delete"]
-        for ex in _STEAM_SEED_EXCLUDES:
-            cmd += ["--exclude", ex]
-        cmd += [str(best) + "/", str(cache) + "/"]
-        try:
-            r = subprocess.run(cmd, timeout=1800)
-        except Exception as exc:
-            log(f"_steam_client_template: build failed: {exc}")
-            return None
-        # only cache a VERIFIED-complete build (rc 24 = source file vanished mid-copy, tolerable)
-        if r.returncode not in (0, 24) or not _steam_client_complete(cache):
-            log(f"_steam_client_template: incomplete build (rc={r.returncode}) -> not caching")
-            return None
-        try: marker.write_text("built")
-        except Exception: pass
-        return cache
-
-
-def _build_steam_client_from_cdn(dest: Path) -> bool:
-    """Build a COMPLETE, CURRENT Steam client in `dest` straight from Valves client-update CDN.
-
-    This exists because of a chicken-and-egg gap that made MacNdCheese unusable for brand new
-    users. The Steam bootstrappers first-run download does not work under our wine, so we seed a
-    bottle by cloning a cached template insted -- but that template can only be built from a
-    working client the user ALLREADY has. Someone installing for the first time has none, so
-    _steam_client_template() returned None, seeding no-oped, and the bottle fell back to the very
-    bootstrapper path thats broken. Steam then sat there insisting it "needs to be online to
-    update" on a perfectly good connection, and no amount of reinstalling wine could help, since
-    wine was never the problem. In other words the workaround for the broken path was only
-    reachable by the people who did not need it.
-
-    So do what the bootstrapper would have done, ourselves. The manifest lists every package with
-    a plain .zip as well as the LZMA .zip.vz, and curl plus zipfile handle those fine -- no VZ
-    decoder, and no 32-bit NSIS installer either, since steam.exe ships in the packages too.
-
-    Packages are cached under deps/steam-pkgcache so a re-run (or a second bottle) re-uses them.
-    Returns True only when the result passes _steam_client_complete."""
-    import hashlib, zipfile
-    cachedir = PORTABLE_DIR / "steam-pkgcache"
-    cachedir.mkdir(parents=True, exist_ok=True)
-
-    def _get(path: str, dst: Path) -> bool:
-        for host in _STEAM_CLIENT_CDN_HOSTS:
-            try:
-                rc = subprocess.run(["/usr/bin/curl", "-fsSL", "--max-time", "900",
-                                     "-o", str(dst), f"{host}/{path}"],
-                                    capture_output=True, timeout=960).returncode
-                if rc == 0 and dst.is_file() and dst.stat().st_size > 0:
-                    return True
-            except Exception as exc:
-                log(f"_build_steam_client_from_cdn: {host} failed for {path}: {exc}")
-        return False
-
-    man = cachedir / "steam_client_win64.vdf"
-    if not _get("steam_client_win64", man):
-        log("_build_steam_client_from_cdn: could not fetch the client manifest")
-        return False
-    text = man.read_text(errors="replace")
-    mv = re.search(r'"version"\s*"(\d+)"', text)
-    version = mv.group(1) if mv else "unknown"
-
-    pkgs = []
-    for m in re.finditer(r'^\t"(\w+)"\s*\n\t\{(.*?)^\t\}', text, re.S | re.M):
-        body = m.group(2)
-        f = re.search(r'"file"\s*"([^"]+)"', body)
-        sha = re.search(r'"sha2"\s*"([0-9a-f]+)"', body)
-        if f:
-            pkgs.append((m.group(1), f.group(1), sha.group(1) if sha else None))
-    if not pkgs:
-        log("_build_steam_client_from_cdn: manifest parsed to zero packages")
-        return False
-
-    log(f"_build_steam_client_from_cdn: fetching Steam client {version} "
-        f"({len(pkgs)} packages) -- first run only, later bottles clone the cached template")
-    # Extract to a staging dir and only swap it in once its verified complete, so an interrupted
-    # download can never leave a half-client that the presence checks would happily accept.
-    staging = dest.parent / (dest.name + ".mnc-partial")
-    subprocess.run(["rm", "-rf", str(staging)], capture_output=True)
-    staging.mkdir(parents=True, exist_ok=True)
-    for i, (name, fn, sha) in enumerate(pkgs, 1):
-        blob = cachedir / fn
-        if sha and blob.is_file():
-            try:
-                if hashlib.sha256(blob.read_bytes()).hexdigest() != sha:
-                    blob.unlink()
-            except Exception:
-                pass
-        if not blob.is_file():
-            log(f"_build_steam_client_from_cdn: [{i}/{len(pkgs)}] {name}")
-            if not _get(fn, blob):
-                log(f"_build_steam_client_from_cdn: failed to fetch {name}")
-                return False
-        if sha:
-            try:
-                if hashlib.sha256(blob.read_bytes()).hexdigest() != sha:
-                    log(f"_build_steam_client_from_cdn: checksum mismatch on {name}")
-                    blob.unlink()
-                    return False
-            except Exception as exc:
-                log(f"_build_steam_client_from_cdn: could not checksum {name}: {exc}")
-                return False
-        try:
-            with zipfile.ZipFile(blob) as z:
-                for info in z.infolist():
-                    # entry names carry WINDOWS separators, so a plain extractall would write
-                    # single files literaly called "steam\cached\foo" insted of a tree
-                    rel = info.filename.replace("\\", "/")
-                    if not rel or rel.endswith("/"):
-                        continue
-                    tgt = staging / rel
-                    tgt.parent.mkdir(parents=True, exist_ok=True)
-                    with z.open(info) as src, open(tgt, "wb") as out:
-                        shutil.copyfileobj(src, out)
-        except Exception as exc:
-            log(f"_build_steam_client_from_cdn: could not unpack {name}: {exc}")
-            return False
-
-    # Steam reads this back to decide whether it is current; without it the client thinks it has
-    # no version and goes straight back to the update path we are avoiding.
-    try:
-        (staging / "package").mkdir(parents=True, exist_ok=True)
-        (staging / "package" / "steam_client_win64.manifest").write_text(text)
-    except Exception:
-        pass
-
-    if not _steam_client_complete(staging):
-        log("_build_steam_client_from_cdn: assembled client is incomplete -- discarding")
-        subprocess.run(["rm", "-rf", str(staging)], capture_output=True)
-        return False
-    subprocess.run(["rm", "-rf", str(dest)], capture_output=True)
-    staging.rename(dest)
-    log(f"_build_steam_client_from_cdn: built a complete Steam client {version}")
-    return True
-
-
-def _seed_steam_client(prefix: str) -> bool:
-    """Give a fresh Steam bottle a WORKING client by cloning the cached template into it (the
-    bootstrapper first-run is broken under wine). No-op if the bottle already has a full client
-    (steamclient.dll) or no template source exists. Returns True if it seeded a client."""
-    dst = Path(prefix) / "drive_c" / "Program Files (x86)" / "Steam"
-    try:
-        if (dst / "steamclient.dll").exists() or (_steam_dir(prefix) / "steamclient.dll").exists():
-            return False
-    except Exception:
-        pass
-    tmpl = _steam_client_template()
-    if not tmpl:
-        log("_seed_steam_client: no seed source (no existing working Steam client to copy from)")
-        return False
-    dst.mkdir(parents=True, exist_ok=True)
-    # cp -c = APFS clonefile (~0 disk, instant) on the same volume; rsync fallback covers cross-volume.
-    subprocess.run(f'cp -c -R {shlex.quote(str(tmpl))}/. {shlex.quote(str(dst))}/ 2>/dev/null',
-                   shell=True)
-    if not (dst / "steamclient.dll").exists():
-        cmd = ["rsync", "-a"]
-        for ex in _STEAM_SEED_EXCLUDES:
-            cmd += ["--exclude", ex]
-        cmd += [str(tmpl) + "/", str(dst) + "/"]
-        try:
-            subprocess.run(cmd, timeout=1800)
-        except Exception as exc:
-            log(f"_seed_steam_client: rsync fallback failed: {exc}")
-    ok = (dst / "steamclient.dll").exists()
-    if ok:
-        log("_seed_steam_client: seeded a working Steam client into the bottle "
-            "(the bootstrapper first-run is broken under wine)")
-    return ok
-
-
-def _reseed_steam_client(prefix: str) -> bool:
-    """REPAIR a present-but-corrupt Steam client (crash-looping) by rsyncing the clean template OVER
-    it with --checksum (refreshes even same-size-but-corrupt files, which a plain size+mtime rsync
-    would SKIP -- the steamtest client had a same-size steamclient.dll), NO --delete so
-    steamapps/userdata/config/login survive. This is the manual steamtest fix, automated; it
-    deliberately SKIPS the presence gate that _seed_steam_client uses. Returns True if it refreshed."""
-    dst = _steam_dir(prefix)
-    tmpl = _steam_client_template()
-    if not tmpl or not dst.is_dir():
-        return False
-    cmd = ["rsync", "-a", "--checksum"]
-    for ex in _STEAM_SEED_EXCLUDES:
-        cmd += ["--exclude", ex]
-    cmd += [str(tmpl) + "/", str(dst) + "/"]
-    try:
-        subprocess.run(cmd, timeout=1800)
-    except Exception as exc:
-        log(f"_reseed_steam_client: rsync-over failed: {exc}")
-        return False
-    log("_reseed_steam_client: refreshed the Steam client from the clean template (crash self-heal)")
-    return True
-
-
-def _bottle_client_outdated(steam_dir: Path) -> bool:
-    """True when a bottle's own Steam client is behind the one Valve ships now.
-
-    Distinct from _steam_client_complete: this client is not broken, it is just OLD, so
-    neither the seed (needs a missing steamclient.dll) nor the completeness repair fires --
-    and yet once an update is mandatory an old client still cannot start, it sits on "Steam
-    needs to be online to update" while it tries the first-run download path that does not
-    work under our wine. Observed exactly that: a FRESH bottle worked while the same users
-    existing bottle kept failing. Fail open when the CDN is unreachable.
-    """
-    try:
-        local = _steam_client_version(steam_dir)
-    except Exception:
-        return False
-    if not local:
-        return False
-    remote = _cdn_steam_client_version()
-    return bool(remote and remote > local)
-
+# The cached Steam-client template is gone. It existed because the bootstrapper's
+# first-run download failed under our wine -- a 32-bit fault storm on the unified
+# engine, "failed to create updater window" before that -- so a clean client was
+# cloned into each new bottle instead, then kept in step with Valve's by hand.
+#
+# That is Steam-shaped special-casing of a wine bug, and it brought its own failures:
+# a bottle inherited whatever version the template had, and once Valve made an update
+# mandatory it landed in the very self-update path that did not work. Steam provisions
+# and updates itself now, the same as every other launcher.
+#
+# The fault storm behind the original breakage is the Rosetta 32->64 thunk bug fixed in
+# the engine (CW HACK 20760): a far ljmp that did not switch the CPU to 64-bit, so the
+# 64-bit body decoded as 32-bit and faulted. That is the same root cause as the EA App
+# installer's 1603, which now runs to completion.
 
 def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[str, Any]) -> Any:
     """Launch Steam through the unified wine so its CEF renders via DXMT."""
     global _steam_process, _steam_started_silent, _steam_prefix, _steam_started_ts
     bt = _unified_build_dir()
-    # fresh bottle w/ only the broken bootstrapper -> seed a working client (bootstrapper first-run
-    # fails under wine). no-op if a full client is already present or theres no seed source.
-    _seed_steam_client(str(prefix))
     steam_dir = _steam_dir(prefix)
-    # HEAL a client thats PRESENT but INCOMPLETE. Neither guard around this one catches that
-    # state: the seed above only fires when steamclient.dll is missing outright, and the crash
-    # self-heal below needs real dumps to trigger. A bottle left half-populated by the broken
-    # bootstrapper first-run does neither -- it does not crash and it does not look empty, Steam
-    # just sits on "needs to be online to update" forever. Repair it from the template (which can
-    # now be built from Valves CDN when theres nothing local to clone), so an allready-broken
-    # install fixes ITSELF on the next launch insted of the user having to recreate the bottle.
-    # rsync-over keeps steamapps/userdata/config/login, so this never costs anyone their games.
-    if steam_dir.is_dir() and not _steam_client_complete(steam_dir):
-        log("_launch_steam_unified: Steam client is incomplete -> repairing it from the template")
-        if not _reseed_steam_client(str(prefix)):
-            log("_launch_steam_unified: could not repair the Steam client")
-    elif steam_dir.is_dir() and _bottle_client_outdated(steam_dir):
-        # Complete but OLD. Left alone it has to run the mandatory self-update, which is the
-        # broken path, so bring it up to date from the template ourselves instead. This is why
-        # making a new bottle "fixed" it for people while their existing one stayed broken.
-        log("_launch_steam_unified: Steam client is out of date -> updating it from the template")
-        if not _reseed_steam_client(str(prefix)):
-            log("_launch_steam_unified: could not update the Steam client")
     # SELF-HEAL: client present but the PREVIOUS launch crash-STORMED -> re-seed clean (the launch cmd
-    # below wipes dumps each run, so dumps here are from the last run). _seed_steam_client is
-    # presence-idempotent so it never repairs a present-but-broken client (the steamtest gap).
+    # below wipes dumps each run, so dumps here are from the last run).
     # Trigger on the dump TOTAL, NOT .crash: a normal quit (the app SIGKILLs Steam via kill_wineserver)
     # leaves a .crash but ~0 dumps, so keying on .crash would needlessly run the slow --checksum
     # re-seed after every quit. A healthy bottle emits only small transient GPU dumps; a real
@@ -5041,13 +4616,9 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
                                                 or any(_dmp.glob("assert_steam.exe*.dmp")))
             if _dumps > 15_000_000 or _steam_crashed:
                 _wipe_gpucache = True
-                log(f"Steam crashed last run (steam.exe dump={bool(_steam_crashed)}, {_dumps // 1_000_000}MB total) -> re-seeding a clean client + wiping GPUCache")
-                _reseed_steam_client(str(prefix))
+                log(f"Steam crashed last run (steam.exe dump={bool(_steam_crashed)}, {_dumps // 1_000_000}MB total) -> wiping GPUCache")
     except Exception as _exc:
         log(f"steam self-heal check failed (non-fatal): {_exc}")
-    # opportunistic seed re-cache: if THIS bottle self-updated to a newer client on a prior run,
-    # refresh the template from it so fresh bottles never get seeded onto a stale (crash-looping) one.
-    _refresh_seed_if_bottle_newer(str(prefix))
     steam_exe = steam_dir / "steam.exe"
     if not steam_exe.exists():
         raise FileNotFoundError(f"Steam is not installed in this prefix.\nExpected: {steam_exe}")
@@ -6773,13 +6344,11 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
 
    
     if launcher_type == "steam" and wine:
-        # the Steam bootstrapper's first-run download is BROKEN under our wine (32-bit HACK22 storm
-        # on the unified wine; "failed to create updater window" on the pre-HACK22 wine), so SEED a
-        # working client from the cached template insted. only fall back to the bootstrapper if
-        # theres no seed source yet (no prior working Steam install to build the template from).
+        # Steam installs itself, the same as every other launcher. This used to seed a
+        # cached client instead, because the bootstrapper's first-run download failed under
+        # our wine; the fault storm behind that is fixed in the engine (CW HACK 20760).
         def _provision_steam():
-            if not _seed_steam_client(path_str):
-                _download_and_run_steam_setup(path_str, wine, params.get("steam_setup_path"))
+            _download_and_run_steam_setup(path_str, wine, params.get("steam_setup_path"))
         threading.Thread(target=_provision_steam, daemon=True).start()
 
    
