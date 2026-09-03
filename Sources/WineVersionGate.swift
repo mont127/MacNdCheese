@@ -24,7 +24,8 @@ final class WineVersionGate: ObservableObject {
     /// running. Running it while the bundled engine is active would recreate the deps copy
     /// reconcileEngines() has just deleted, and the two would fight on every launch.
     private var wineActions: [String] {
-        var actions = ["stage_mnc_fonts", "install_dxmt"]
+        var actions = ["stage_mnc_fonts", "stage_mnc_tls", "stage_mnc_vulkan",
+                       "stage_mnc_sdl", "install_dxmt"]
         if !Self.bundledEngineAvailable { actions.insert("install_wine_unified", at: 0) }
         return actions
     }
@@ -59,10 +60,33 @@ final class WineVersionGate: ObservableObject {
     static var bundledEngineAvailable: Bool { enginePresent(at: bundledEnginePath) }
     static var depsEngineAvailable: Bool { enginePresent(at: depsEnginePath) }
 
+    /// The engine can also ride along as an ARCHIVE rather than an extracted tree --
+    /// Resources/wine-unified-bundle.tar.xz, wich is what the nightly DMGs carry. It is
+    /// not something we can run from (installer.sh extracts it into deps/), but its
+    /// presence does mean this install has an engine available to put on disk.
+    static var bundledEngineArchiveAvailable: Bool {
+        let res = Bundle.main.resourcePath ?? Bundle.main.bundlePath
+        return ["wine-unified-bundle.tar.xz", "wine-unified-bundle.zip"].contains {
+            FileManager.default.fileExists(atPath: res + "/" + $0)
+        }
+    }
+
+    private static var onboardingComplete: Bool {
+        UserDefaults.standard.bool(forKey: OnboardingView.completeKey)
+    }
+
     /// The unified wine loader — if neither copy is there yet its a fresh box, so
     /// onboarding (not the gate) owns the first install.
     private static var wineInstalled: Bool {
+        // The archive only counts once onboarding is done. Before that this IS a fresh
+        // box and onboarding owns the first install, so counting it would have both of
+        // them installing the engine at once. After that, an install carrying an archive
+        // with no engine on disk is a broken install -- deps/ wiped, an interrupted
+        // first run, or an app updated while its engine went missing -- and the gate is
+        // the only thing left that can put one back. Leaving it out is how a launch ends
+        // up silently running on whatever stray wine the backend can find instead.
         bundledEngineAvailable || depsEngineAvailable
+            || (bundledEngineArchiveAvailable && onboardingComplete)
     }
 
     enum EngineReconcile: String {
