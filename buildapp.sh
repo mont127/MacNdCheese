@@ -139,7 +139,9 @@ if [ -d "$PAYLOAD_DIR" ] && [ -n "$(ls -A "$PAYLOAD_DIR" 2>/dev/null)" ]; then
     echo "Bundling engine payloads from $PAYLOAD_DIR:"
     for item in "$PAYLOAD_DIR"/*; do
         [ -e "$item" ] || continue
-        cp -R "$item" "$RESOURCES/"
+        # -c clones on APFS (copy-on-write), so a 4 GB engine costs almost no extra
+        # disk. Falls back to a real copy off APFS or on an older cp.
+        cp -Rc "$item" "$RESOURCES/" 2>/dev/null || cp -R "$item" "$RESOURCES/"
         echo "  + $(basename "$item")  ($(du -sh "$item" 2>/dev/null | cut -f1))"
     done
 else
@@ -217,6 +219,40 @@ if [ -f "$GP_RES" ] && ! /usr/bin/codesign -dvv "$GP_RES" 2>&1 | grep -q "Author
     /usr/bin/codesign --force --sign - --timestamp=none "$APP_ROOT"
 fi
 
+# A bundled engine gets re-signed by --deep above, which strips the JIT entitlement
+# its loaders need. Without it macOS enforces W^X on the 32-bit code wine JITs and
+# every write<->exec page flip faults into Rosetta's exception handler -- roughly a
+# core burnt for nothing. Same entitlement set installer.sh applies after extracting
+# an engine into deps; disable-library-validation is what lets the unsigned .so files
+# beside them still load.
+ENGINE_RES="$RESOURCES/wine-unified"
+if [ -d "$ENGINE_RES" ]; then
+    echo "Re-signing the bundled engine loaders with the JIT entitlement"
+    ENT="$(mktemp -t mncjitent).plist"
+    cat > "$ENT" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.disable-executable-page-protection</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+    <key>com.apple.security.get-task-allow</key><true/>
+</dict>
+</plist>
+PLIST
+    signd=0
+    for b in wine loader/wine tools/wine/wine server/wineserver bin/wine bin/wineserver; do
+        [ -e "$ENGINE_RES/$b" ] || continue
+        /usr/bin/codesign --force --sign - --options runtime --entitlements "$ENT" \
+            "$ENGINE_RES/$b" 2>/dev/null && signd=$((signd+1))
+    done
+    rm -f "$ENT"
+    echo "  signed $signd engine loaders"
+fi
+
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_ROOT" 2>&1 || true
 
 echo ""
@@ -224,14 +260,14 @@ echo "Creating DMG..."
 rm -f "${APP_NAME}.dmg"
 rm -rf build/dmg_staging
 mkdir -p build/dmg_staging
-cp -R "$APP_ROOT" build/dmg_staging/
+cp -Rc "$APP_ROOT" build/dmg_staging/ 2>/dev/null || cp -R "$APP_ROOT" build/dmg_staging/
 ln -s /Applications build/dmg_staging/Applications
 
 hdiutil create \
     -volname "MacNdCheese Launcher" \
     -srcfolder build/dmg_staging \
     -ov \
-    -format UDZO \
+    -format ULMO \
     "${APP_NAME}.dmg"
 
 rm -rf build/dmg_staging

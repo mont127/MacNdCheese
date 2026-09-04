@@ -803,7 +803,7 @@ def _wine_env(prefix: str) -> Dict[str, str]:
         # be available" and schannel HTTPS dies on any box with no Homebrew. Every
         # inter-library dep inside that dir is already @loader_path, so only the entry
         # point has to be findable here. Homebrew still wins when it is present.
-        str(WINE_UNIFIED_DIR / "lib"),
+        str(WINE_UNIFIED_DIR / "lib"), str(WINE_UNIFIED_BUNDLED / "lib"), str(WINE_UNIFIED_DEV / "lib"),
         # bundled freetype/fontconfig fallback for no-Homebrew boxes (see _unified_env / mnc-fonts)
         str(PORTABLE_DIR / "mnc-fonts"), str(PORTABLE_DIR / "mnc-vulkan"), str(PORTABLE_DIR / "mnc-sdl"),
         "/usr/lib",

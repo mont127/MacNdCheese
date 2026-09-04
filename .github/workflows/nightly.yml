@@ -164,64 +164,46 @@ jobs:
 
           gh release download "$TAG" --repo "$ENGINE_REPO" \
             --pattern "$ASSET" --dir payload
-          mv "payload/$ASSET" payload/wine-unified-bundle.tar.xz
+          # Extracted into the payload rather than shipped as an archive: buildapp.sh
+          # copies the payload verbatim into Resources, and an extracted
+          # Resources/wine-unified is what WineVersionGate.bundledEngineAvailable looks
+          # for. With it present reconcileEngines() drops the deps copy and the app runs
+          # the engine straight out of the bundle, so nothing is extracted at install
+          # time. One leading component is stripped, exactly as installer.sh did.
+          mkdir -p payload/wine-unified
+          tar -xJf "payload/$ASSET" -C payload/wine-unified --strip-components=1
+          rm -f "payload/$ASSET"
 
           # The engine bundle carries mnc-d3d/ itself, so nothing else to fetch. Verify
           # it is complete: a pack missing either half of the D3DMetal runtime loads
           # fine and then dies on "Failed to dlopen D3DMetal" with no hint a file is
           # missing, so fail here rather than shipping it.
           #
-          # Listed ONCE into a temp file: every `tar -tJf` is a full xz decode of a
-          # ~1.7 GB archive, so the old per-entry loop paid that price six times. The
-          # listing must stay OUT of payload/ -- buildapp.sh copies that dir verbatim
-          # into Resources, so a stray file there ends up shipped inside the app.
-          BUNDLE_LIST="${RUNNER_TEMP:-/tmp}/engine-bundle.list"
-          # One leading component is stripped off every path, exactly as installer.sh
-          # extracts it (--strip-components=1), so what we check is what gets installed.
-          # The engine bundle is rooted at "./" rather than at a wine-unified/ directory,
-          # so the paths this used to look for could never match -- it only ever looked
-          # like it worked becuse the fetch above was failing before it ran.
-          tar -tJf payload/wine-unified-bundle.tar.xz | sed 's|^[^/]*/||' > "$BUNDLE_LIST"
+          # Verified on the extracted tree: cheaper than decoding the archive, and it
+          # checks what actually ships rather than what the archive claimed.
+          ENGINE=payload/wine-unified
+          bundle_has() { [ -e "$ENGINE/$1" ]; }
+          bundle_has_any() { for c in "$@"; do bundle_has "$c" && return 0; done; return 1; }
 
-          # Matches the entry itself or anything underneath it, so a directory that the
-          # archive only represents through its children (D3DMetal.framework) still counts.
-          bundle_has() {
-            grep -q -e "^$1\$" -e "^$1/" "$BUNDLE_LIST"
-          }
-          # The d3d slots are named differantly per pack layout -- layout 1 is flat
-          # (d3d11_dxmt.dll), layout 2 is foldered (dxmt/d3d11.dll). installer.sh and the
-          # backend handle both, so accept either here instead of hard-failing every
-          # nightly on a layout-2 pack that is actually complete.
-          bundle_has_either() {
-            bundle_has "$1" || bundle_has "$2"
-          }
-
-          bundle_has_either mnc-d3d/d3d11_dxmt.dll mnc-d3d/dxmt/d3d11.dll \
+          # The d3d slots are named differently per pack layout -- flat in layout 1,
+          # under a per-backend directory in layout 2 -- so accept either.
+          bundle_has_any mnc-d3d/d3d11_dxmt.dll mnc-d3d/dxmt/d3d11.dll \
             || { echo "::error::engine bundle incomplete: dxmt d3d11 missing"; exit 1; }
-          bundle_has_either mnc-d3d/dxgi_dxmt.dll mnc-d3d/dxmt/dxgi.dll \
+          bundle_has_any mnc-d3d/dxgi_dxmt.dll mnc-d3d/dxmt/dxgi.dll \
             || { echo "::error::engine bundle incomplete: dxmt dxgi missing"; exit 1; }
           # The D3DMetal runtime sits at the pack root in the flat layout and under
-          # <slot>/external/ in the per-backend one, the same split the d3d11/dxgi slots
-          # above already handle. Checking only the flat path rejects every folder-layout
-          # pack, even though both GPTK slots carry a complete runtime.
-          bundle_has_any() {
-            for c in "$@"; do bundle_has "$c" && return 0; done
-            return 1
-          }
+          # <slot>/external/ in the per-backend one.
           for req in libd3dshared.dylib D3DMetal.framework; do
             bundle_has_any "mnc-d3d/$req" \
                            "mnc-d3d/d3dm/external/$req" \
                            "mnc-d3d/d3dm-gptk4/external/$req" \
               || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
           done
-          for req in loader/wine server/wineserver; do
+          for req in loader/wine server/wineserver lib; do
             bundle_has "$req" \
               || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
           done
 
-
-          echo "engine_tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "bundled=true"   >> "$GITHUB_OUTPUT"
           du -sh payload/*
 
       - name: Build universal DMG
