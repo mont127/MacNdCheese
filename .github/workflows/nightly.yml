@@ -47,46 +47,51 @@ jobs:
 
       - name: Resolve the app version
         id: version
-        # Sources/Info.plist is the source of truth and is read as-is. README.md may
-        # carry an "mnc-version:" marker to name the next version deliberately; it is
-        # used only when it is AHEAD of the plist, so a stale marker can never walk the
-        # version backwards. With no marker ahead, the patch moves by one on the same
-        # odometer the plist already uses -- every component past the major is a single
-        # digit that rolls into the one on its left (11.0.9 -> 11.1.0, 11.9.9 -> 12.0.0).
+        # Sources/Info.plist declares the version to RELEASE, and is honoured as-is.
+        # Bumping an explicit version would throw away the decision someone made when
+        # they edited it, so the patch only moves when the plist version has already
+        # shipped -- i.e. nobody named a new one since the last release.
         #
-        # The resolved version is written into the plist BEFORE the build, so the .app
-        # carries it. The bump is committed back only once the release has actually
-        # been published (see the last step), so a run that fails to build never
-        # advances the odometer.
+        # The odometer matches the plist's own numbering: every component past the
+        # major is a single digit that carries into the one on its left when it
+        # overflows (10.8.9 -> 10.9.0, 10.9.9 -> 11.0.0).
+        #
+        # The resolved version is written to the plist before the build so the .app
+        # carries it, and committed back only once the release is published (see the
+        # last step), so a run that fails to build never moves it.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          read_plist() {
-            awk '/<key>CFBundleShortVersionString<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' Sources/Info.plist
-          }
-          CUR="$(read_plist)"
+          CUR="$(awk '/<key>CFBundleShortVersionString<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' Sources/Info.plist)"
           case "$CUR" in
             [0-9]*.[0-9]*.[0-9]*) : ;;
             *) echo "::error::could not read a X.Y.Z version out of Sources/Info.plist (got '$CUR')"; exit 1 ;;
           esac
 
-          WANT="$(sed -n 's/.*mnc-version:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' README.md | head -1 || true)"
+          # Has this version already gone out? Stable tags are vX.Y.Z, nightlies are
+          # nightly-vX.Y.Z-<date>-<sha>. case patterns match the dots literally.
+          RELEASED=false
+          while read -r t; do
+            [ -n "$t" ] || continue
+            case "$t" in
+              "v$CUR"|"nightly-v$CUR-"*) RELEASED=true; break ;;
+            esac
+          done <<EOF
+          $(gh release list --limit 200 --json tagName --jq '.[].tagName' 2>/dev/null || true)
+          EOF
 
-          # numeric per-component compare; newest of the two sorts last
-          newer() { [ "$1" != "$2" ] && \
-            [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" = "$1" ]; }
-
-          if [ -n "$WANT" ] && newer "$WANT" "$CUR"; then
-            NEW="$WANT"
-            echo "README marker $WANT is ahead of the plist ($CUR) -- using it"
+          if [ "$RELEASED" = false ]; then
+            NEW="$CUR"
+            echo "plist names $CUR and it has not been released -- releasing that"
           else
-            NEW="$(awk -F. -v v="$CUR" 'BEGIN {
+            NEW="$(awk -v v="$CUR" 'BEGIN {
               split(v, a, ".");
               major=a[1]+0; minor=a[2]+0; patch=a[3]+0;
               patch++;
               if (patch > 9) { patch=0; minor++; if (minor > 9) { minor=0; major++ } }
               printf "%d.%d.%d", major, minor, patch }')"
-            [ -n "$WANT" ] && echo "README marker $WANT is not ahead of the plist ($CUR)"
-            echo "bumping $CUR -> $NEW"
+            echo "$CUR has already been released -- bumping to $NEW"
           fi
 
           for key in CFBundleShortVersionString CFBundleVersion; do
@@ -94,7 +99,6 @@ jobs:
           done
           plutil -lint Sources/Info.plist
           echo "app version: $NEW"
-
           echo "version=$NEW" >> "$GITHUB_OUTPUT"
           echo "changed=$([ "$NEW" != "$CUR" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
