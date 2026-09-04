@@ -43,21 +43,24 @@ final class LocalizationManager: ObservableObject {
         }
     }
 
-    /// True until the user has picked a language. Drives the first-launch popup.
+    /// Kept so the onboarding gate still has something to wait on. Always false now
+    /// that the language is decided without asking.
     @Published var needsChoice: Bool
 
     private init() {
         if let raw = UserDefaults.standard.string(forKey: Self.storageKey),
            let lang = AppLanguage(rawValue: raw) {
+            // An explicit pick in Settings wins for good.
             language = lang
-            needsChoice = false
         } else {
-            // Pre-select from the system preference, but still prompt once so the
-            // user can override (a Chinese user on an English Mac, or vice versa).
+            // Otherwise follow the system. Deliberately NOT written to storage:
+            // didSet does not fire for an assignment in init, so nothing is
+            // persisted and the app keeps tracking the system language until the
+            // user actually chooses one.
             let sys = Locale.preferredLanguages.first ?? "en"
             language = sys.hasPrefix("zh") ? .zh : .en
-            needsChoice = true
         }
+        needsChoice = false
     }
 
     /// Confirm the first-launch choice (also used by Settings → Language).

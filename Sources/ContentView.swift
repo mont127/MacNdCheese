@@ -373,10 +373,6 @@ struct ContentView: View {
         // Re-render the entire main UI when the language changes (Settings is a
         // separate scene, so its window is unaffected). Switching is live.
         .id(loc.language)
-        // First-launch language popup (also reachable later via Settings → Language).
-        .sheet(isPresented: $loc.needsChoice) {
-            LanguagePickerSheet()
-        }
         // First-run onboarding installer — shown automatically after the language
         // is chosen, so a new user gets a working Wine + graphics stack without
         // ever opening Settings. Lives in its own modifier to keep this body's

@@ -43,6 +43,34 @@ ICNS="/tmp/macncheese_icon_$$.icns"
 trap 'rm -rf "$(dirname "$ICONSET")" "$ICNS"' EXIT
 iconutil -c icns "$ICONSET" -o "$ICNS"
 
+# A release build ships the engine extracted at Resources/wine-unified (2 GB), and
+# this script rebuilds the bundle from scratch -- so stash it across the rm and put
+# it back, otherwise every dev iteration throws the engine away and the app falls
+# back to deps/ (or to no engine at all). Stashed INSIDE /Applications so the move
+# stays on one volume and costs nothing; /tmp would be a different filesystem and
+# would turn it into a 2 GB copy each way.
+ENGINE_SRC="$APP/Contents/Resources/wine-unified"
+ENGINE_STASH="/Applications/.mnc-wine-unified-stash.$$"
+STASHED=0
+if [ -d "$ENGINE_SRC" ]; then
+    echo "Preserving bundled engine ($(du -sh "$ENGINE_SRC" 2>/dev/null | cut -f1))..."
+    rm -rf "$ENGINE_STASH"
+    if mv "$ENGINE_SRC" "$ENGINE_STASH" 2>/dev/null; then
+        STASHED=1
+    else
+        echo "Warning: could not stash the engine; it will be lost this iteration."
+    fi
+fi
+# Put it back even if the build dies part-way, so a failed run cannot eat the engine.
+restore_engine() {
+    if [ "$STASHED" = 1 ] && [ -d "$ENGINE_STASH" ]; then
+        mkdir -p "$APP/Contents/Resources"
+        rm -rf "$ENGINE_SRC"
+        mv "$ENGINE_STASH" "$ENGINE_SRC" && echo "Restored bundled engine."
+    fi
+}
+trap restore_engine EXIT
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/MacNCheese" "$APP/Contents/MacOS/MacNCheese"
@@ -97,8 +125,41 @@ else
     echo "Warning: appintentsmetadataprocessor not found — install Xcode for Siri support."
 fi
 
+# Back in place before signing, so the engine sits inside the bundle seal.
+restore_engine
+trap - EXIT
+
 xattr -cr "$APP"
 codesign --force --deep --sign - "$APP"
+
+# --deep strips the JIT entitlement from wine's loaders; without it macOS enforces
+# W^X on the code wine JITs and every page flip faults into Rosetta's handler.
+# Same set buildapp.sh and installer.sh apply.
+if [ -d "$ENGINE_SRC" ]; then
+    ENT="$(mktemp -t mncjitent).plist"
+    cat > "$ENT" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.disable-executable-page-protection</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+    <key>com.apple.security.get-task-allow</key><true/>
+</dict>
+</plist>
+PLIST
+    n=0
+    for b in wine loader/wine tools/wine/wine server/wineserver bin/wine bin/wineserver; do
+        [ -e "$ENGINE_SRC/$b" ] || continue
+        codesign --force --sign - --options runtime --entitlements "$ENT" \
+            "$ENGINE_SRC/$b" 2>/dev/null && n=$((n+1))
+    done
+    rm -f "$ENT"
+    echo "Re-signed $n engine loaders with the JIT entitlement."
+fi
 # gamepolicyctl needs Apple-private entitlements to reach gamepolicyd; if --deep
 # clobbered its signature, restore the pristine copy and reseal without --deep.
 GP_RES="$APP/Contents/Resources/gamepolicyctl"
