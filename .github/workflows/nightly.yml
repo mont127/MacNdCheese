@@ -8,15 +8,15 @@ name: Nightly universal build
 # worse, buildapp.sh itself silently ignored its architecture argument (see the
 # fix in that script), so even running it by hand never really produced one.
 #
-# Automatic trigger is disabled for now (PR #111 review, 2026-07-09): mont127
-# asked to hold off on automatic nightly builds until v11 ships, in part because
-# of an open question about whether/how GPTK can be bundled given Apple's Game
-# Porting Toolkit license (non-commercial-use redistribution terms) — see the
-# PR discussion. Re-add the `push` trigger below once that's resolved and v11
-# has shipped. workflow_dispatch is left in place so a maintainer can still run
-# this by hand in the meantime.
+# The automatic trigger was held from 2026-07-09 (PR #111 review) until v11
+# shipped, pending an open question about bundling GPTK under Apple's Game
+# Porting Toolkit license. v11 has shipped -- the engine is on 11.16 -- and the
+# trigger is restored. Note the engine now carries GPTK 4.0b2 next to 3.0
+# (mnc-d3d/d3dm-gptk4), so a published nightly redistributes both toolkits.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
