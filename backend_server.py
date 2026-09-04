@@ -797,8 +797,15 @@ def _wine_env(prefix: str) -> Dict[str, str]:
         "/usr/local/opt/fontconfig/lib", "/usr/local/opt/gnutls/lib", _WINE_STABLE_LIB,
         "/usr/local/opt/glib/lib", "/usr/local/opt/gettext/lib",
         "/usr/local/opt/sdl2/lib",
+        # The engine ships its own gnutls closure in lib/, the way the official WineHQ
+        # macOS packages and CrossOver both do -- macOS has no system gnutls, so without
+        # it wine's secur32 logs "Failed to load libgnutls, secure connections will not
+        # be available" and schannel HTTPS dies on any box with no Homebrew. Every
+        # inter-library dep inside that dir is already @loader_path, so only the entry
+        # point has to be findable here. Homebrew still wins when it is present.
+        str(WINE_UNIFIED_DIR / "lib"),
         # bundled freetype/fontconfig fallback for no-Homebrew boxes (see _unified_env / mnc-fonts)
-        str(PORTABLE_DIR / "mnc-fonts"), str(PORTABLE_DIR / "mnc-tls"), str(PORTABLE_DIR / "mnc-vulkan"), str(PORTABLE_DIR / "mnc-sdl"),
+        str(PORTABLE_DIR / "mnc-fonts"), str(PORTABLE_DIR / "mnc-vulkan"), str(PORTABLE_DIR / "mnc-sdl"),
         "/usr/lib",
     ])
     # arch(1) purges every DYLD_* var on the way through, so a launch that wraps wine in arch
