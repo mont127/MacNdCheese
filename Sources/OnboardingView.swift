@@ -415,15 +415,6 @@ struct OnboardingView: View {
         // a box that has never run anything -- the old gate would have skipped the fonts
         // on exactly the fresh installs it exists for.
         add(s?.hasMncFonts ?? false, "stage_mnc_fonts")
-        // Same reasoning as the fonts, and the same trap. mnc-tls is the bundled gnutls
-        // closure: without it wine has no TLS it can dlopen, crypt32/bcrypt cannot verify a
-        // certificate, and Steam's bootstrapper fails every CDN host with "http error 0" ->
-        // "Steam needs to be online to update" on a brand new bottle. mnc-vulkan is MoltenVK
-        // (DXVK and VR are dead without it) and mnc-sdl the SDL closure. There are no status
-        // flags for these three, and they are small idempotent copies, so just run them --
-        // onboarding is the only fresh-box path, so anything missing here is missing forever
-        // until some later app-version bump happens to wake the version gate.
-        actions.append(contentsOf: ["stage_mnc_tls", "stage_mnc_vulkan", "stage_mnc_sdl"])
         if installEverything {
             add(s?.hasWineStable ?? false, "install_wine")
             add(s?.hasWineStaging ?? false, "install_wine_staging")

@@ -24,8 +24,7 @@ final class WineVersionGate: ObservableObject {
     /// running. Running it while the bundled engine is active would recreate the deps copy
     /// reconcileEngines() has just deleted, and the two would fight on every launch.
     private var wineActions: [String] {
-        var actions = ["stage_mnc_fonts", "stage_mnc_tls", "stage_mnc_vulkan",
-                       "stage_mnc_sdl", "install_dxmt"]
+        var actions = ["stage_mnc_fonts", "install_dxmt"]
         if !Self.bundledEngineAvailable { actions.insert("install_wine_unified", at: 0) }
         return actions
     }
