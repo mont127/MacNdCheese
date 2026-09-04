@@ -94,21 +94,18 @@ jobs:
           # One paginated call instead of one API call per release, sorted explicitly so
           # "newest" never rides on the endpoint's default ordering, and carrying the
           # asset's real name so the rename below can never glob two files.
-          ENGINE_TAG="build-9-d2f28ed4"
+          ENGINE_PICK="$(gh api "repos/$ENGINE_REPO/releases?per_page=100" --paginate \
+            --jq '[ .[] | . as $r
+                    | ($r.assets[]? | select(.name | endswith("unified-osx64.tar.xz")))
+                    | {tag: $r.tag_name, asset: .name,
+                       at: ($r.published_at // $r.created_at)} ]
+                  | sort_by(.at) | reverse | .[0] // empty')"
+          [ -n "$ENGINE_PICK" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
+          TAG="$(printf '%s' "$ENGINE_PICK" | jq -r .tag)"
+          ASSET="$(printf '%s' "$ENGINE_PICK" | jq -r .asset)"
+          echo "engine release: $TAG ($ASSET)"
 
-          ASSET="$(gh api "repos/$ENGINE_REPO/releases/tags/$ENGINE_TAG" \
-            --jq '[.assets[]
-                    | select(.name | endswith("unified-osx64.tar.xz"))
-                    | .name][0] // empty')"
-
-          [ -n "$ASSET" ] || {
-            echo "::error::no unified engine asset found in release $ENGINE_TAG"
-            exit 1
-          }
-
-          echo "engine release: $ENGINE_TAG ($ASSET)"
-  
-          gh release download "$ENGINE_TAG" --repo "$ENGINE_REPO" \
+          gh release download "$TAG" --repo "$ENGINE_REPO" \
             --pattern "$ASSET" --dir payload
           mv "payload/$ASSET" payload/wine-unified-bundle.tar.xz
 
@@ -166,7 +163,7 @@ jobs:
           done
 
 
-          echo "engine_tag=$ENGINE_TAG" >> "$GITHUB_OUTPUT"
+          echo "engine_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "bundled=true"   >> "$GITHUB_OUTPUT"
           du -sh payload/*
 
