@@ -143,8 +143,21 @@ jobs:
             || { echo "::error::engine bundle incomplete: dxmt d3d11 missing"; exit 1; }
           bundle_has_either mnc-d3d/dxgi_dxmt.dll mnc-d3d/dxmt/dxgi.dll \
             || { echo "::error::engine bundle incomplete: dxmt dxgi missing"; exit 1; }
-          for req in mnc-d3d/libd3dshared.dylib mnc-d3d/D3DMetal.framework \
-                     loader/wine server/wineserver; do
+          # The D3DMetal runtime sits at the pack root in the flat layout and under
+          # <slot>/external/ in the per-backend one, the same split the d3d11/dxgi slots
+          # above already handle. Checking only the flat path rejects every folder-layout
+          # pack, even though both GPTK slots carry a complete runtime.
+          bundle_has_any() {
+            for c in "$@"; do bundle_has "$c" && return 0; done
+            return 1
+          }
+          for req in libd3dshared.dylib D3DMetal.framework; do
+            bundle_has_any "mnc-d3d/$req" \
+                           "mnc-d3d/d3dm/external/$req" \
+                           "mnc-d3d/d3dm-gptk4/external/$req" \
+              || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
+          done
+          for req in loader/wine server/wineserver; do
             bundle_has "$req" \
               || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
           done
