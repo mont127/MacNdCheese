@@ -45,6 +45,59 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Resolve the app version
+        id: version
+        # Sources/Info.plist is the source of truth and is read as-is. README.md may
+        # carry an "mnc-version:" marker to name the next version deliberately; it is
+        # used only when it is AHEAD of the plist, so a stale marker can never walk the
+        # version backwards. With no marker ahead, the patch moves by one on the same
+        # odometer the plist already uses -- every component past the major is a single
+        # digit that rolls into the one on its left (11.0.9 -> 11.1.0, 11.9.9 -> 12.0.0).
+        #
+        # The resolved version is written into the plist BEFORE the build, so the .app
+        # carries it. The bump is committed back only once the release has actually
+        # been published (see the last step), so a run that fails to build never
+        # advances the odometer.
+        run: |
+          set -euo pipefail
+          read_plist() {
+            awk '/<key>CFBundleShortVersionString<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' Sources/Info.plist
+          }
+          CUR="$(read_plist)"
+          case "$CUR" in
+            [0-9]*.[0-9]*.[0-9]*) : ;;
+            *) echo "::error::could not read a X.Y.Z version out of Sources/Info.plist (got '$CUR')"; exit 1 ;;
+          esac
+
+          WANT="$(sed -n 's/.*mnc-version:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' README.md | head -1 || true)"
+
+          # numeric per-component compare; newest of the two sorts last
+          newer() { [ "$1" != "$2" ] && \
+            [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" = "$1" ]; }
+
+          if [ -n "$WANT" ] && newer "$WANT" "$CUR"; then
+            NEW="$WANT"
+            echo "README marker $WANT is ahead of the plist ($CUR) -- using it"
+          else
+            NEW="$(awk -F. -v v="$CUR" 'BEGIN {
+              split(v, a, ".");
+              major=a[1]+0; minor=a[2]+0; patch=a[3]+0;
+              patch++;
+              if (patch > 9) { patch=0; minor++; if (minor > 9) { minor=0; major++ } }
+              printf "%d.%d.%d", major, minor, patch }')"
+            [ -n "$WANT" ] && echo "README marker $WANT is not ahead of the plist ($CUR)"
+            echo "bumping $CUR -> $NEW"
+          fi
+
+          for key in CFBundleShortVersionString CFBundleVersion; do
+            plutil -replace "$key" -string "$NEW" Sources/Info.plist
+          done
+          plutil -lint Sources/Info.plist
+          echo "app version: $NEW"
+
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "changed=$([ "$NEW" != "$CUR" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Fetch the engine bundle from the private engine repo
         # Makes a nightly behave like an official release: installer.sh finds the
         # engine inside Resources and sets it up offline instead of building or
@@ -254,3 +307,21 @@ jobs:
           prerelease: true
           body: ${{ steps.tag.outputs.notes }}
           files: MacNCheese-universal.dmg
+
+      - name: Commit the version bump
+        # Runs only after the release is published, so a failed build leaves the
+        # odometer where it was. Pushing with the workflow's own GITHUB_TOKEN does not
+        # start another workflow run, so this commit cannot retrigger the nightly.
+        if: steps.version.outputs.changed == 'true'
+        env:
+          NEW: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Sources/Info.plist
+          git commit -m "Bump version to $NEW" -m "Set by the nightly build for its release."
+          # main can have moved while the DMG was building; rebase the one-file bump on
+          # top rather than failing the run after the release is already out.
+          git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"

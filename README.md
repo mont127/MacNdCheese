@@ -1,3 +1,6 @@
+<!-- mnc-version: 11.0.0 -->
+<!-- The nightly uses this version when it is ahead of Sources/Info.plist.
+     Otherwise it bumps the patch itself (odometer: 11.0.9 -> 11.1.0). -->
 <p align="center">
   <img src="icon.png" width="128" alt="MacNCheese icon" />
 </p>
