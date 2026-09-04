@@ -166,7 +166,7 @@ jobs:
           done
 
 
-          echo "engine_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "engine_tag=$ENGINE_TAG" >> "$GITHUB_OUTPUT"
           echo "bundled=true"   >> "$GITHUB_OUTPUT"
           du -sh payload/*
 
