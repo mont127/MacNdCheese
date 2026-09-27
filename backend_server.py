@@ -3243,6 +3243,43 @@ def _unified_build_dir() -> Optional[Path]:
     return None
 
 
+# msync is only safe on engines that carry the cold-boot fix. wine-11.0 does not: a cold
+# boot with WINEMSYNC=1 makes the first ncalrpc bind to services.exe fail during the
+# service-startup storm, rpcrt4's error path then jumps to 0x100000044, and every
+# process that hits it dies -- "Unhandled page fault on execute access to
+# 0000000100000044", a winedbg per crash, and a Steam that updates fine but never opens
+# a window. 11.16 (build-9/build-10) boots Steam cold with msync on and renders; that
+# is the oldest engine verified, so it is the floor.
+_MSYNC_MIN_ENGINE = (11, 16)
+
+
+def _engine_version(bt: Optional[Path]) -> Optional[Tuple[int, ...]]:
+    """wine version of an engine build tree, read from PACKAGE_VERSION in its Makefile.
+    The line sits near the top of a ~30MB file, so only the head is read."""
+    if bt is None:
+        return None
+    try:
+        with open(bt / "Makefile", encoding="utf-8", errors="ignore") as fh:
+            for _ in range(200):
+                line = fh.readline()
+                if not line:
+                    break
+                if line.startswith("PACKAGE_VERSION"):
+                    m = re.search(r"(\d+)\.(\d+)", line)
+                    return (int(m.group(1)), int(m.group(2))) if m else None
+    except OSError:
+        pass
+    return None
+
+
+def _engine_msync_safe() -> bool:
+    """True only for an engine known to boot Steam cold with msync on. An engine whose
+    version cant be read counts as unsafe: msync only saves wineserver CPU, so leaving it
+    off costs little, while a false yes is a crash loop."""
+    v = _engine_version(_unified_build_dir())
+    return v is not None and v >= _MSYNC_MIN_ENGINE
+
+
 def _d3d_pack_candidates() -> Tuple[Path, ...]:
     """Pack locations, best first. The pack ships INSIDE the engine tree, so whichever
     engine won above owns the pack that goes with it -- pairing a deps engine with a
@@ -4262,7 +4299,9 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         # everything that joins later, so a game launched with the toggle on has to
         # be able to hand its answer to the Steam it drags up first. msync=None
         # keeps the historical default of off.
-        "WINEMSYNC": "1" if msync else "0",
+        # ...and only on an engine that carries the cold-boot fix (see _MSYNC_MIN_ENGINE):
+        # on wine-11.0 a cold msync boot crash-loops at 0x100000044 and Steam never opens.
+        "WINEMSYNC": "1" if (msync and _engine_msync_safe()) else "0",
         # Bradar the Debug toggle was a no-op for wine logging on the whole unified engine:
         # this was hardcoded "-all", and the Epic path's verbose flag only fed gst_debug.
         # So turning Debug on produced GStreamer chatter and not one extra wine line, on
