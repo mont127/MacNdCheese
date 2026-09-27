@@ -6557,6 +6557,22 @@ def _pid_executable(pid: int) -> str:
         return ""
 
 
+def _mnc_engine_roots() -> List[str]:
+    """Every directory MacNCheese's OWN wine can be running out of: the portable deps dir,
+    the unified engine actually selected (deps, the copy inside the .app, or -- only when
+    neither exists -- the dev tree), and the in-app bundle. Matching on deps alone missed
+    an engine running from the .app bundle entirely (#187), so quit/kill found nothing to
+    stop. The dev tree only counts while it IS the selected engine, so a developer's hand
+    run wine in it is left alone whenever a real engine is installed."""
+    roots: List[str] = [str(PORTABLE_DIR)]
+    active = _unified_build_dir()
+    if active is not None:
+        roots.append(str(active))
+    if WINE_UNIFIED_BUNDLED.exists():
+        roots.append(str(WINE_UNIFIED_BUNDLED))
+    return list(dict.fromkeys(roots))
+
+
 def _macncheese_wine_pids(extra_substrings: Optional[List[str]] = None) -> List[int]:
     """PIDs of host processes belonging to MacNCheese's Wine stack: anything
     whose command line references our portable deps dir (wine, wineserver,
@@ -6564,7 +6580,7 @@ def _macncheese_wine_pids(extra_substrings: Optional[List[str]] = None) -> List[
     given extra substrings (e.g. a specific prefix path). Matching on OUR
     paths means other third-party Wine installs are never touched.
     The backend itself and the app are excluded."""
-    pats = [str(PORTABLE_DIR)] + [s for s in (extra_substrings or []) if s]
+    pats = _mnc_engine_roots() + [s for s in (extra_substrings or []) if s]
     me, parent = os.getpid(), os.getppid()
     pids: List[int] = []
     try:
@@ -6586,14 +6602,17 @@ def _macncheese_wine_pids(extra_substrings: Optional[List[str]] = None) -> List[
             if any(p in cmdline for p in pats):
                 pids.append(pid)
                 continue
-            # Windows-argv processes ("C:\..." / "Z:\...") are invisible to the
-            # cmdline match — resolve their REAL executable instead. Other Wine
-            # third-party Wine installs resolve to THEIR paths, so the
-            # never-touch guarantee holds.
-            if len(cmdline) > 2 and cmdline[1] == ":" and cmdline[2] == "\\":
-                exe = _pid_executable(pid)
-                if exe and any(p in exe for p in pats):
-                    pids.append(pid)
+            # Wine's Windows-side processes show a Windows argv, not our path, so
+            # resolve the REAL executable. This used to be done only for argv that
+            # looked like a drive path -- but a process started by bare name keeps a
+            # bare-name title: Steam is launched as `wine steam.exe ...`, so it shows
+            # up as "steam.exe -silent" and slipped past both checks, survived every
+            # kill, and kept respawning children + a fresh wineserver (#187). A
+            # proc_pidpath per pid is one cheap syscall, so just ask for every one.
+            # Other Wine installs resolve to THEIR paths, so never-touch still holds.
+            exe = _pid_executable(pid)
+            if exe and any(p in exe for p in pats):
+                pids.append(pid)
     except Exception as exc:
         log(f"kill: ps scan failed: {exc}")
     return pids
@@ -6628,6 +6647,12 @@ def cmd_kill_wineserver(params: Dict[str, Any]) -> Any:
     # 1) graceful shutdown on every portable Wine build that exists (each build
     # Bradar    has its own wineserver; the D3DMetal one was previously never asked).
     servers: List[str] = []
+    # The unified engine's own wineserver goes FIRST -- it is what serves every prefix
+    # now, and a wineserver only speaks its own build's protocol, so `-k` from one of
+    # the legacy app bundles below cannot reach it and did nothing (#187).
+    active = _unified_build_dir()
+    if active is not None and (active / "server" / "wineserver").exists():
+        servers.append(str(active / "server" / "wineserver"))
     for app in ("Wine Stable.app", "Wine Staging.app", "Wine Devel.app", "Wine D3DMetal.app"):
         cand = PORTABLE_DIR / app / "Contents" / "Resources" / "wine" / "bin" / "wineserver"
         if cand.exists():
