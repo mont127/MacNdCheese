@@ -54,7 +54,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // saved preference ("ask" | "kill" | "leave") or ask. Matching is on OUR
     // portable deps path only — other Wine installs (CrossOver/Whisky) are
     // never touched — and it works even if the backend already exited.
-    private static let wineMatchPattern = "Application Support/MacNCheese/deps"
+    private static let depsMatchPattern = "Application Support/MacNCheese/deps"
+
+    /// Every place OUR wine runs from: the portable deps dir, and the engine that ships
+    /// inside this .app (WineVersionGate runs it straight out of Resources when it is
+    /// there). Matching deps alone meant an in-bundle engine matched NOTHING, so quit
+    /// neither asked nor killed (#187). Built from Bundle.main directly rather than via
+    /// the @MainActor gate, so it is safe from any context.
+    private static var wineMatchPatterns: [String] {
+        [depsMatchPattern, (Bundle.main.resourcePath ?? Bundle.main.bundlePath) + "/wine-unified"]
+    }
 
     /// Real executable path of a pid (libproc). Wine's Windows-side processes
     /// (services.exe, winedevice.exe, the game itself) show a pure "C:\..."
@@ -84,6 +93,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let text = String(data: data, encoding: .utf8) else { return [] }
 
         let me = ProcessInfo.processInfo.processIdentifier
+        let pats = Self.wineMatchPatterns
         var pids: [pid_t] = []
         for raw in text.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
@@ -91,10 +101,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if pid == me { continue }
             let cmd = String(line[line.index(after: sp)...])
             if cmd.contains("backend_server.py") || cmd.contains(".app/Contents/MacOS/MacNCheese") { continue }
-            if cmd.contains(Self.wineMatchPattern) {
+            if pats.contains(where: { cmd.contains($0) }) {
                 pids.append(pid)
-            } else if cmd.count > 2, Array(cmd)[1] == ":", Array(cmd)[2] == "\\",
-                      pidExecutable(pid).contains(Self.wineMatchPattern) {
+                continue
+            }
+            // Resolve the REAL executable for every process, not just ones whose title
+            // looks like "C:\\...". A wine process started by bare name keeps a bare-name
+            // title -- Steam is launched as `wine steam.exe ...`, so it shows as
+            // "steam.exe -silent" -- and slipped past both checks: it survived "Quit Wine
+            // & Exit", kept spawning children, and brought a fresh wineserver back up
+            // (#187). proc_pidpath is one cheap syscall per pid.
+            let exe = pidExecutable(pid)
+            if !exe.isEmpty, pats.contains(where: { exe.contains($0) }) {
                 pids.append(pid)
             }
         }

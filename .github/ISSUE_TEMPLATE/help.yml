@@ -16,7 +16,7 @@ body:
       description: Which part(s) of the app is this about, if any? Pick more than one if it genuinely spans areas. Pick "Not sure" if it doesn't apply.
       multiple: true
       options:
-        - "Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)"
+        - "Backend (Wine, DXVK, DXMT, D3DMetal, GPTK)"
         - "Apps (.exe/.msi support, bottles)"
         - "Steam"
         - "Epic Games"

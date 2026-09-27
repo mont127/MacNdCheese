@@ -47,9 +47,7 @@ MESA_DIR="${6:-}"
 MESA_URL="${7:-}"
 DXMT_DIR="${8:-}"
 DXMT_URL="${9:-}"
-VKD3D_DIR="${10:-}"
-VKD3D_URL="${11:-}"
-GPTK_DIR="${12:-}"
+GPTK_DIR="${10:-}"
 
 XQUARTZ_URL="https://github.com/XQuartz/XQuartz/releases/download/XQuartz-2.8.5/XQuartz-2.8.5.pkg"
 GSTREAMER_URL="https://gstreamer.freedesktop.org/data/pkg/osx/1.28.1/gstreamer-1.0-1.28.1-universal.pkg"
@@ -57,7 +55,6 @@ DXVK_PREBUILT_URL="https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3
 WINE_STABLE_URL="https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0/wine-stable-11.0-osx64.tar.xz"
 DXMT_DEFAULT_URL="https://github.com/3Shain/dxmt/releases/download/v0.80/dxmt-v0.80-builtin.tar.gz"
 WINE_STAGING_DEFAULT_URL="https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.9/wine-staging-11.9-osx64.tar.xz"
-VKD3D_DEFAULT_URL="https://github.com/mont127/CheeseInstallation/releases/download/v1.0.0/vkd3d-proton.tar.zst"
 GPTK_PACKAGE_URL="https://github.com/mont127/CheeseInstallation/releases/download/v1.0.0/gptk-package.zip"
 
 PORTABLE_BASE_URL="https://github.com/mont127/CheeseInstallation/releases/download/v1.0.0"
@@ -97,10 +94,6 @@ fi
 
 if [ -z "$DXMT_URL" ]; then
   DXMT_URL="$DXMT_DEFAULT_URL"
-fi
-
-if [ -z "$VKD3D_URL" ]; then
-  VKD3D_URL="$VKD3D_DEFAULT_URL"
 fi
 
 if [ -z "${WINE_DEVEL_URL:-}" ]; then
@@ -507,95 +500,6 @@ install_portable_tools() {
   
   write_component_version "tools" "$PORTABLE_BASE_TAG"
   echo "Portable tools installed to $PORTABLE_DIR"
-}
-install_vkd3d() {
-  if [ -z "$VKD3D_DIR" ]; then
-    echo "Missing VKD3D-Proton target directory"
-    exit 1
-  fi
-
-  # Same layout as DXVK: VKD3D_DIR/x86/ and VKD3D_DIR/x64/
-  mkdir -p "$VKD3D_DIR/x86" "$VKD3D_DIR/x64"
-  archive="$WORK_DIR/vkd3d-proton-archive"
-  extract_dir="$WORK_DIR/vkd3d-prebuilt"
-
-  echo "Step: Downloading and installing VKD3D-Proton DLLs..."
-  download_file "$VKD3D_URL" "$archive"
-  rm -rf "$extract_dir"
-  mkdir -p "$extract_dir"
-
-  # Detect format and extract accordingly
-  case "$VKD3D_URL" in
-    *.tar.zst)
-      # Try multiple zstd paths: homebrew, system, then tar --zstd
-      ZSTD_BIN=""
-      if [ -x /opt/homebrew/bin/zstd ]; then
-        ZSTD_BIN="/opt/homebrew/bin/zstd"
-      elif [ -x /usr/local/bin/zstd ]; then
-        ZSTD_BIN="/usr/local/bin/zstd"
-      elif command -v zstd >/dev/null 2>&1; then
-        ZSTD_BIN="$(command -v zstd)"
-      fi
-
-      if [ -n "$ZSTD_BIN" ]; then
-        "$ZSTD_BIN" -d "$archive" -o "$archive.tar" && tar -xf "$archive.tar" -C "$extract_dir"
-        rm -f "$archive.tar"
-      else
-        tar --zstd -xf "$archive" -C "$extract_dir"
-      fi
-      ;;
-    *.tar.gz|*.tgz)
-      tar -xzf "$archive" -C "$extract_dir"
-      ;;
-    *.zip)
-      unzip -o -q "$archive" -d "$extract_dir"
-      ;;
-    *)
-      tar -xf "$archive" -C "$extract_dir"
-      ;;
-  esac
-
-  # Find the x86 dir with d3d12.dll (archive has x86/ and x64/ folders)
-  found_x86=""
-  for candidate in \
-    "$extract_dir/x86" \
-    "$extract_dir/VKD3D/x86" \
-    "$extract_dir/vkd3d-proton/x86"; do
-    if [ -f "$candidate/d3d12.dll" ]; then
-      found_x86="$candidate"
-      break
-    fi
-  done
-  if [ -z "$found_x86" ]; then
-    found_x86="$(find "$extract_dir" -path "*/x86/d3d12.dll" -print | head -n1 | xargs -I{} dirname "{}" 2>/dev/null || true)"
-  fi
-
-  # Find the x64 dir (may or may not exist)
-  found_x64=""
-  for candidate in \
-    "$extract_dir/x64" \
-    "$extract_dir/VKD3D/x64" \
-    "$extract_dir/vkd3d-proton/x64"; do
-    if [ -f "$candidate/d3d12.dll" ]; then
-      found_x64="$candidate"
-      break
-    fi
-  done
-  if [ -z "$found_x64" ]; then
-    found_x64="$(find "$extract_dir" -path "*/x64/d3d12.dll" -print | head -n1 | xargs -I{} dirname "{}" 2>/dev/null || true)"
-  fi
-
-  if [ -z "$found_x86" ] || [ ! -f "$found_x86/d3d12.dll" ]; then
-    echo "VKD3D-Proton archive did not contain the expected x86/d3d12.dll"
-    exit 1
-  fi
-
-  echo "Installing VKD3D-Proton into $VKD3D_DIR"
-  cp -f "$found_x86/"*.dll "$VKD3D_DIR/x86/"
-  if [ -n "$found_x64" ] && [ -d "$found_x64" ]; then
-    cp -f "$found_x64/"*.dll "$VKD3D_DIR/x64/"
-  fi
-  echo "VKD3D-Proton installed successfully (x86 + x64)"
 }
 
 install_dxvk() {
@@ -1351,12 +1255,6 @@ uninstall_dxmt() {
   grep -v "^dxmt=" "$VERSION_MARKER" > "${VERSION_MARKER}.tmp" 2>/dev/null || true
   mv "${VERSION_MARKER}.tmp" "$VERSION_MARKER" 2>/dev/null || true
   echo "DXMT removed."
-}
-
-uninstall_vkd3d() {
-  echo "Step: Uninstalling VKD3D-Proton..."
-  rm -rf "$VKD3D_DIR" 2>/dev/null || true
-  echo "VKD3D-Proton removed."
 }
 
 WINEOPENXR_SRC_DIR="$PORTABLE_DIR/wineopenxr-src"
@@ -2749,9 +2647,6 @@ case "$ACTION" in
   uninstall_dxmt)
     uninstall_dxmt
     ;;
-  uninstall_vkd3d)
-    uninstall_vkd3d
-    ;;
   build_dxvk64)
     install_tools
     build_dxvk64
@@ -2762,10 +2657,6 @@ case "$ACTION" in
     ;;
   install_dxmt|install_d3dmetal|install_d3dmetal3)
     install_dxmt
-    ;;
-  install_vkd3d)
-    install_tools
-    install_vkd3d
     ;;
   install_gptk_dlls)
     install_gptk_dlls

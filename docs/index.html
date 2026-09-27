@@ -650,8 +650,8 @@
           <div class="feature-icon" aria-hidden="true">
             <svg class="icon" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>
           </div>
-          <h3>DXVK &amp; VKD3D-Proton</h3>
-          <p>Translates DirectX 9&ndash;12 to Vulkan, then to Metal via MoltenVK. Most games work out of the box.</p>
+          <h3>DXVK</h3>
+          <p>Translates DirectX 9&ndash;11 to Vulkan, then to Metal via MoltenVK. Most games work out of the box.</p>
         </article>
 
         <article class="feature-card reveal">
@@ -675,7 +675,7 @@
             <svg class="icon" viewBox="0 0 24 24"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z"/><path d="M5 3v4M19 17v4M3 5h4M17 19h4"/></svg>
           </div>
           <h3>Smart Auto Mode</h3>
-          <p>Not sure which backend to pick? Auto mode detects your game and selects the best option &mdash; DXVK, VKD3D-Proton, or DXMT.</p>
+          <p>Not sure which backend to pick? Auto mode detects your game and selects the best option &mdash; DXVK or DXMT.</p>
         </article>
 
         <article class="feature-card wide reveal">
@@ -761,7 +761,7 @@
           </h3>
           <ul class="compat-list">
             <li><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>DirectX 11 games (most common)</li>
-            <li><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>DirectX 12 games (via VKD3D-Proton)</li>
+            <li><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>DirectX 12 games (via D3DMetal)</li>
             <li><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Unity engine games</li>
             <li><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>DirectX 9 games (hit or miss)</li>
             <li><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>R.E.P.O., ULTRAKILL, People Playground</li>
@@ -800,7 +800,6 @@
         <div class="tech-card reveal"><a href="https://www.winehq.org/" target="_blank" rel="noopener"><div class="tech-head"><h4>Wine</h4><svg class="tech-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></div><p>Runs Windows software on macOS</p></a></div>
         <div class="tech-card reveal"><a href="https://github.com/Gcenx/DXVK-macOS" target="_blank" rel="noopener"><div class="tech-head"><h4>DXVK</h4><svg class="tech-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></div><p>DirectX 10/11 &rarr; Vulkan</p></a></div>
         <div class="tech-card reveal"><a href="https://github.com/KhronosGroup/MoltenVK" target="_blank" rel="noopener"><div class="tech-head"><h4>MoltenVK</h4><svg class="tech-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></div><p>Vulkan &rarr; Metal (Apple GPU)</p></a></div>
-        <div class="tech-card reveal"><a href="https://github.com/HansKristian-Work/vkd3d-proton" target="_blank" rel="noopener"><div class="tech-head"><h4>VKD3D-Proton</h4><svg class="tech-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></div><p>DirectX 12 &rarr; Vulkan</p></a></div>
         <div class="tech-card reveal"><a href="https://github.com/3Shain/dxmt" target="_blank" rel="noopener"><div class="tech-head"><h4>DXMT</h4><svg class="tech-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></div><p>DirectX 11 &rarr; Metal (direct)</p></a></div>
         <div class="tech-card reveal"><a href="https://github.com/Whisky-App/Whisky" target="_blank" rel="noopener"><div class="tech-head"><h4>Whisky</h4><svg class="tech-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></div><p>Inspiration &amp; predecessor</p></a></div>
       </div>
@@ -857,7 +856,6 @@
               <thead><tr><th>Backend</th><th>Best For</th></tr></thead>
               <tbody>
                 <tr><td>DXVK</td><td>Most DirectX 10/11 games</td></tr>
-                <tr><td>VKD3D-Proton</td><td>DirectX 12 games</td></tr>
                 <tr><td>DXMT</td><td>Experimental DX11 via Metal</td></tr>
                 <tr><td>Mesa</td><td>Fallback / debugging</td></tr>
               </tbody>

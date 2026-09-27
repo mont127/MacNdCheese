@@ -582,7 +582,7 @@ def _do_engines_status(ns, backend: "Backend", state: State) -> None:
 # holds the installed tag, or None if this component doesn't record one. latest_field:
 # the get_update_info field with the latest available tag/name, or None if the backend
 # doesn't track updates for it (wine_devel/vr write a marker but nothing compares it;
-# wine_unified/dxvk/vkd3d/gptk_dlls don't even write one -- installer.sh never calls
+# wine_unified/dxvk/gptk_dlls don't even write one -- installer.sh never calls
 # write_component_version for those).
 COMPONENTS = [
     {"id": "tools", "label": "Tools (git, 7z, wget)",
@@ -615,11 +615,6 @@ COMPONENTS = [
      "status_key": "has_dxvk64", "update_key": None,
      "version_marker": None, "latest_field": None,
      "aliases": ["dxvk"]},
-    {"id": "vkd3d", "label": "VKD3D-Proton",
-     "install": "install_vkd3d", "uninstall": "uninstall_vkd3d",
-     "status_key": "has_vkd3d", "update_key": None,
-     "version_marker": None, "latest_field": None,
-     "aliases": ["vkd3d", "vkd3d proton"]},
     {"id": "gptk_dlls", "label": "D3DMetal (GPTK DLLs)",
      "install": "install_gptk_dlls", "uninstall": "uninstall_gptk_dlls",
      "status_key": "has_gptk_dlls", "update_key": None,
@@ -702,7 +697,6 @@ def _installer_paths() -> dict:
         "dxvk32": _defaults_read("installerPaths.dxvkInstall32", os.path.join(home, "dxvk-release-32")),
         "mesa": _defaults_read("installerPaths.mesaDir", os.path.join(home, "mesa", "x64")),
         "dxmt": _defaults_read("installerPaths.dxmtDir", os.path.join(home, "dxmt")),
-        "vkd3d": _defaults_read("installerPaths.vkd3dDir", os.path.join(home, "vkd3d-proton")),
         "gptk_dir": _defaults_read("installerPaths.gptkDir", gptk_default),
     }
 
@@ -761,7 +755,6 @@ def _run_installer_job(backend: "Backend", actions: "list[str]") -> None:
         "mesa": paths["mesa"],
         "mesa_url": MESA_URL,
         "dxmt": paths["dxmt"],
-        "vkd3d": paths["vkd3d"],
         "gptk_dir": paths["gptk_dir"],
     }) or {}
     job_id = job.get("job_id")
@@ -1340,7 +1333,7 @@ def _build_parser() -> argparse.ArgumentParser:
                                '"*"/all = everything not yet installed or out of date')
     sp.add_argument("names", nargs="+", metavar="component",
                      help="tools, \"wine stable\", \"wine staging\", \"wine unified\", \"wine devel\", "
-                          "dxvk, vkd3d, \"gptk dlls\", dxmt, vr, or \"*\"/all")
+                          "dxvk, \"gptk dlls\", dxmt, vr, or \"*\"/all")
     _add_install_flags(sp)
     sp.set_defaults(_handler=_do_engines_install)
 

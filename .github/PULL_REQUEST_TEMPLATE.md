@@ -10,7 +10,7 @@
 - [ ] Other (docs, CI, chore...)
 
 ## Area
-- [ ] Backend (Wine, DXVK, DXMT, D3DMetal, VKD3D, GPTK)
+- [ ] Backend (Wine, DXVK, DXMT, D3DMetal, GPTK)
 - [ ] Apps (.exe/.msi support, bottles)
 - [ ] Steam
 - [ ] Epic Games
