@@ -251,9 +251,17 @@ PLIST
     done
     rm -f "$ENT"
     echo "  signed $signd engine loaders"
+    # Re-signing those loaders rewrites files the bundle signature above had already
+    # sealed, so the app came out "a sealed resource is missing or invalid" -- a state a
+    # browser-downloaded copy can report as damaged. Reseal the bundle WITHOUT --deep:
+    # it records the loaders' new hashes but leaves their own signatures (and the JIT
+    # entitlements in them) untouched, the same way the gamepolicyctl branch reseals.
+    /usr/bin/codesign --force --sign - --timestamp=none "$APP_ROOT"
 fi
 
-/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_ROOT" 2>&1 || true
+# Strict on purpose: this used to end in `|| true`, wich is how every build since the
+# engine moved into Resources shipped with a broken seal without anyone noticing.
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_ROOT"
 
 echo ""
 echo "Creating DMG..."
