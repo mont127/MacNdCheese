@@ -118,6 +118,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_CI }}
           ENGINE_REPO: mont127/MacNdCheese-WineEngine-PRIVATE
+          # The newest macOS an engine may REQUIRE (its LC_BUILD_VERSION minos). An engine
+          # built against a newer SDK with no deployment target pinned inherits the build
+          # machine's macOS: build-11 came out as minos 27.0 calling pipe2(), wich only
+          # macOS 27's libSystem exports, so on 26 wine died loading its own ntdll.so.
+          # Raise this only on purpose, when dropping support for the older macOS.
+          ENGINE_MAX_MINOS: "26.0"
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -145,64 +151,86 @@ jobs:
 
           mkdir -p payload
 
-          # Newest release carrying an engine asset, chosen by ASSET NAME rather than
-          # `--latest`: engine builds are often prereleases and the repo also publishes
-          # d3d-pack-only releases, either of which would make --latest pick the wrong one.
-          # One paginated call instead of one API call per release, sorted explicitly so
-          # "newest" never rides on the endpoint's default ordering, and carrying the
-          # asset's real name so the rename below can never glob two files.
-          ENGINE_PICK="$(gh api "repos/$ENGINE_REPO/releases?per_page=100" --paginate \
+          # The newest WORKING engine, not simply the newest one. Candidates come by ASSET
+          # NAME rather than `--latest` (engine builds are often prereleases, and the repo
+          # also publishes d3d-pack-only releases), newest first. Each is downloaded,
+          # extracted and checked; the first that passes ships, and anything newer that
+          # failed is skipped with a warning (and named in the release notes) instead of
+          # either failing the whole nightly or -- worse -- shipping it. build-10 and
+          # build-11 both went out without the gnutls closure, and build-11 cannot load
+          # on macOS 26 at all; before this, one of those would have killed every nightly
+          # until the engine was republished, or reached users as a wine with no TLS.
+          CANDIDATES="$(gh api "repos/$ENGINE_REPO/releases?per_page=100" --paginate \
             --jq '[ .[] | . as $r
                     | ($r.assets[]? | select(.name | endswith("unified-osx64.tar.xz")))
                     | {tag: $r.tag_name, asset: .name,
                        at: ($r.published_at // $r.created_at)} ]
-                  | sort_by(.at) | reverse | .[0] // empty')"
-          [ -n "$ENGINE_PICK" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
-          TAG="$(printf '%s' "$ENGINE_PICK" | jq -r .tag)"
-          ASSET="$(printf '%s' "$ENGINE_PICK" | jq -r .asset)"
-          echo "engine release: $TAG ($ASSET)"
+                  | sort_by(.at) | reverse | .[] | "\(.tag) \(.asset)"')"
+          [ -n "$CANDIDATES" ] || { echo "::error::no unified engine asset found in $ENGINE_REPO"; exit 1; }
 
-          gh release download "$TAG" --repo "$ENGINE_REPO" \
-            --pattern "$ASSET" --dir payload
+          # Prints why an extracted engine must not ship, or nothing if it is fine.
+          # Checked on the extracted tree: that is what actually ships.
+          engine_problem() {
+            local E="$1" req bin m
+            has() { [ -e "$E/$1" ]; }
+            has_any() { for c in "$@"; do has "$c" && return 0; done; return 1; }
+            # d3d slots are flat in pack layout 1 and per-backend dirs in layout 2
+            has_any mnc-d3d/d3d11_dxmt.dll mnc-d3d/dxmt/d3d11.dll || { echo "dxmt d3d11 missing"; return; }
+            has_any mnc-d3d/dxgi_dxmt.dll mnc-d3d/dxmt/dxgi.dll   || { echo "dxmt dxgi missing"; return; }
+            # a pack missing half the D3DMetal runtime loads fine, then dies on
+            # "Failed to dlopen D3DMetal" with no hint a file is missing
+            for req in libd3dshared.dylib D3DMetal.framework; do
+              has_any "mnc-d3d/$req" "mnc-d3d/d3dm/external/$req" "mnc-d3d/d3dm-gptk4/external/$req" \
+                || { echo "$req missing"; return; }
+            done
+            for req in loader/wine server/wineserver dlls/ntdll/ntdll.so; do
+              has "$req" || { echo "$req missing"; return; }
+            done
+            # secur32/crypt32 dlopen exactly this name; macOS has no system gnutls, so
+            # without it wine has no TLS and Steam fails "needs to be online to update"
+            has lib/libgnutls.30.dylib \
+              || { echo "no gnutls closure (lib/libgnutls.30.dylib), so wine would have no TLS"; return; }
+            for bin in loader/wine dlls/ntdll/ntdll.so; do
+              m="$(otool -l "$E/$bin" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+              [ -n "$m" ] || continue
+              if ! python3 -c 'import sys; v=lambda x: [int(p) for p in x.split(".")]; sys.exit(v(sys.argv[1]) > v(sys.argv[2]))' "$m" "$ENGINE_MAX_MINOS"; then
+                echo "$bin requires macOS $m, above the supported floor ENGINE_MAX_MINOS=$ENGINE_MAX_MINOS"; return
+              fi
+            done
+          }
+
+          WORK="${RUNNER_TEMP:-/tmp}/engine-candidate"
+          TAG="" SKIPPED="" N=0
+          while read -r tag asset; do
+            [ -n "$tag" ] || continue
+            N=$((N+1)); [ "$N" -le 6 ] || break
+            echo "trying engine release: $tag ($asset)"
+            rm -rf "$WORK"; mkdir -p "$WORK/tree"
+            if ! gh release download "$tag" --repo "$ENGINE_REPO" --pattern "$asset" --dir "$WORK" \
+               || ! tar -xJf "$WORK/$asset" -C "$WORK/tree" --strip-components=1; then
+              why="could not download or unpack $asset"
+            else
+              rm -f "$WORK/$asset"
+              why="$(engine_problem "$WORK/tree")"
+            fi
+            if [ -z "$why" ]; then TAG="$tag"; break; fi
+            echo "::warning::skipping engine $tag: $why"
+            SKIPPED="${SKIPPED}- ${tag}: ${why}"$'\n'
+          done <<< "$CANDIDATES"
+
+          if [ -z "$TAG" ]; then
+            echo "::error::no usable engine among the newest releases in $ENGINE_REPO:"
+            printf '%s' "$SKIPPED"
+            exit 1
+          fi
           # Extracted into the payload rather than shipped as an archive: buildapp.sh
           # copies the payload verbatim into Resources, and an extracted
           # Resources/wine-unified is what WineVersionGate.bundledEngineAvailable looks
-          # for. With it present reconcileEngines() drops the deps copy and the app runs
-          # the engine straight out of the bundle, so nothing is extracted at install
-          # time. One leading component is stripped, exactly as installer.sh did.
-          mkdir -p payload/wine-unified
-          tar -xJf "payload/$ASSET" -C payload/wine-unified --strip-components=1
-          rm -f "payload/$ASSET"
-
-          # The engine bundle carries mnc-d3d/ itself, so nothing else to fetch. Verify
-          # it is complete: a pack missing either half of the D3DMetal runtime loads
-          # fine and then dies on "Failed to dlopen D3DMetal" with no hint a file is
-          # missing, so fail here rather than shipping it.
-          #
-          # Verified on the extracted tree: cheaper than decoding the archive, and it
-          # checks what actually ships rather than what the archive claimed.
-          ENGINE=payload/wine-unified
-          bundle_has() { [ -e "$ENGINE/$1" ]; }
-          bundle_has_any() { for c in "$@"; do bundle_has "$c" && return 0; done; return 1; }
-
-          # The d3d slots are named differently per pack layout -- flat in layout 1,
-          # under a per-backend directory in layout 2 -- so accept either.
-          bundle_has_any mnc-d3d/d3d11_dxmt.dll mnc-d3d/dxmt/d3d11.dll \
-            || { echo "::error::engine bundle incomplete: dxmt d3d11 missing"; exit 1; }
-          bundle_has_any mnc-d3d/dxgi_dxmt.dll mnc-d3d/dxmt/dxgi.dll \
-            || { echo "::error::engine bundle incomplete: dxmt dxgi missing"; exit 1; }
-          # The D3DMetal runtime sits at the pack root in the flat layout and under
-          # <slot>/external/ in the per-backend one.
-          for req in libd3dshared.dylib D3DMetal.framework; do
-            bundle_has_any "mnc-d3d/$req" \
-                           "mnc-d3d/d3dm/external/$req" \
-                           "mnc-d3d/d3dm-gptk4/external/$req" \
-              || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
-          done
-          for req in loader/wine server/wineserver lib; do
-            bundle_has "$req" \
-              || { echo "::error::engine bundle incomplete: $req missing"; exit 1; }
-          done
+          # for, so the app runs the engine straight out of the bundle.
+          mv "$WORK/tree" payload/wine-unified
+          echo "engine release: $TAG"
+          echo "engine_tag=$TAG" >> "$GITHUB_OUTPUT"
+          { echo "engine_skipped<<SKIP_EOF"; printf '%s' "$SKIPPED"; echo "SKIP_EOF"; } >> "$GITHUB_OUTPUT"
 
           du -sh payload/*
 
@@ -234,6 +262,9 @@ jobs:
 
       - name: Compute tag and release notes
         id: tag
+        env:
+          ENGINE_TAG: ${{ steps.payload.outputs.engine_tag }}
+          ENGINE_SKIPPED: ${{ steps.payload.outputs.engine_skipped }}
         run: |
           set -euo pipefail
           # The version is read from Sources/Info.plist -- the same single source of
@@ -265,6 +296,15 @@ jobs:
             echo "Built from $(git rev-parse --short HEAD): $(git log -1 --pretty=%s)"
             echo ""
             echo "https://github.com/${GITHUB_REPOSITORY}/commit/$(git rev-parse HEAD)"
+            if [ -n "${ENGINE_TAG:-}" ]; then
+              echo ""
+              echo "Wine engine: ${ENGINE_TAG}"
+            fi
+            if [ -n "${ENGINE_SKIPPED:-}" ]; then
+              echo ""
+              echo "Newer engine releases skipped as unusable:"
+              printf '%s\n' "$ENGINE_SKIPPED"
+            fi
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
