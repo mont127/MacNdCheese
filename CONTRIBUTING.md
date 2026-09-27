@@ -85,8 +85,7 @@ Launch game works for at least one title.
 Log output is readable and saved where expected.
 
 Mesa has been removed as a backend (the unified engine covers DXMT, DXVK and D3DMetal), so it is
-no longer part of this checklist. VKD3D-Proton (D3D12) is still selectable but is not part of
-backend auto-detection yet; test it directly if your change touches it.
+no longer part of this checklist. VKD3D-Proton has been removed as well.
 
 If your change touches a specific backend. test that backend with at least one real game.
 

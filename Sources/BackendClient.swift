@@ -986,7 +986,7 @@ final class BackendClient: ObservableObject {
 
     func runInstaller(installerPath: String, actions: [String], prefix: String,
                       dxvkSrc: String, dxvk64: String, dxvk32: String,
-                      mesa: String, mesaUrl: String, dxmt: String, vkd3d: String,
+                      mesa: String, mesaUrl: String, dxmt: String,
                       gptkDir: String) async -> String? {
         do {
             let result = try await send(cmd: "run_installer", params: [
@@ -999,7 +999,6 @@ final class BackendClient: ObservableObject {
                 "mesa": mesa,
                 "mesa_url": mesaUrl,
                 "dxmt": dxmt,
-                "vkd3d": vkd3d,
                 "gptk_dir": gptkDir,
             ])
             if let dict = result as? [String: Any], let jobId = dict["job_id"] as? String {

@@ -44,7 +44,6 @@ final class InstallRunner: ObservableObject {
             mesa: p.mesaDir,
             mesaUrl: InstallerPathStore.mesaURL,
             dxmt: p.dxmtDir,
-            vkd3d: p.vkd3dDir,
             gptkDir: p.gptkDir
         ) else {
             failed = true

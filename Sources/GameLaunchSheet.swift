@@ -203,7 +203,7 @@ struct GameLaunchSheet: View {
                     Text(L("Detecting...")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                let mainIds: [String] = ["auto", "wine_devel", "opengl", "dxmt", "vr", "d3dmetal3", "dxvk", "vkd3d-proton"]
+                let mainIds: [String] = ["auto", "wine_devel", "opengl", "dxmt", "vr", "d3dmetal3", "dxvk"]
                 let experimentalIds: [String] = ["wine", "gptk_full"]
                 let mainBackends = availableBackends.filter { mainIds.contains($0.backendId) }
                     .sorted { mainIds.firstIndex(of: $0.backendId) ?? 99 < mainIds.firstIndex(of: $1.backendId) ?? 99 }
@@ -449,7 +449,9 @@ struct GameLaunchSheet: View {
         guard let prefix = backend.activePrefix else { return }
         let cfg = await backend.getGameConfig(prefix: prefix, appid: game.appid)
         if let exe = cfg["exe"] as? String, !exe.isEmpty { selectedExe = exe }
-        if let b = cfg["backend"] as? String { selectedBackend = b }
+        // A game saved on the retired VKD3D-Proton backend (#186) launches on DXVK now --
+        // the backend maps it there -- so show that, not a picker with nothing selected.
+        if let b = cfg["backend"] as? String { selectedBackend = (b == "vkd3d-proton" || b == "vkd3d") ? "dxvk" : b }
         if let a = cfg["args"] as? String { extraArgs = a }
         if let r = cfg["retina_mode"] as? Bool { retinaMode = r }
         if let h = cfg["metal_hud"] as? Bool { metalHud = h }
@@ -657,7 +659,6 @@ struct GameLaunchSheet: View {
         case "vr", "dxmt_openxr": return L("VR (OpenXR)")
         case "d3dmetal3":     return L("D3DMetal (Best Performance)")
         case "dxvk":          return L("DXVK (Best Compatibility)")
-        case "vkd3d-proton":  return L("VKD3D-Proton (D3D12)")
         case "wine":          return L("Wine Builtin")
         case "gptk":          return L("GPTK (D3DMetal, copy DLLs)")
         case "gptk_full":     return L("GPTK Full (Apple Toolkit)")

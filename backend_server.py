@@ -316,7 +316,17 @@ BACKEND_DXMT_OPENXR = "dxmt_openxr"
 BACKEND_MESA_LLVMPIPE = "mesa:llvmpipe"
 BACKEND_MESA_ZINK = "mesa:zink"
 BACKEND_MESA_SWR = "mesa:swr"
-BACKEND_VKD3D = "vkd3d-proton"
+# Retired backend ids -> what a saved config still carrying one launches with now.
+# VKD3D-Proton was removed (#186). The unified engine had allready been running those
+# games on DXVK (its game-backend map sent vkd3d/vkd3d-proton there), so the legacy
+# path goes to DXVK as well: every game someone saved with it keeps launching exactly
+# as it did, instead of silently landing on whatever the fallthrough default is.
+_RETIRED_BACKENDS = {"vkd3d-proton": BACKEND_DXVK, "vkd3d": BACKEND_DXVK}
+
+
+def _normalize_backend(backend: str) -> str:
+    return _RETIRED_BACKENDS.get((backend or "").lower(), backend)
+
 BACKEND_GPTK = "gptk"
 BACKEND_GPTK_FULL = "gptk_full"
 BACKEND_D3DMETAL3 = "d3dmetal3"
@@ -347,7 +357,6 @@ SYSTEM_OPENXR_ACTIVE_RUNTIME = Path("/usr/local/share/openxr/1/active_runtime.js
 OXRSYS_RUNTIME_DIR = PORTABLE_DIR / "oxrsys"
 OXRSYS_RUNTIME_MANIFEST = OXRSYS_RUNTIME_DIR / "oxrsys-runtime.json"
 OXRSYS_CONFIG_DIR = Path.home() / "Library" / "Application Support" / "OXRSys"
-DEFAULT_VKD3D_DIR = Path.home() / "vkd3d-proton"
 DEFAULT_GPTK_DIR = Path.home() / "gptk"
 GPTK3_ROOT = Path.home() / "gptk3" / "Game Porting Toolkit.app"
 D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
@@ -1027,11 +1036,6 @@ def _mesa_available() -> bool:
     # Bradar Mesa was removed; the unified engine covers DXMT/DXVK/D3DMetal.
     return False
 
-def _vkd3d_available() -> bool:
-    # DLLs live in x86/ subfolder (same layout as DXVK)
-    vkd3d_bin = DEFAULT_VKD3D_DIR / "x86"
-    return vkd3d_bin.exists() and (vkd3d_bin / "d3d12.dll").exists()
-
 def _dxmt_available() -> bool:
     return DEFAULT_DXMT_DIR.exists() and (DEFAULT_DXMT_DIR / "d3d11.dll").exists()
 
@@ -1290,6 +1294,7 @@ def _apply_backend_env(env: Dict[str, str], backend: str, debug: bool = False) -
     env["WINE_MF_MFT_SKIP_VERIFY"] = "1"
 
     
+    backend = _normalize_backend(backend)
     backend_ovr = ""
 
     if backend in (BACKEND_WINE, BACKEND_WINE_DEVEL):
@@ -1319,18 +1324,6 @@ def _apply_backend_env(env: Dict[str, str], backend: str, debug: bool = False) -
         env["MESA_GLTHREAD"] = "true"
         env.pop("DXVK_LOG_PATH", None)
         env.pop("DXVK_LOG_LEVEL", None)
-
-    elif backend == BACKEND_VKD3D:
-        vkd3d_bin = str(DEFAULT_VKD3D_DIR / "x86")
-        env["VKD3D_PROTON_PATH"] = vkd3d_bin
-        backend_ovr = "d3d12,d3d12core,dxgi=n,b"
-        existing_winepath = env.get("WINEPATH", "")
-        env["WINEPATH"] = vkd3d_bin if not existing_winepath else f"{vkd3d_bin};{existing_winepath}"
-        env.pop("DXVK_LOG_PATH", None)
-        env.pop("DXVK_LOG_LEVEL", None)
-        env.pop("GALLIUM_DRIVER", None)
-        env.pop("MESA_GLTHREAD", None)
-        env.setdefault("VKD3D_CONFIG", "")
 
     elif backend == BACKEND_DXMT:
 
@@ -1371,7 +1364,6 @@ def _apply_backend_env(env: Dict[str, str], backend: str, debug: bool = False) -
             "WINESERVER",
             "DXVK_LOG_PATH",
             "DXVK_LOG_LEVEL",
-            "VKD3D_PROTON_PATH",
             "DXMT_PATH",
             "GALLIUM_DRIVER",
             "MESA_GLTHREAD",
@@ -1405,7 +1397,6 @@ def _apply_backend_env(env: Dict[str, str], backend: str, debug: bool = False) -
             "WINESERVER",
             "DXVK_LOG_PATH",
             "DXVK_LOG_LEVEL",
-            "VKD3D_PROTON_PATH",
             "DXMT_PATH",
             "GALLIUM_DRIVER",
             "MESA_GLTHREAD",
@@ -1739,7 +1730,7 @@ def _restore_wine_lib_from_dxmt_backup() -> List[str]:
 
     Why this matters: DXMT install overwrites wine's lib d3d11/dxgi/d3d10core
     and drops winemetal.dll alongside. If a user then picks D3DMetal3, GPTK,
-    DXVK, VKD3D, etc., the game-dir copy of (say) d3d11.dll is correct — but
+    DXVK etc., the game-dir copy of (say) d3d11.dll is correct — but
     wine's loader still resolves *some* dependent DLL out of the wine lib
     path where DXMT's leftover winemetal.dll lives. Result: the game looks
     like it's still running on DXMT. Restore + scrub before any non-DXMT
@@ -1846,6 +1837,7 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
     copies are tracked; the DXMT/Wine-lib syncs are shared global state and keep
     their own restore logic.
     """
+    backend = _normalize_backend(backend)
     record: List[Tuple[str, bool]] = []
     game_dir = Path(install_dir) if install_dir else exe_path.parent
     target_dirs = _collect_target_dirs(game_dir, exe_path)
@@ -1912,21 +1904,6 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
             log(f"Copied Mesa ({driver}) DLLs -> {tdir}")
 
 
-    elif backend == BACKEND_VKD3D:
-        vkd3d_bin = DEFAULT_VKD3D_DIR / "x86"
-        vkd3d_dlls = ("d3d12.dll", "d3d12core.dll")
-        vkd3d_optional = ("dxgi.dll",)
-        if not all((vkd3d_bin / dll).exists() for dll in vkd3d_dlls):
-            log(f"VKD3D DLLs not found at {vkd3d_bin}, skipping patch")
-        else:
-            for tdir in target_dirs:
-                tdir.mkdir(parents=True, exist_ok=True)
-                for dll in vkd3d_dlls:
-                    _patch_copy(vkd3d_bin / dll, tdir / dll, record)
-                for dll in vkd3d_optional:
-                    if (vkd3d_bin / dll).exists():
-                        _patch_copy(vkd3d_bin / dll, tdir / dll, record)
-                log(f"Copied VKD3D-Proton DLLs -> {tdir}")
 
     elif backend == BACKEND_DXMT:
         _unpatch_dxvk(game_dir)
@@ -2035,18 +2012,20 @@ def _prepare_game_for_backend(backend: str, exe_path: Path, install_dir: str) ->
                 log(f"Copied D3DMetal3 DLLs -> {tdir}")
 
     elif backend == BACKEND_GPTK_FULL:
-        # This backend needs DXVK/VKD3D DLLs removed (unpatch)
+        # This backend needs any DXVK (or leftover VKD3D) DLLs removed (unpatch)
         _unpatch_dxvk(game_dir)
 
     return record
 
 
-VKD3D_DLLS = ("d3d12.dll", "d3d12core.dll")
+# Not a live backend any more (#186) -- still swept, becuse a game patched while it existed
+# keeps a copied d3d12.dll/d3d12core.dll in its folder, and that shadows D3DMetal's d3d12.
+RETIRED_VKD3D_DLLS = ("d3d12.dll", "d3d12core.dll")
 
 def _unpatch_dxvk(game_dir: Path) -> None:
-    """Remove DXVK/VKD3D/Mesa DLLs from game directory (matches unpatch_selected_game)."""
+    """Remove DXVK/Mesa DLLs (and leftover VKD3D ones) from game directory (matches unpatch_selected_game)."""
     removed = 0
-    all_dlls = set(d.lower() for d in DXVK_DLLS + DXVK_OPTIONAL_DLLS + VKD3D_DLLS)
+    all_dlls = set(d.lower() for d in DXVK_DLLS + DXVK_OPTIONAL_DLLS + RETIRED_VKD3D_DLLS)
     try:
         for p in game_dir.glob("**/*.dll"):
             if p.name.lower() in all_dlls:
@@ -4091,7 +4070,7 @@ def _unified_game_backend(bottle_cfg: Dict[str, Any], backend: str = "") -> str:
         return "vr"
     if b == "dxmt":
         return "dxmt"
-    if b in ("dxvk", "vkd3d", "vkd3d-proton"):
+    if _normalize_backend(b) == BACKEND_DXVK:
         return "dxvk"
     # Bradar opengl = the wine-staging 11.8 wined3d->OpenGL build + the macdrv GL 3.2 clamp,
     # now folded into the unified wine (no more separate wine_devel). wine_devel maps here too.
@@ -4368,7 +4347,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
             "--disable-background-networking --disable-component-update "
             "--disable-domain-reliability --disable-breakpad --no-first-run"),
     })
-    for var in ("GTK_PATH", "WINEPATH", "VKD3D_PROTON_PATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
+    for var in ("GTK_PATH", "WINEPATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
         env.pop(var, None)
     if metal_hud:
         env["MTL_HUD_ENABLED"] = "1"
@@ -7042,7 +7021,6 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
         {"id": BACKEND_AUTO, "label": "Auto (recommended)", "available": True},
         {"id": BACKEND_WINE, "label": "Wine builtin", "available": True},
         {"id": BACKEND_DXVK, "label": "DXVK (D3D11→Vulkan)", "available": _dxvk_available()},
-        {"id": BACKEND_VKD3D, "label": "VKD3D-Proton (D3D12)", "available": _vkd3d_available()},
         {"id": BACKEND_DXMT, "label": "DXMT (experimental)", "available": _dxmt_available()},
         # Bradar VR = openxr-DXMT + wineopenxr + oxrsys streaming runtime. always shown so games
         # can pick it (the openxr d3d DLLs ride w/ the unified wine); install the runtime via Settings -> VR
@@ -7278,7 +7256,6 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_wine_d3dmetal": _wine_d3dmetal_installed(),
         "has_wine_unified": _unified_available(),
         "has_mnc_fonts": _mnc_fonts_staged(),
-        "has_vkd3d": _vkd3d_available(),
         "wine_version": wine_version,
         "has_rpc_bridge": _rpc_bridge_available(),
         "has_wineopenxr": _wineopenxr_available(),
@@ -8430,7 +8407,7 @@ def _run_installer_action_for_repair(job: Dict[str, Any], action: str, prefix: s
         str(installer),
         action,
         prefix,
-        "", "", "", "", "", "", "", "", "",
+        "", "", "", "", "", "", "", "",   # slots 3-10, blank
     ]
     return _run_job_command(job, args, env=env)
 
@@ -8615,7 +8592,6 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
     mesa: str = params.get("mesa", "")
     mesa_url: str = params.get("mesa_url", "")
     dxmt: str = params.get("dxmt", "")
-    vkd3d: str = params.get("vkd3d", "")
     gptk_dir: str = params.get("gptk_dir", "")
 
     if not actions:
@@ -8643,7 +8619,21 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
             job["lines"].append(f"=== {friendly} ===")
             try:
                 proc = subprocess.Popen(
-                    [installer_path, action, prefix, dxvk_src, dxvk64, dxvk32, mesa, mesa_url, dxmt, "", vkd3d, gptk_dir],
+                    # installer.sh's positional contract, one slot per arg. Spelled out
+                    # becuse a slot silently shifting is how #186 happened: VKD3D_URL
+                    # was missing, so gptk_dir landed in it and got curl'd as a URL.
+                    # (VKD3D-Proton is gone now, and GPTK_DIR moved up to slot 10.)
+                    [installer_path,
+                     action,       # 1  ACTION
+                     prefix,       # 2  PREFIX_DIR
+                     dxvk_src,     # 3  DXVK_SRC
+                     dxvk64,       # 4  DXVK_INSTALL64
+                     dxvk32,       # 5  DXVK_INSTALL32
+                     mesa,         # 6  MESA_DIR
+                     mesa_url,     # 7  MESA_URL
+                     dxmt,         # 8  DXMT_DIR
+                     "",           # 9  DXMT_URL (empty -> installer.sh default)
+                     gptk_dir],    # 10 GPTK_DIR
                     env=env,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,

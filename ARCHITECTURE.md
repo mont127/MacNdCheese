@@ -9,7 +9,7 @@ MacNdCheese is two processes wearing one app icon.
   tab, App Intents/Siri support (macOS 14+ only — see `Sources/AppIntents/` and
   `Sources/CompatShims.swift` for the cross-version shims the rest of the UI leans on).
 - **`backend_server.py`** — a single long-running Python process, standard library only. It does
-  the actual work: creating Wine prefixes, installing DXVK/VKD3D/DXMT/GPTK, detecting and
+  the actual work: creating Wine prefixes, installing DXVK/DXMT/GPTK, detecting and
   launching games, managing bottles, driving the Steam/Epic integrations, forcing Game Mode, etc.
   (Mesa install still exists in `installer.sh` for old configs, but it's been dropped from backend
   auto-detection — `_mesa_available()` is hardcoded `False` — and isn't offered as a launch backend.)
@@ -72,7 +72,7 @@ Three scripts, three different jobs — they are not interchangeable:
   every PR to fail fast on build breaks.
 - **`installer.sh`** — *not* a script you run yourself. It's copied into the built app's
   `Contents/Resources/` and is what the app itself shells out to at runtime, to install Wine,
-  DXVK, VKD3D, DXMT, etc. onto an end user's machine (plus Mesa, kept only for old configs — see
+  DXVK, DXMT, etc. onto an end user's machine (plus Mesa, kept only for old configs — see
   above).
 
 ## `vendor/gamepolicyctl`

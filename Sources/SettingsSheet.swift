@@ -8,7 +8,6 @@ enum InstallerPathStore {
     static let steamSetupKey = "installerPaths.steamSetup"
     static let mesaDirKey = "installerPaths.mesaDir"
     static let dxmtDirKey = "installerPaths.dxmtDir"
-    static let vkd3dDirKey = "installerPaths.vkd3dDir"
     static let gptkDirKey = "installerPaths.gptkDir"
 
     static var defaultDXVKSrc: String { NSHomeDirectory() + "/DXVK-macOS" }
@@ -17,7 +16,6 @@ enum InstallerPathStore {
     static var defaultSteamSetup: String { NSHomeDirectory() + "/Downloads/SteamSetup.exe" }
     static var defaultMesaDir: String { NSHomeDirectory() + "/mesa/x64" }
     static var defaultDXMTDir: String { NSHomeDirectory() + "/dxmt" }
-    static var defaultVKD3DDir: String { NSHomeDirectory() + "/vkd3d-proton" }
     static var defaultGPTKDir: String {
         let home = NSHomeDirectory()
         let bundledCandidate = home + "/macndcheese/gptk"
@@ -32,7 +30,6 @@ enum InstallerPathStore {
             steamSetup: value(for: steamSetupKey, default: defaultSteamSetup),
             mesaDir: value(for: mesaDirKey, default: defaultMesaDir),
             dxmtDir: value(for: dxmtDirKey, default: defaultDXMTDir),
-            vkd3dDir: value(for: vkd3dDirKey, default: defaultVKD3DDir),
             gptkDir: value(for: gptkDirKey, default: defaultGPTKDir)
         )
     }
@@ -65,7 +62,6 @@ struct InstallerPaths {
     let steamSetup: String
     let mesaDir: String
     let dxmtDir: String
-    let vkd3dDir: String
     let gptkDir: String
 }
 
@@ -414,7 +410,6 @@ struct PathsSettingsTab: View {
     @AppStorage(InstallerPathStore.steamSetupKey) private var steamSetup = InstallerPathStore.defaultSteamSetup
     @AppStorage(InstallerPathStore.mesaDirKey) private var mesaDir = InstallerPathStore.defaultMesaDir
     @AppStorage(InstallerPathStore.dxmtDirKey) private var dxmtDir = InstallerPathStore.defaultDXMTDir
-    @AppStorage(InstallerPathStore.vkd3dDirKey) private var vkd3dDir = InstallerPathStore.defaultVKD3DDir
     @AppStorage(InstallerPathStore.gptkDirKey) private var gptkDir = InstallerPathStore.defaultGPTKDir
 
     var body: some View {
@@ -425,7 +420,6 @@ struct PathsSettingsTab: View {
                 PathRow(label: L("DXVK install (32-bit)"), path: $dxvkInstall32, isDir: true)
                 PathRow(label: L("SteamSetup.exe"), path: $steamSetup, isDir: false)
                 PathRow(label: L("DXMT dir"), path: $dxmtDir, isDir: true)
-                PathRow(label: L("VKD3D-Proton dir"), path: $vkd3dDir, isDir: true)
                 PathRow(label: L("GPTK dir"), path: $gptkDir, isDir: true)
             }
             .padding(20)

@@ -145,7 +145,7 @@ struct OnboardingView: View {
                 Toggle(isOn: $installEverything) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(L("Also install advanced graphics"))
-                        Text(L("Wine Staging, DXMT and VKD3D-Proton. Larger download."))
+                        Text(L("Wine Staging and DXMT. Larger download."))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -421,7 +421,6 @@ struct OnboardingView: View {
         }
         add(s?.hasDxvk64 ?? false, "install_dxvk")
         if installEverything {
-            add(s?.hasVkd3d ?? false, "install_vkd3d")
             add(s?.hasDxmt ?? false, "install_dxmt")
         }
         return actions
