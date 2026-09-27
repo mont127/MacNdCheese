@@ -2148,9 +2148,19 @@ def _windows_path_to_unix(prefix: Path, value: str) -> Path:
     if re.match(r"^[A-Za-z]:\\", normalized):
         drive = normalized[0].lower()
         remainder = normalized[3:].replace("\\", "/")
-        base = prefix / f"drive_{drive}"
-        if drive == "c":
-            base = prefix / "drive_c"
+        # dosdevices/<letter>: is wine's own drive table, and for every letter but C it is
+        # the ONLY mapping that exists: a prefix has drive_c on disk and nothing else, so
+        # a second Steam library on "Z:\\Volumes\\..." used to be pointed at a drive_z that
+        # is never there and then silently dropped by the caller's .exists() filter.
+        # c: is a symlink to ../drive_c, so this covers the old behaviour too.
+        dos = prefix / "dosdevices" / f"{drive}:"
+        if dos.is_symlink() or dos.exists():
+            try:
+                base = dos.resolve()
+            except OSError:
+                base = prefix / f"drive_{drive}"
+        else:
+            base = prefix / f"drive_{drive}"
         return _resolve_wine_path(prefix, base / remainder)
     return Path(normalized.replace("\\", "/"))
 
