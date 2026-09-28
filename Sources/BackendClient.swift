@@ -987,9 +987,10 @@ final class BackendClient: ObservableObject {
     func runInstaller(installerPath: String, actions: [String], prefix: String,
                       dxvkSrc: String, dxvk64: String, dxvk32: String,
                       mesa: String, mesaUrl: String, dxmt: String,
-                      gptkDir: String) async -> String? {
+                      gptkDir: String, force: Bool = false) async -> String? {
         do {
             let result = try await send(cmd: "run_installer", params: [
+                "force": force,
                 "installer_path": installerPath,
                 "actions": actions,
                 "prefix": prefix,

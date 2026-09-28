@@ -257,6 +257,14 @@ struct ComponentsStatus: Codable {
     let hasMonadoRuntime: Bool
     let hasWinetricks: Bool
     let wineVersion: String?
+    // Bradar the Setup tab packages. all optinal so an older backend still decodes
+    let hasOpengl: Bool
+    let hasRedist: Bool
+    let hasWineAddons: Bool
+    let hasVr: Bool
+    let engineSource: String?     // "bundled" | "deps" | "dev" | nil = no engine
+    let engineVersion: String?    // wine version of the active engine, e.g. "11.16"
+    let engineBundled: Bool       // the .app carrys its own engine in Resources
 
     enum CodingKeys: String, CodingKey {
         case hasTools = "has_tools"
@@ -278,6 +286,13 @@ struct ComponentsStatus: Codable {
         case hasMonadoRuntime = "has_monado_runtime"
         case hasWinetricks = "has_winetricks"
         case wineVersion = "wine_version"
+        case hasOpengl = "has_opengl"
+        case hasRedist = "has_redist"
+        case hasWineAddons = "has_wine_addons"
+        case hasVr = "has_vr"
+        case engineSource = "engine_source"
+        case engineVersion = "engine_version"
+        case engineBundled = "engine_bundled"
     }
 
     // Backwards-compat init for older backends that don't yet send
@@ -303,6 +318,13 @@ struct ComponentsStatus: Codable {
         hasMonadoRuntime  = try c.decodeIfPresent(Bool.self, forKey: .hasMonadoRuntime) ?? false
         hasWinetricks     = try c.decodeIfPresent(Bool.self, forKey: .hasWinetricks) ?? false
         wineVersion       = try c.decodeIfPresent(String.self, forKey: .wineVersion)
+        hasOpengl         = try c.decodeIfPresent(Bool.self, forKey: .hasOpengl) ?? hasWineDevel
+        hasRedist         = try c.decodeIfPresent(Bool.self, forKey: .hasRedist) ?? false
+        hasWineAddons     = try c.decodeIfPresent(Bool.self, forKey: .hasWineAddons) ?? false
+        hasVr             = try c.decodeIfPresent(Bool.self, forKey: .hasVr) ?? hasMonadoRuntime
+        engineSource      = try c.decodeIfPresent(String.self, forKey: .engineSource)
+        engineVersion     = try c.decodeIfPresent(String.self, forKey: .engineVersion)
+        engineBundled     = try c.decodeIfPresent(Bool.self, forKey: .engineBundled) ?? false
     }
 }
 
