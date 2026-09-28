@@ -265,6 +265,8 @@ struct ComponentsStatus: Codable {
     let engineSource: String?     // "bundled" | "deps" | "dev" | nil = no engine
     let engineVersion: String?    // wine version of the active engine, e.g. "11.16"
     let engineBundled: Bool       // the .app carrys its own engine in Resources
+    let needsRosetta: Bool        // Apple Silicon: the x86_64 engine runs thru Rosetta
+    let hasRosetta: Bool          // true on Intel, where there is nothing to install
 
     enum CodingKeys: String, CodingKey {
         case hasTools = "has_tools"
@@ -293,6 +295,8 @@ struct ComponentsStatus: Codable {
         case engineSource = "engine_source"
         case engineVersion = "engine_version"
         case engineBundled = "engine_bundled"
+        case needsRosetta = "needs_rosetta"
+        case hasRosetta = "has_rosetta"
     }
 
     // Backwards-compat init for older backends that don't yet send
@@ -325,6 +329,9 @@ struct ComponentsStatus: Codable {
         engineSource      = try c.decodeIfPresent(String.self, forKey: .engineSource)
         engineVersion     = try c.decodeIfPresent(String.self, forKey: .engineVersion)
         engineBundled     = try c.decodeIfPresent(Bool.self, forKey: .engineBundled) ?? false
+        // an older backend cant tell -- assume fine rather than nag about a missing Rosetta
+        needsRosetta      = try c.decodeIfPresent(Bool.self, forKey: .needsRosetta) ?? false
+        hasRosetta        = try c.decodeIfPresent(Bool.self, forKey: .hasRosetta) ?? true
     }
 }
 

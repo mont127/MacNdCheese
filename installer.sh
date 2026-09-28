@@ -246,14 +246,43 @@ install_pkg_url() {
   sudo_run /usr/sbin/installer -pkg "$pkg_path" -target /
 }
 
+rosetta_ok() {
+  # Bradar only Apple Silicon needs Rosetta -- an Intel Mac runs the x86_64 wine natively.
+  # hw.optional.arm64 is 1 on Apple Silicon even when this shell itself runs translated
+  [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] || return 0
+  # the real test: can this Mac actualy run an x86_64 binary. oahd running or the pkg receipt
+  # beeing there says nothing about a half-removed install
+  /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1
+}
+
 ensure_rosetta() {
-  if /usr/bin/pgrep oahd >/dev/null 2>&1 || /usr/sbin/pkgutil --pkgs | grep -q com.apple.pkg.RosettaUpdateAuto; then
-    echo "Rosetta already available"
-  else
-    echo "Installing Rosetta"
-    prime_sudo
-    sudo_run /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+  if rosetta_ok; then
+    echo "Rosetta 2 already available"
+    return 0
   fi
+  echo "Step: Installing Rosetta 2 (every Windows game runs through it)..."
+  # softwareupdate hands the job to the softwareupdated daemon, so a normal user can usualy do
+  # it w/o a password. the "Package Authoring Error" line it prints is apple noise
+  /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>&1 | grep -v 'Package Authoring Error' || true
+  if ! rosetta_ok; then
+    if [ "${MNC_SUDOLESS:-0}" = "1" ]; then
+      # Bradar the app runs us w/o a terminal so sudo cant ask -- let macOS show its own
+      # password dialog instead
+      echo "Rosetta 2 needs an administrator, asking macOS for the password..."
+      /usr/bin/osascript -e 'do shell script "/usr/sbin/softwareupdate --install-rosetta --agree-to-license" with administrator privileges' 2>&1 \
+        | grep -v 'Package Authoring Error' || true
+    else
+      prime_sudo
+      sudo_run /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+    fi
+  fi
+  if rosetta_ok; then
+    echo "Rosetta 2 installed"
+    return 0
+  fi
+  echo "Rosetta 2 could not be installed. Run this in Terminal, then try again:"
+  echo "  softwareupdate --install-rosetta --agree-to-license"
+  return 1
 }
 
 install_xquartz_pkg() {
@@ -601,7 +630,7 @@ install_wine() {
   fi
   ensure_brew
   install_xquartz_pkg
-  ensure_rosetta
+  ensure_rosetta || true
   install_gstreamer_pkg
   if "$BREW_BIN" list --cask wine-stable >/dev/null 2>&1; then
     echo "wine-stable cask already installed"
@@ -1165,7 +1194,7 @@ install_gptk_dlls() {
 }
 
 init_prefix() {
-  ensure_rosetta
+  ensure_rosetta || true
   if [ -z "$PREFIX_DIR" ]; then
     echo "Missing prefix path"
     exit 1
@@ -2109,7 +2138,7 @@ uninstall_rpc_bridge() {
 }
 
 quick_setup() {
-  ensure_rosetta
+  ensure_rosetta || true
   install_portable_tools
   install_portable_wine
   install_wine_unified
@@ -2595,6 +2624,9 @@ uninstall_wine_unified() {
 }
 
 case "$ACTION" in
+  install_rosetta)
+    ensure_rosetta
+    ;;
   install_tools)
     install_tools
     ;;

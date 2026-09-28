@@ -370,6 +370,8 @@ struct ContentView: View {
         .safeAreaInset(edge: .top) {
             AppUpdateBanner()
         }
+        // installs Rosetta 2 on its own when an Apple Silicon Mac doesnt have it
+        .modifier(RosettaGatePresenter())
         // Re-render the entire main UI when the language changes (Settings is a
         // separate scene, so its window is unaffected). Switching is live.
         .id(loc.language)

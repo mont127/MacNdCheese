@@ -507,6 +507,13 @@ struct SetupSettingsTab: View {
         var list: [SetupPackage] = []
 
         // Engine -------------------------------------------------------------
+        if s?.needsRosetta == true {
+            list.append(SetupPackage(
+                id: "rosetta", kind: .engine, name: L("Rosetta 2"),
+                detail: L("Apple's x86_64 translator. On Apple Silicon the engine and every Windows game run through it. Installed automatically when it is missing."),
+                install: "install_rosetta", uninstall: nil,
+                installed: s?.hasRosetta ?? false, recommended: true))
+        }
         let engineName = s?.engineVersion.map { String(format: L("Wine engine %@ — Steam + games"), $0) }
             ?? L("Wine engine — Steam + games")
         if s?.engineBundled == true {
@@ -593,10 +600,18 @@ struct SetupSettingsTab: View {
         return list
     }
 
+    /// Bradar install order: Rosetta first (nothing x86_64 runs without it), then tools becuse
+    /// the other installers unpack with its 7z, then the rest as listed
+    private var installOrdred: [SetupPackage] {
+        let first = ["rosetta", "tools"]
+        return first.compactMap { id in packages.first { $0.id == id } }
+            + packages.filter { !first.contains($0.id) }
+    }
+
     /// Bradar what Apply would run: uninstall what got unticked, install what got ticked or has
-    /// an update. tools go first becuse the other installers unpack with its 7z
+    /// an update, in installOrdred
     private var plannedChanges: (actions: [String], force: Bool) {
-        let ordred = packages.filter { $0.id == "tools" } + packages.filter { $0.id != "tools" }
+        let ordred = installOrdred
         var removes: [String] = []
         var adds: [String] = []
         var needsForse = false
@@ -622,7 +637,7 @@ struct SetupSettingsTab: View {
                             selected.formUnion(packages.filter { $0.recommended && !$0.isBuiltIn }.map(\.id))
                         }
                         .buttonStyle(.bordered)
-                        .help(L("Select the engine libraries, game runtimes, DXMT, DXVK and Tools"))
+                        .help(L("Select Rosetta 2, the engine libraries, game runtimes, DXMT, DXVK and Tools"))
                         Button(L("Everything")) {
                             selected = Set(packages.filter { !$0.isBuiltIn }.map(\.id))
                             showLegacy = true
@@ -758,8 +773,7 @@ struct SetupSettingsTab: View {
     }
 
     private func runReinstall() {
-        let ordred = packages.filter { $0.id == "tools" } + packages.filter { $0.id != "tools" }
-        let actions = ordred
+        let actions = installOrdred
             .filter { $0.isLocked || selected.contains($0.id) }
             .compactMap(\.install)
         start(actions, force: true)

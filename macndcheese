@@ -631,6 +631,11 @@ COMPONENTS = [
      "version_marker": "vr", "latest_field": None,
      "aliases": ["vr", "openxr"]},
     # Bradar install-only packages (uninstall None): installer.sh has no remover for them
+    {"id": "rosetta", "label": "Rosetta 2",
+     "install": "install_rosetta", "uninstall": None,
+     "status_key": "has_rosetta", "update_key": None,
+     "version_marker": None, "latest_field": None,
+     "aliases": ["rosetta", "rosetta 2"]},
     {"id": "libs", "label": "Engine libraries (FreeType, TLS, Vulkan, SDL)",
      "install": "stage_mnc_fonts", "uninstall": None,
      "status_key": "has_mnc_fonts", "update_key": None,
