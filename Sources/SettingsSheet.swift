@@ -92,6 +92,7 @@ struct SettingsSheet: View {
             Picker("", selection: $selectedTab) {
                 Text(L("Bottle")).tag("bottle")
                 Text(L("Paths")).tag("paths")
+                Text(L("Setup")).tag("setup")
                 Text(L("Diagnose")).tag("diagnose")
                 Text(L("Language")).tag("language")
                 Text(L("Logs")).tag("logs")
@@ -106,6 +107,7 @@ struct SettingsSheet: View {
                 switch selectedTab {
                 case "bottle": BottleSettingsTab(selectedTab: $selectedTab)
                 case "paths": PathsSettingsTab()
+                case "setup": SetupSettingsTab()
                 case "diagnose": DiagnoseSettingsTab()
                 case "language": LanguageSettingsTab()
                 case "logs": LogsSettingsTab()
@@ -462,7 +464,379 @@ struct PathRow: View {
     }
 }
 
-// MARK: - Setup Tab (Components)
+// MARK: - Setup Tab (Packages)
+
+/// Bradar one installable peice in the Setup tab. the tab got dropped in 164c82f; back then it
+/// was 13 hand-wired toggle pairs. same job now but data-driven, and every package is whatever
+/// does that job TODAY: VKD3D-Proton's DX12 -> D3DMetal, Wine Devel's OpenGL -> built into the
+/// engine, the VC++/.NET redist installers -> the game runtimes pack.
+struct SetupPackage: Identifiable {
+    enum Kind {
+        case engine, graphics, vr, tools, legacy
+    }
+
+    let id: String
+    let kind: Kind
+    let name: String
+    let detail: String
+    /// installer.sh action. nil = it ships with the engine, nothing to fetch
+    let install: String?
+    /// nil = install-only, installer.sh has no remover for it
+    let uninstall: String?
+    let installed: Bool
+    var updateAvailable = false
+    var recommended = false
+
+    var isBuiltIn: Bool { install == nil }
+    /// installed with no remover: the tick stays on, you can only reinstall it
+    var isLocked: Bool { installed && uninstall == nil }
+}
+
+struct SetupSettingsTab: View {
+    @EnvironmentObject var backend: BackendClient
+    @StateObject private var installer = InstallRunner()
+    @State private var status: ComponentsStatus?
+    @State private var updates: UpdateInfo?
+    @State private var selected: Set<String> = []
+    @State private var isLoading = false
+    @State private var showLegacy = false
+
+    private var packages: [SetupPackage] {
+        let s = status
+        let u = updates
+        var list: [SetupPackage] = []
+
+        // Engine -------------------------------------------------------------
+        let engineName = s?.engineVersion.map { String(format: L("Wine engine %@ — Steam + games"), $0) }
+            ?? L("Wine engine — Steam + games")
+        if s?.engineBundled == true {
+            // Bradar the engine lives in the signed .app. running install_wine_unified here would
+            // recreate the deps copy reconcileEngines() deletes, n the two fight every launch
+            list.append(SetupPackage(
+                id: "engine", kind: .engine, name: engineName,
+                detail: L("One patched Wine that draws Steam through DXMT and runs games on D3DMetal, DXMT, DXVK or OpenGL. It ships inside the app, so there is nothing to download."),
+                install: nil, uninstall: nil, installed: true))
+        } else {
+            list.append(SetupPackage(
+                id: "engine", kind: .engine, name: engineName,
+                detail: L("One patched Wine that draws Steam through DXMT and runs games on D3DMetal, DXMT, DXVK or OpenGL. This copy of the app has no engine inside, so it is installed separately."),
+                install: "install_wine_unified", uninstall: "uninstall_wine_unified",
+                installed: s?.hasWineUnified ?? false, recommended: true))
+        }
+        list.append(SetupPackage(
+            id: "libs", kind: .engine, name: L("Engine libraries — fonts, TLS, Vulkan, SDL"),
+            detail: L("FreeType, gnutls, MoltenVK and SDL for the engine. Without them text can go missing and Steam can claim it is offline."),
+            install: "stage_mnc_fonts", uninstall: nil,
+            installed: s?.hasMncFonts ?? false, recommended: true))
+        list.append(SetupPackage(
+            id: "runtimes", kind: .engine, name: L("Game runtimes — .NET, HTML, shader compiler"),
+            detail: L("wine-mono and wine-gecko for installers and launchers that need .NET or HTML, plus Microsoft's d3dcompiler_47 when the app ships it. Takes the place of running the VC++ and .NET redistributable installers."),
+            install: "stage_redist", uninstall: nil,
+            installed: s?.hasWineAddons ?? false, recommended: true))
+
+        // Graphics -----------------------------------------------------------
+        list.append(SetupPackage(
+            id: "dxmt", kind: .graphics,
+            name: u?.dxmtLatestName.map { String(format: L("DXMT (%@)"), $0) } ?? L("DXMT"),
+            detail: L("Direct3D 10/11 on Metal. Draws the Steam window and runs games set to the DXMT backend."),
+            install: "install_dxmt", uninstall: "uninstall_dxmt",
+            installed: s?.hasDxmt ?? false,
+            updateAvailable: u?.dxmtUpdateAvailable ?? false, recommended: true))
+        list.append(SetupPackage(
+            id: "dxvk", kind: .graphics, name: L("DXVK"),
+            detail: L("Direct3D 9/10/11 on Vulkan through MoltenVK, for games set to the DXVK backend."),
+            install: "install_dxvk", uninstall: "uninstall_dxvk",
+            installed: s?.hasDxvk64 ?? false, recommended: true))
+        list.append(SetupPackage(
+            id: "d3dmetal", kind: .graphics, name: L("D3DMetal — DirectX 11/12"),
+            detail: L("Direct3D 11/12 on Apple's D3DMetal, the default for games. Covers DirectX 12, which VKD3D-Proton used to do. Part of the engine."),
+            install: nil, uninstall: nil, installed: s?.hasD3dMetal3 ?? false))
+        list.append(SetupPackage(
+            id: "opengl", kind: .graphics, name: L("OpenGL — SDL3 / OpenGL 3.2 games"),
+            detail: L("OpenGL 3.2+ for SDL3 and OpenGL games such as Mewgenics. Replaces the separate Wine Devel download. Part of the engine."),
+            install: nil, uninstall: nil, installed: s?.hasOpengl ?? false))
+
+        // VR -----------------------------------------------------------------
+        list.append(SetupPackage(
+            id: "vr", kind: .vr, name: L("VR (OpenXR)"),
+            detail: L("The wineopenxr bridge plus the x86_64 oxrsys runtime that streams to a Quest or Pico headset. Pick VR as the graphics backend afterwards."),
+            install: "install_vr", uninstall: "uninstall_vr",
+            installed: s?.hasVr ?? false))
+
+        // Tools --------------------------------------------------------------
+        list.append(SetupPackage(
+            id: "tools", kind: .tools, name: L("Tools — 7-Zip, Git, Wget, Zstd"),
+            detail: L("Used by the installers and Winetricks to download and unpack packages."),
+            install: "install_tools", uninstall: nil,
+            installed: s?.hasTools ?? false,
+            updateAvailable: u?.toolsUpdateAvailable ?? false, recommended: true))
+
+        // Legacy -------------------------------------------------------------
+        list.append(SetupPackage(
+            id: "wine_staging", kind: .legacy,
+            name: u?.gcenxLatestName.map { String(format: L("Wine (Staging — %@)"), $0) } ?? L("Wine (Staging)"),
+            detail: L("Standalone Gcenx Wine Staging. Only bottles set to it use it."),
+            install: "install_wine_staging", uninstall: "uninstall_wine_staging",
+            installed: s?.hasWineStaging ?? false,
+            updateAvailable: u?.wineStagingUpdateAvailable ?? false))
+        list.append(SetupPackage(
+            id: "wine_stable", kind: .legacy, name: L("Wine (Stable)"),
+            detail: L("The old standalone Wine. Only older bottles that still point at it need it."),
+            install: "install_wine", uninstall: "uninstall_wine",
+            installed: s?.hasWineStable ?? false,
+            updateAvailable: u?.wineStableUpdateAvailable ?? false))
+        list.append(SetupPackage(
+            id: "gptk_dlls", kind: .legacy, name: L("GPTK DLL package"),
+            detail: L("Apple's D3DMetal DLLs for the injection and GPTK backends that run outside the engine."),
+            install: "install_gptk_dlls", uninstall: nil,
+            installed: s?.hasGptkDlls ?? false))
+        return list
+    }
+
+    /// Bradar what Apply would run: uninstall what got unticked, install what got ticked or has
+    /// an update. tools go first becuse the other installers unpack with its 7z
+    private var plannedChanges: (actions: [String], force: Bool) {
+        let ordred = packages.filter { $0.id == "tools" } + packages.filter { $0.id != "tools" }
+        var removes: [String] = []
+        var adds: [String] = []
+        var needsForse = false
+        for pkg in ordred {
+            let on = pkg.isLocked || selected.contains(pkg.id)
+            if on, let action = pkg.install, !pkg.installed || pkg.updateAvailable {
+                adds.append(action)
+                // install_dxmt skips when DXMT is allready there, so an update has to force it
+                if pkg.updateAvailable { needsForse = true }
+            } else if !on, pkg.installed, let action = pkg.uninstall {
+                removes.append(action)
+            }
+        }
+        return (removes + adds, needsForse)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                GroupBox(L("Quick Setup")) {
+                    HStack(spacing: 12) {
+                        Button(L("Recommended")) {
+                            selected.formUnion(packages.filter { $0.recommended && !$0.isBuiltIn }.map(\.id))
+                        }
+                        .buttonStyle(.bordered)
+                        .help(L("Select the engine libraries, game runtimes, DXMT, DXVK and Tools"))
+                        Button(L("Everything")) {
+                            selected = Set(packages.filter { !$0.isBuiltIn }.map(\.id))
+                            showLegacy = true
+                        }
+                        .buttonStyle(.bordered)
+                        .help(L("Select all components"))
+                        Button(L("None")) {
+                            selected = Set(packages.filter { $0.isLocked }.map(\.id))
+                        }
+                        .buttonStyle(.bordered)
+                        Spacer()
+                    }
+                    .disabled(installer.isRunning || isLoading)
+                    .padding(8)
+                }
+
+                packageGroup(L("Engine"), .engine)
+                packageGroup(L("Graphics"), .graphics)
+                packageGroup(L("VR"), .vr)
+                packageGroup(L("Tools"), .tools)
+
+                GroupBox {
+                    DisclosureGroup(isExpanded: $showLegacy) {
+                        packageRows(.legacy)
+                            .padding(.top, 8)
+                    } label: {
+                        Text(L("Legacy — only for older bottles"))
+                    }
+                    .padding(8)
+                }
+
+                if installer.isRunning || installer.done {
+                    progressArea
+                }
+
+                HStack {
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                        Text(L("Checking components..."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(L("Reinstall Selected")) { runReinstall() }
+                        .buttonStyle(.bordered)
+                        .disabled(installer.isRunning || isLoading)
+                        .help(L("Force-reinstall every selected component, even ones already installed"))
+                    Button(L("Apply")) {
+                        let plan = plannedChanges
+                        start(plan.actions, force: plan.force)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.brand)
+                    .disabled(installer.isRunning || isLoading || plannedChanges.actions.isEmpty)
+                    .help(L("Install what is ticked and remove what was unticked"))
+                }
+            }
+            .padding(20)
+        }
+        .onAppear { loadStatus() }
+        .onChange(of: installer.done) { done in
+            if done { loadStatus() }
+        }
+    }
+
+    private func packageGroup(_ title: String, _ kind: SetupPackage.Kind) -> some View {
+        GroupBox(title) {
+            packageRows(kind)
+                .padding(8)
+        }
+    }
+
+    private func packageRows(_ kind: SetupPackage.Kind) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(packages.filter { $0.kind == kind }) { pkg in
+                SetupPackageRow(package: pkg, isOn: selection(for: pkg))
+                    .disabled(installer.isRunning || isLoading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func selection(for pkg: SetupPackage) -> Binding<Bool> {
+        Binding(
+            get: { pkg.isLocked || selected.contains(pkg.id) },
+            set: { on in
+                if on {
+                    selected.insert(pkg.id)
+                } else if !pkg.isLocked {
+                    selected.remove(pkg.id)
+                }
+            })
+    }
+
+    private var progressArea: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                if installer.isRunning {
+                    ProgressView().controlSize(.small)
+                } else if installer.failed {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                } else {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+                Text(installer.isRunning
+                     ? (installer.currentAction.isEmpty ? L("Starting...") : installer.currentAction)
+                     : (installer.failed ? L("Finished with errors") : L("Done!")))
+                    .font(.caption)
+                    .foregroundColor(installer.isRunning ? .secondary : (installer.failed ? .red : .green))
+                Spacer()
+                if installer.done && !installer.isRunning {
+                    Button(L("Dismiss")) { installer.reset() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(installer.logLines.joined(separator: "\n"))
+                        .font(.system(.caption2, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .id("setupLogBottom")
+                }
+                .frame(height: 140)
+                .background(.black.opacity(0.25))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .onChange(of: installer.logLines) { _ in
+                    proxy.scrollTo("setupLogBottom", anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    private func runReinstall() {
+        let ordred = packages.filter { $0.id == "tools" } + packages.filter { $0.id != "tools" }
+        let actions = ordred
+            .filter { $0.isLocked || selected.contains($0.id) }
+            .compactMap(\.install)
+        start(actions, force: true)
+    }
+
+    private func start(_ actions: [String], force: Bool) {
+        guard !actions.isEmpty else { return }
+        Task { await installer.run(actions: actions, backend: backend, force: force) }
+    }
+
+    private func loadStatus() {
+        isLoading = true
+        Task {
+            if let s = await backend.getComponentsStatus() {
+                status = s
+                // Bradar tick what is on disk, so Apply starts out as a no-op
+                selected = Set(packages.filter { !$0.isBuiltIn && $0.installed }.map(\.id))
+            }
+            isLoading = false
+            if let u = await backend.getUpdateInfo() {
+                updates = u
+            }
+        }
+    }
+}
+
+struct SetupPackageRow: View {
+    let package: SetupPackage
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if package.isBuiltIn {
+                Image(systemName: package.installed ? "checkmark.circle.fill" : "circle.dashed")
+                    .foregroundStyle(package.installed ? Color.green : Color.secondary)
+                labels
+            } else {
+                Toggle(isOn: $isOn) { labels }
+                    .disabled(package.isLocked)
+            }
+            Spacer(minLength: 8)
+            badge
+        }
+    }
+
+    private var labels: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(package.name)
+            Text(package.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        if package.updateAvailable {
+            pill(L("Update available"), .yellow)
+        } else if package.isBuiltIn {
+            pill(package.installed ? L("Built in") : L("Needs the engine"),
+                 package.installed ? .green : .secondary)
+        } else if package.installed {
+            pill(L("Installed"), .green)
+        }
+    }
+
+    private func pill(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption2)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15), in: Capsule())
+            .fixedSize()
+    }
+}
 
 struct ComponentToggleRow: View {
     let label: String

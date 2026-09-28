@@ -2617,6 +2617,18 @@ case "$ACTION" in
     # exactly how the TLS/Vulkan/SDL packs would have shipped unreachable.
     stage_all_mnc_libs
     ;;
+  stage_redist)
+    # Bradar the Setup tab "Game runtimes" package. the redist pack (real d3dcompiler_47 +
+    # the launchers wine-mono) only exists when the app ships it, but the wine-gecko/mono
+    # MSIs wine itself asks for can allways be fetched, so thats what decides pass/fail.
+    # file names match stage_wine_addons + backend WINE_ADDON_FILES
+    stage_redist_pack
+    stage_wine_addons "$PORTABLE_DIR/redist"
+    for f in wine-gecko-2.47.4-x86.msi wine-gecko-2.47.4-x86_64.msi wine-mono-10.4.1-x86.msi; do
+      [ -s "$HOME/.cache/wine/$f" ] || { echo "stage_redist: $f is missing (download failed?)"; exit 1; }
+    done
+    echo "stage_redist: wine-gecko + wine-mono ready in ~/.cache/wine"
+    ;;
   stage_mnc_tls)
     stage_mnc_tls
     ;;

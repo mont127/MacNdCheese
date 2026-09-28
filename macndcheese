@@ -576,7 +576,7 @@ def _do_engines_status(ns, backend: "Backend", state: State) -> None:
 
 
 # ---- engines: component install/uninstall/reinstall ------------------------------
-# Mirrors SetupSettingsTab's component list in Sources/SettingsSheet.swift -- keep
+# Mirrors SetupSettingsTab's package list in Sources/SettingsSheet.swift -- keep
 # these two in sync if a component is ever added/removed there.
 # version_marker: key in the .mnc_versions marker file (see _read_version_markers) that
 # holds the installed tag, or None if this component doesn't record one. latest_field:
@@ -586,7 +586,7 @@ def _do_engines_status(ns, backend: "Backend", state: State) -> None:
 # write_component_version for those).
 COMPONENTS = [
     {"id": "tools", "label": "Tools (git, 7z, wget)",
-     "install": "install_tools", "uninstall": "uninstall_tools",
+     "install": "install_tools", "uninstall": None,
      "status_key": "has_tools", "update_key": "tools_update_available",
      "version_marker": "tools", "latest_field": "cheese_latest_tag",
      "aliases": ["tools", "tool"]},
@@ -616,7 +616,7 @@ COMPONENTS = [
      "version_marker": None, "latest_field": None,
      "aliases": ["dxvk"]},
     {"id": "gptk_dlls", "label": "D3DMetal (GPTK DLLs)",
-     "install": "install_gptk_dlls", "uninstall": "uninstall_gptk_dlls",
+     "install": "install_gptk_dlls", "uninstall": None,
      "status_key": "has_gptk_dlls", "update_key": None,
      "version_marker": None, "latest_field": None,
      "aliases": ["gptk dlls", "gptk"]},
@@ -627,9 +627,20 @@ COMPONENTS = [
      "aliases": ["dxmt"]},
     {"id": "vr", "label": "VR (OpenXR)",
      "install": "install_vr", "uninstall": "uninstall_vr",
-     "status_key": "has_monado_runtime", "update_key": None,
+     "status_key": "has_vr", "update_key": None,
      "version_marker": "vr", "latest_field": None,
      "aliases": ["vr", "openxr"]},
+    # Bradar install-only packages (uninstall None): installer.sh has no remover for them
+    {"id": "libs", "label": "Engine libraries (FreeType, TLS, Vulkan, SDL)",
+     "install": "stage_mnc_fonts", "uninstall": None,
+     "status_key": "has_mnc_fonts", "update_key": None,
+     "version_marker": None, "latest_field": None,
+     "aliases": ["libs", "engine libraries", "libraries"]},
+    {"id": "runtimes", "label": "Game runtimes (wine-mono, wine-gecko, d3dcompiler_47)",
+     "install": "stage_redist", "uninstall": None,
+     "status_key": "has_wine_addons", "update_key": None,
+     "version_marker": None, "latest_field": None,
+     "aliases": ["runtimes", "game runtimes", "redist", "mono"]},
 ]
 
 
@@ -858,7 +869,9 @@ def _do_engines_uninstall(ns, backend: "Backend", state: State) -> None:
         return
     to_uninstall = []
     for c in components:
-        if status.get(c["status_key"]):
+        if not c["uninstall"]:
+            print(f"{c['label']} has no uninstaller -- leaving it in place.")
+        elif status.get(c["status_key"]):
             to_uninstall.append(c)
         else:
             print(f"{c['label']} isn't installed -- nothing to do.")

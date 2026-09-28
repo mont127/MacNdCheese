@@ -17,7 +17,8 @@ final class InstallRunner: ObservableObject {
     /// Run the given installer.sh actions (`install_*` / `uninstall_*`) against the
     /// active prefix, streaming progress until the job finishes. No-op while a run
     /// is already in flight or when there are no actions.
-    func run(actions: [String], backend: BackendClient) async {
+    /// `force` re-fetches packages that normaly skip when allready there (DXMT).
+    func run(actions: [String], backend: BackendClient, force: Bool = false) async {
         let cleanActions = actions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         guard !isRunning, !cleanActions.isEmpty else { return }
         guard let installerPath = InstallerPathStore.installerScriptPath() else {
@@ -44,7 +45,8 @@ final class InstallRunner: ObservableObject {
             mesa: p.mesaDir,
             mesaUrl: InstallerPathStore.mesaURL,
             dxmt: p.dxmtDir,
-            gptkDir: p.gptkDir
+            gptkDir: p.gptkDir,
+            force: force
         ) else {
             failed = true
             done = true

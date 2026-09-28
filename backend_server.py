@@ -7062,7 +7062,7 @@ def cmd_list_backends(params: Dict[str, Any]) -> Any:
         {"id": BACKEND_DXVK, "label": "DXVK (D3D11→Vulkan)", "available": _dxvk_available()},
         {"id": BACKEND_DXMT, "label": "DXMT (experimental)", "available": _dxmt_available()},
         # Bradar VR = openxr-DXMT + wineopenxr + oxrsys streaming runtime. always shown so games
-        # can pick it (the openxr d3d DLLs ride w/ the unified wine); install the runtime via Settings -> VR
+        # can pick it (the openxr d3d DLLs ride w/ the unified wine); install the runtime via Settings -> Setup -> VR
         {"id": "vr", "label": "VR (OpenXR)", "available": True},
         {"id": BACKEND_D3DMETAL3, "label": "D3DMetal (injection, recommended)", "available": _d3dmetal3_available()},
         {"id": BACKEND_WINE_DEVEL, "label": "OpenGL (SDL3 / GL 3.2, e.g. Mewgenics)", "available": _unified_available()},
@@ -7267,6 +7267,30 @@ def _gptk_dlls_available() -> bool:
     required = ("d3d11.dll", "d3d12.dll", "dxgi.dll")
     return all((dll_dir / name).exists() for name in required)
 
+# Bradar the exact wine-gecko/wine-mono files installer.sh stage_wine_addons drops in
+# ~/.cache/wine (wine only takes the versions its appwiz.cpl asks for). keep in sync w/ it
+WINE_ADDON_FILES = ("wine-gecko-2.47.4-x86.msi", "wine-gecko-2.47.4-x86_64.msi",
+                    "wine-mono-10.4.1-x86.msi")
+
+
+def _wine_addons_cached() -> bool:
+    cache = Path.home() / ".cache" / "wine"
+    try:
+        return all((cache / f).stat().st_size > 0 for f in WINE_ADDON_FILES)
+    except OSError:
+        return False
+
+
+def _engine_sorce() -> Optional[str]:
+    """Where the active engine comes from, for the Setup tab: the copy inside the .app,
+    an out-of-band install in deps/, or the dev tree. None = no engine at all."""
+    bt = _unified_build_dir()
+    if bt is None:
+        return None
+    return {WINE_UNIFIED_DIR: "deps", WINE_UNIFIED_BUNDLED: "bundled",
+            WINE_UNIFIED_DEV: "dev"}.get(bt)
+
+
 def cmd_get_components_status(params: Dict[str, Any]) -> Any:
     """Return installation status for each setup component."""
     has_tools = _portable_tools_available() or all(_tool_available(t) for t in ("git", "7z"))
@@ -7278,6 +7302,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
     # standalone app -- keying on the app made OpenGL read as missing everywhere.
     has_wine_devel = _opengl_available()
     wine_version = _get_wine_version()
+    engine_ver = _engine_version(_unified_build_dir())
     return {
         "has_tools": has_tools,
         "has_wine": has_wine_stable or has_wine_staging or has_wine_devel or _unified_available(),
@@ -7300,6 +7325,13 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_wineopenxr": _wineopenxr_available(),
         "has_monado_runtime": _monado_runtime_available(),
         "has_winetricks": _winetricks_bin() is not None,
+        # Bradar Setup tab packages
+        "has_redist": (REDIST_DIR / "d3dcompiler_47" / "d3dcompiler_47.dll").exists(),
+        "has_wine_addons": _wine_addons_cached(),
+        "has_vr": _oxrsys_runtime_available() or _monado_runtime_available(),
+        "engine_source": _engine_sorce(),
+        "engine_version": ".".join(map(str, engine_ver)) if engine_ver else None,
+        "engine_bundled": (WINE_UNIFIED_BUNDLED / "loader" / "wine").exists(),
     }
 
 
@@ -8632,6 +8664,8 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
     mesa_url: str = params.get("mesa_url", "")
     dxmt: str = params.get("dxmt", "")
     gptk_dir: str = params.get("gptk_dir", "")
+    # Bradar Setup tab "Reinstall" -- packages that skip when allready present get re-fetched
+    force: bool = bool(params.get("force", False))
 
     if not actions:
         raise ValueError("No actions specified")
@@ -8643,8 +8677,14 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
     job: Dict[str, Any] = {"lines": [], "done": False, "failed": False, "current": ""}
     _install_jobs[job_id] = job
 
+    # Bradar Setup tab packages whose action name reads badly ("Installing Stage Redist")
+    names = {"stage_mnc_fonts": "engine libraries", "stage_redist": "game runtimes",
+             "install_gptk_dlls": "GPTK DLLs", "install_vr": "VR", "uninstall_vr": "VR"}
+
     def _friendly_action(action: str) -> str:
         verb = "Uninstalling" if action.startswith("uninstall_") else "Installing"
+        if action in names:
+            return f"{verb} {names[action]}"
         name = action.replace("install_", "").replace("uninstall_", "").replace("_", " ").title()
         return f"{verb} {name}"
 
@@ -8652,6 +8692,8 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
         # installer.sh lives in Resources; point its bundled-pack lookups there.
         env = {**os.environ, "MNC_SUDOLESS": "1",
                "RESOURCES_DIR": str(Path(installer_path).parent)}
+        if force:
+            env["MNC_FORCE_DXMT"] = "1"
         for action in actions:
             friendly = _friendly_action(action)
             job["current"] = friendly
