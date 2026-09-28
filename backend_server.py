@@ -7281,6 +7281,29 @@ def _wine_addons_cached() -> bool:
         return False
 
 
+def _rosetta_needed() -> bool:
+    """Apple Silicon = the x86_64 engine needs Rosetta. hw.optional.arm64 stays 1 even when
+    this python runs translated, which os.uname() would report as x86_64."""
+    try:
+        out = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        return out == "1"
+    except Exception:
+        return _is_apple_silicon()
+
+
+def _rosetta_installed() -> bool:
+    """Bradar can this Mac actualy run an x86_64 binary. True on Intel, where there is
+    nothing to install. Same test as installer.sh rosetta_ok."""
+    if not _rosetta_needed():
+        return True
+    try:
+        return subprocess.run(["/usr/bin/arch", "-x86_64", "/usr/bin/true"],
+                              capture_output=True, timeout=15).returncode == 0
+    except Exception:
+        return False
+
+
 def _engine_sorce() -> Optional[str]:
     """Where the active engine comes from, for the Setup tab: the copy inside the .app,
     an out-of-band install in deps/, or the dev tree. None = no engine at all."""
@@ -7326,6 +7349,8 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_monado_runtime": _monado_runtime_available(),
         "has_winetricks": _winetricks_bin() is not None,
         # Bradar Setup tab packages
+        "needs_rosetta": _rosetta_needed(),
+        "has_rosetta": _rosetta_installed(),
         "has_redist": (REDIST_DIR / "d3dcompiler_47" / "d3dcompiler_47.dll").exists(),
         "has_wine_addons": _wine_addons_cached(),
         "has_vr": _oxrsys_runtime_available() or _monado_runtime_available(),
@@ -7808,7 +7833,7 @@ def cmd_diagnose_cheese(params: Dict[str, Any]) -> Any:
                 repairs,
                 "install_rosetta",
                 "Install Rosetta 2",
-                "Runs softwareupdate --install-rosetta --agree-to-license.",
+                "Runs softwareupdate --install-rosetta; macOS asks for an admin password if it has to.",
                 recommended=True,
             )
             checks.append(_diag_check(
@@ -8500,11 +8525,9 @@ def cmd_run_cheese_repair(params: Dict[str, Any]) -> Any:
         _job_append(job, f"=== {job['current']} ===")
         try:
             if action == "install_rosetta":
-                rc = _run_job_command(
-                    job,
-                    ["/usr/sbin/softwareupdate", "--install-rosetta", "--agree-to-license"],
-                )
-                job["failed"] = rc != 0
+                # installer.sh tries softwareupdate as the user first, then the macOS
+                # admin password dialog -- plain softwareupdate had no way to ask
+                job["failed"] = _run_installer_action_for_repair(job, "install_rosetta", prefix) != 0
 
             elif action == "install_tools":
                 job["failed"] = _run_installer_action_for_repair(job, "install_tools", prefix) != 0
@@ -8679,6 +8702,7 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
 
     # Bradar Setup tab packages whose action name reads badly ("Installing Stage Redist")
     names = {"stage_mnc_fonts": "engine libraries", "stage_redist": "game runtimes",
+             "install_rosetta": "Rosetta 2",
              "install_gptk_dlls": "GPTK DLLs", "install_vr": "VR", "uninstall_vr": "VR"}
 
     def _friendly_action(action: str) -> str:
