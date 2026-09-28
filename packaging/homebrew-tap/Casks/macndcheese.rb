@@ -1,6 +1,6 @@
 cask "macndcheese" do
-  version "11.2.0"
-  sha256 "faab3782e9b0ac6b0409f7bc307b60561a4bb08efce4d0eff79addcbc0d97cfe"
+  version "11.2.2"
+  sha256 "f92bb454892368256e8474360df19dbe4d286b8c526b260afc53972e5925fac1"
 
   url "https://github.com/mont127/MacNdCheese/releases/download/v#{version}/MacNCheese.dmg"
   name "MacNdCheese"
