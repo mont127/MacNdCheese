@@ -7911,6 +7911,32 @@ def cmd_diagnose_cheese(params: Dict[str, Any]) -> Any:
             f"Wine version: {components.get('wine_version') or 'unknown'}",
         ))
 
+    # Bradar a live builtin d3d slot in the engine silently beats the routed variant (wine
+    # resolves builtins by the PE's internal name) -- d3d12 live = every DX12 game on D3DMetal
+    # gets wine's own d3d12 and "cant create a DirectX12 device". buildapp.sh and installer.sh
+    # both disable these; this catches an engine that slipped past them.
+    engine_bt = _unified_build_dir()
+    if engine_bt is not None:
+        live_slots = [n for n in ("d3d11", "dxgi", "d3d10core", "d3d12")
+                      if (engine_bt / "dlls" / n / "x86_64-windows" / f"{n}.dll").exists()]
+        if live_slots:
+            checks.append(_diag_check(
+                "d3d_slots",
+                "Graphics routing",
+                "warning",
+                "The engine's builtin " + ", ".join(live_slots) + " is active, so games get "
+                "wine's own version instead of D3DMetal/DXMT/DXVK. DX12 games on D3DMetal "
+                "fail to create a DirectX 12 device. Update MacNdCheese to get a fixed engine.",
+                str(engine_bt / "dlls"),
+            ))
+        else:
+            checks.append(_diag_check(
+                "d3d_slots",
+                "Graphics routing",
+                "ok",
+                "Games reach the selected graphics backend (no builtin d3d slot in the way).",
+            ))
+
     wine_apps = _installed_wine_apps()
     if not wine_apps:
         _add_repair(

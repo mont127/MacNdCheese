@@ -148,6 +148,25 @@ else
     echo "No engine payloads ($PAYLOAD_DIR absent/empty) — building launcher-only."
 fi
 
+# Bradar wine picks a builtin by the PE's INTERNAL name, so when the loader routes a game's
+# d3d12.dll to system32\d3d12_d3dm.dll (the GPTK stub), find_builtin_dll still looks up
+# "d3d12.dll" -- and if the engine's own build slot has wine's d3d12 in it, THAT wins. Games
+# then get wine's wined3d/vkd3d d3d12 insted of D3DMetal, with no error anywhere: D3DMetal just
+# never binds d3d12 and the game reports it cant create a DX12 device (MSFS 2024: "Impossible
+# to create DirectX12 device 0x80004002"). installer.sh disable_builtin_d3d_slots does this for
+# an engine it installs into deps/, but the engine shipped in Resources never went thru it,
+# and build-10 came with d3d12 still live. Same list, same rename, done before signing so the
+# seal covers it. x86_64 only, like the installer: D3DMetal/DXMT/DXVK are 64-bit.
+if [ -d "$RESOURCES/wine-unified/dlls" ]; then
+    for n in d3d11 dxgi d3d10core d3d12; do
+        f="$RESOURCES/wine-unified/dlls/$n/x86_64-windows/$n.dll"
+        if [ -e "$f" ]; then
+            mv -f "$f" "$f.builtin-disabled"
+            echo "  disabled the engine's builtin $n (the routed D3DMetal/DXMT/DXVK dll wins now)"
+        fi
+    done
+fi
+
 # Extract App Intents metadata so Siri/Apple Intelligence can discover shortcuts.
 # App Intents definitions don't vary by CPU arch, so for a universal build one
 # representative triple (arm64) is enough — this only affects Siri phrase
@@ -262,6 +281,14 @@ fi
 # Strict on purpose: this used to end in `|| true`, wich is how every build since the
 # engine moved into Resources shipped with a broken seal without anyone noticing.
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_ROOT"
+
+# and never ship a live builtin d3d slot again (see the rename above)
+for n in d3d11 dxgi d3d10core d3d12; do
+    if [ -e "$RESOURCES/wine-unified/dlls/$n/x86_64-windows/$n.dll" ]; then
+        echo "ERROR: the bundled engine still has wine's builtin $n.dll live" >&2
+        exit 1
+    fi
+done
 
 echo ""
 echo "Creating DMG..."
