@@ -5986,6 +5986,49 @@ def _steam_is_alive() -> bool:
     return any("\\Steam\\steam.exe" in line for line in ps.splitlines())  # x86 OR non-x86 Steam
 
 
+def _mirror_steam_keys_into_stray_wow6432node(prefix: str) -> None:
+    """Bradar keep steam_api working on engines w/o the kernelbase HKCU-Wow6432Node fix.
+
+    Those engines (the 11.16/11.18 lines, see engine PRs #6/#7) redirect EVERY 32-bit-view
+    HKCU\\Software read into HKCU\\Software\\Wow6432Node once that key exists -- Chromium
+    based launchers create it. The 64-bit Steam client writes ActiveProcess in the 64-bit
+    view, steam_api reads it with KEY_WOW64_32KEY, lands in the empty node, sees no pid:
+    SteamAPI_Init fails ("[API loaded no]"), the overlay never attaches, some games say
+    "Steam failed to initialize". Copying Steam's live keys into the node makes both views
+    agree. Only runs when the node exists, never deletes anything, and is harmless on an
+    engine that has the fix (nothing reads the copy there)."""
+    try:
+        text = (Path(prefix) / "user.reg").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    if "[software\\\\wow6432node" not in text.lower():
+        return
+    bt = _unified_build_dir()
+    if bt is None:
+        return
+    wine = str(bt / "wine")
+    env = _unified_env(prefix, "dxmt", False, for_steam=True)
+    env["WINEDEBUG"] = "-all"
+    copys = (
+        # SteamPath/SteamExe etc: values only, not the big Apps subtree
+        ["reg", "copy", r"HKCU\Software\Valve\Steam", r"HKCU\Software\Wow6432Node\Valve\Steam", "/f"],
+        # pid, ActiveUser, SteamClientDll(64), Universe -- what SteamAPI_Init actualy checks
+        ["reg", "copy", r"HKCU\Software\Valve\Steam\ActiveProcess",
+         r"HKCU\Software\Wow6432Node\Valve\Steam\ActiveProcess", "/s", "/f"],
+    )
+    for args in copys:
+        try:
+            rc = subprocess.run([wine] + args, env=env, capture_output=True, timeout=60).returncode
+        except Exception as exc:
+            log(f"steam api: could not mirror {args[2]} into Wow6432Node: {exc}")
+            return
+        if rc != 0:
+            log(f"steam api: mirroring {args[2]} into Wow6432Node failed (rc {rc})")
+            return
+    log("steam api: bottle has HKCU\\Software\\Wow6432Node, mirrored Steam's ActiveProcess into it "
+        "so steam_api's 32-bit-view read finds the running client")
+
+
 def _wait_steam_ready(prefix: str, cap_s: int = 240) -> tuple:
     """Poll until Steam is authenticated ([Logged On] in connection_log.txt) and
     steamwebhelper is up. Returns (ready: bool, status: str). Lifted from the
@@ -6029,6 +6072,7 @@ def _wait_steam_ready(prefix: str, cap_s: int = 240) -> tuple:
     ok0, status0 = _check()
     if ok0:
         log("Steam already authenticated ([Logged On]) — no wait needed")
+        _mirror_steam_keys_into_stray_wow6432node(prefix)
         return True, status0
     for waited in range(5, cap_s + 5, 5):
         time.sleep(5)
@@ -6039,6 +6083,7 @@ def _wait_steam_ready(prefix: str, cap_s: int = 240) -> tuple:
         if ok:
             log(f"Steam FULLY ready after {waited}s")
             time.sleep(3)  # let the IPC pipe settle
+            _mirror_steam_keys_into_stray_wow6432node(prefix)
             return True, status
         if "Logged Off" in status and waited > 60:
             log("Steam stuck [Logged Off] — cached creds invalid; user must sign in "
