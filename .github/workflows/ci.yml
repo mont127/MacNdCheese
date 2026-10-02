@@ -57,6 +57,7 @@ jobs:
           bash -n install.sh
           bash -n buildapp.sh
           bash -n installer.sh
+          bash -n bundle-aarchx.sh
       - name: CLI parity check
         # See CONTRIBUTING.md's "CLI parity" section and
         # .github/scripts/check_cli_parity.py's docstring: fails if Swift

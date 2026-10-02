@@ -148,6 +148,10 @@ else
     echo "No engine payloads ($PAYLOAD_DIR absent/empty) — building launcher-only."
 fi
 
+# AArchX, the experimental translator a bottle can choose instead of Rosetta. Rosetta stays
+# the default; see bundle-aarchx.sh for where the binary comes from.
+bash bundle-aarchx.sh "$RESOURCES" "$TARGET_ARCH"
+
 # Bradar wine picks a builtin by the PE's INTERNAL name, so when the loader routes a game's
 # d3d12.dll to system32\d3d12_d3dm.dll (the GPTK stub), find_builtin_dll still looks up
 # "d3d12.dll" -- and if the engine's own build slot has wine's d3d12 in it, THAT wins. Games

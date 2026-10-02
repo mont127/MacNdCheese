@@ -234,6 +234,18 @@ jobs:
 
           du -sh payload/*
 
+      - name: Fetch AArchX (pinned)
+        # AArchX is the experimental translator a bottle can pick instead of Rosetta
+        # (Rosetta stays the default). buildapp.sh builds it from this checkout via
+        # bundle-aarchx.sh. Pinned to a commit like every other download here; bump
+        # AARCHX_REF to ship a newer one.
+        env:
+          AARCHX_REF: b636c0076bdf810cd52948907429d5d4754bbfbe
+        run: |
+          git clone --quiet --filter=blob:none https://github.com/mont127/AArchX.git aarchx-src
+          git -C aarchx-src checkout --quiet --detach "$AARCHX_REF"
+          echo "MNC_AARCHX_SRC=$PWD/aarchx-src" >> "$GITHUB_ENV"
+
       - name: Build universal DMG
         env:
           MNC_PAYLOAD_DIR: payload

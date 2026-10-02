@@ -373,6 +373,10 @@ WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64"
 # copy in place while it is NEWER than the one we ship -- otherwise it deletes it. Running
 # from the repo this resolves to a path that does not exist, so dev falls through to deps.
 WINE_UNIFIED_BUNDLED = Path(__file__).resolve().parent / "wine-unified"
+# AArchX (its binary is still called ocerz), the experimental x86-64 -> arm64 translator a
+# bottle can run its Wine on instead of Rosetta. It ships next to this file the same way the
+# engine does; MNC_AARCHX_BIN points a dev run at a locally built one.
+AARCHX_BUNDLED = Path(__file__).resolve().parent / "aarchx" / "ocerz"
 UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk", "vr", "opengl")
 
 # Bradar redist runtimes we PRE-PROVISION into a prefix insted of runnin the 32-bit
@@ -510,7 +514,7 @@ def _rpc_bridge_start(wine: str, env: dict) -> None:
     try:
         # 5 min for the same fresh-prefix wineboot reason as _apply_retina_regedit.
         result = subprocess.run(
-            [wine, "sc", "start", "rpc-bridge"],
+            _wine_argv([wine, "sc", "start", "rpc-bridge"], env),
             env=env, timeout=300,
             capture_output=True, text=True,
         )
@@ -529,7 +533,7 @@ def _rpc_bridge_install_prefix(prefix: str) -> None:
     env = _wine_env(prefix)
     try:
         result = subprocess.run(
-            [wine, str(RPC_BRIDGE_EXE), "--install"],
+            _wine_argv([wine, str(RPC_BRIDGE_EXE), "--install"], env),
             env=env, timeout=30,
             capture_output=True, text=True,
         )
@@ -547,7 +551,7 @@ def _rpc_bridge_uninstall_prefix(prefix: str) -> None:
     env = _wine_env(prefix)
     try:
         subprocess.run(
-            [wine, str(RPC_BRIDGE_EXE), "--uninstall"],
+            _wine_argv([wine, str(RPC_BRIDGE_EXE), "--uninstall"], env),
             env=env, timeout=30,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -780,10 +784,81 @@ def _find_moltenvk_icd() -> str:
     return ""
 
 
+# ---- x86 translation: Rosetta (default) or AArchX (experimental) --------------------------
+# Each bottle picks how its Wine is translated: "rosetta", the default every bottle starts
+# on, or "aarchx", which a user has to choose for that bottle themselves. The choice has to
+# cover EVERY process of the bottle's Wine session -- a wineserver only works with clients
+# translated the same way, so a Rosetta regedit or wineboot joining an AArchX Steam (or the
+# reverse) wedges the whole session. That is why it rides on the environment: _wine_env and _unified_env mark an AArchX bottle's env with
+# MNC_TRANSLATOR_BIN, and every x86 command is built by _x86_argv / _wine_argv / _x86_sh,
+# which read that mark instead of naming /usr/bin/arch themselves. `ocerz X args` is the
+# drop-in for `arch -x86_64 X args`: it runs X's x86_64 slice, every x86 process X starts
+# stays on AArchX, and an arm64-only child runs natively, as it would under Rosetta.
+TRANSLATORS = ("rosetta", "aarchx")
+
+
+def _aarchx_bin() -> Optional[str]:
+    """The AArchX binary this install can run, or None: Apple Silicon only, and only when
+    the app was built with it (a launcher-only build has none)."""
+    if not _is_apple_silicon():
+        return None
+    for cand in (os.environ.get("MNC_AARCHX_BIN", ""), str(AARCHX_BUNDLED)):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def _bottle_translator(prefix: str) -> str:
+    """"aarchx" only when the bottle chose it, AArchX is usable here and the bottle runs the
+    unified engine (the classic per-game flows build their own Rosetta command lines);
+    "rosetta" in every other case."""
+    try:
+        bottle_cfg = _load_bottles().get(_resolve_key(prefix), {})
+    except Exception:
+        bottle_cfg = {}
+    if bottle_cfg.get("translator") != "aarchx" or not _aarchx_bin():
+        return "rosetta"
+    return "aarchx" if _unified_engine_active(bottle_cfg) else "rosetta"
+
+
+def _apply_translator(env: Dict[str, str], prefix: str) -> None:
+    """Mark env for an AArchX bottle; clear any mark inherited from elsewhere otherwise."""
+    env.pop("MNC_TRANSLATOR_BIN", None)
+    ocerz = _aarchx_bin()
+    if ocerz and _bottle_translator(prefix) == "aarchx":
+        env["MNC_TRANSLATOR_BIN"] = ocerz
+
+
+def _x86_argv(argv: List[str], env: Optional[Dict[str, str]]) -> List[str]:
+    """`arch -x86_64 argv...`, or the AArchX equivalent when env belongs to an AArchX bottle."""
+    t = (env or {}).get("MNC_TRANSLATOR_BIN")
+    return [t, *argv] if t else ["/usr/bin/arch", "-x86_64", *argv]
+
+
+def _wine_argv(argv: List[str], env: Optional[Dict[str, str]]) -> List[str]:
+    """argv for running an x86_64 Wine binary directly. Unchanged on Rosetta, where macOS
+    picks Rosetta for an Intel-only binary by itself; prefixed with ocerz on AArchX."""
+    t = (env or {}).get("MNC_TRANSLATOR_BIN")
+    return [t, *argv] if t else list(argv)
+
+
+def _x86_sh(env: Optional[Dict[str, str]]) -> str:
+    """The words that go in front of an x86 command inside a shell string."""
+    t = (env or {}).get("MNC_TRANSLATOR_BIN")
+    return shlex.quote(t) if t else "/usr/bin/arch -x86_64"
+
+
+def _x86_wrapper_args(env: Optional[Dict[str, str]]) -> List[str]:
+    """legendary / nile launch flags: both shlex-split --wrapper and put it before wine."""
+    t = (env or {}).get("MNC_TRANSLATOR_BIN")
+    return ["--wrapper", shlex.quote(t)] if t else []
+
+
 def _wine_env(prefix: str) -> Dict[str, str]:
     """Base Wine environment — matches original MainWindow.wine_env().
     Does NOT set WINEDLLOVERRIDES; that is handled by _apply_backend_env()."""
     env = dict(os.environ)
+    _apply_translator(env, prefix)
     env["WINEPREFIX"] = prefix
     env["WINEDEBUG"] = "-all"
 
@@ -852,7 +927,7 @@ def _apply_dpi_aware_regedit(wine: str, env: dict, exes: set) -> None:
     try:
         reg_file = Path(tempfile.gettempdir()) / "wine_dpi_aware.reg"
         reg_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        subprocess.run([wine, "regedit", str(reg_file)], env=env, timeout=300,
+        subprocess.run(_wine_argv([wine, "regedit", str(reg_file)], env), env=env, timeout=300,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         log(f"Applied regedit: HIGHDPIAWARE for {sorted(exes)}")
     except Exception as exc:
@@ -883,7 +958,7 @@ def _apply_retina_regedit(wine: str, env: dict, retina_mode: bool) -> None:
         # through the in-process Cocoa launcher init. Subsequent regedit
         # calls in the same prefix return in <1s.
         subprocess.run(
-            [wine, "regedit", str(reg_file)],
+            _wine_argv([wine, "regedit", str(reg_file)], env),
             env=env, timeout=300,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -927,7 +1002,7 @@ def _apply_gecko_regedit(wine: str, env: dict) -> None:
     try:
         reg_file = Path(tempfile.gettempdir()) / "wine_gecko.reg"
         reg_file.write_text(reg_content, encoding="utf-8")
-        subprocess.run([wine, "regedit", str(reg_file)], env=env, timeout=300,
+        subprocess.run(_wine_argv([wine, "regedit", str(reg_file)], env), env=env, timeout=300,
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         log("Applied regedit: mshtml GeckoPath -> redist wine-gecko 2.47.4")
     except Exception as exc:
@@ -3807,7 +3882,7 @@ def _install_wine_mono(prefix: str, backend: str = "d3dmetal") -> bool:
           f"{shlex.quote(iw)} msiexec /i {shlex.quote(msi)} /qn >/dev/null 2>&1")
     log(f"redist: installing {Path(msi).name} (wine-mono / .NET) via the unified wine...")
     try:
-        subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh], env=env, timeout=600)
+        subprocess.run(_x86_argv(["/bin/bash", "-lc", sh], env), env=env, timeout=600)
     except Exception as exc:
         log(f"redist: wine-mono install failed: {exc}")
         return False
@@ -4037,12 +4112,12 @@ def _stage_unified_mf(prefix: str) -> None:
         env["WINEDEBUG"] = "-all"
         wine = str(bt / "wine")
         wineserver = str(bt / "server" / "wineserver")
-        subprocess.run(["/usr/bin/arch", "-x86_64", wine, "reg", "import", reg_path],
+        subprocess.run(_x86_argv([wine, "reg", "import", reg_path], env),
                        env=env, timeout=60,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # wait for the transient server to flush the hive to disk then exit so the
         # re-point survives the steam path wineserver -k that follows
-        subprocess.run(["/usr/bin/arch", "-x86_64", wineserver, "-w"],
+        subprocess.run(_x86_argv([wineserver, "-w"], env),
                        env=env, timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         log(f"unified: re-pointed {len(UNIFIED_MF_CLSIDS)} MF CLSIDs at {UNIFIED_MF_BRIDGE}")
@@ -4062,7 +4137,7 @@ def _apply_retina_unified(bt: Path, wine: str, env: Dict[str, str], retina_mode:
     render in a tiny HiDPI window."""
     _apply_retina_regedit(wine, env, retina_mode)
     try:
-        subprocess.run(["/usr/bin/arch", "-x86_64", str(bt / "server" / "wineserver"), "-w"],
+        subprocess.run(_x86_argv([str(bt / "server" / "wineserver"), "-w"], env),
                        env=env, timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
@@ -4192,6 +4267,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     e.g. arbitrary "Applications" whose own CEF/Electron helper subprocesses
     have no fixed name to hardcode, unlike Steam's/EA's."""
     env = dict(os.environ)
+    _apply_translator(env, str(prefix))
     for var in ("GTK_PATH", "GTK_EXE_PREFIX", "GTK_DATA_PREFIX", "GDK_PIXBUF_MODULEDIR",
                 "GDK_PIXBUF_MODULE_FILE", "GTK_IM_MODULE_FILE", "XDG_DATA_DIRS"):
         env.pop(var, None)
@@ -4264,7 +4340,9 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                    "ROSETTA_X87_F32_ARITH", "ROSETTA_X87_F32_NARROW",
                    "ROSETTA_X87_FAST_RECIP_DIV"):
         env.pop(_stale, None)
-    if x87_jit:
+    # The x87 loader patches Rosetta inside the target process, so it means nothing to (and
+    # would only get in the way of) a bottle that runs on AArchX.
+    if x87_jit and "MNC_TRANSLATOR_BIN" not in env:
         _x87 = _rosetta_x87_loader()
         if _x87:
             env["ROSETTA_X87_PATH"] = _x87
@@ -4386,6 +4464,12 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
             "--disable-background-networking --disable-component-update "
             "--disable-domain-reliability --disable-breakpad --no-first-run"),
     })
+    # AArchX cannot hand CEF's composited frame over as a d3d11 SHARED TEXTURE yet: DXMT's
+    # CreateSharedImage fails ("could not create backing"), the context is marked lost and the
+    # window stays blank. CPU bitmaps -- the pre-v0.80-172 workaround described above -- still
+    # render, so an AArchX bottle keeps them until that handoff works there.
+    if "MNC_TRANSLATOR_BIN" in env:
+        env["MNC_WEBHELPER_FLAGS"] += " --disable-gpu-compositing"
     for var in ("GTK_PATH", "WINEPATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
         env.pop(var, None)
     if metal_hud:
@@ -4793,7 +4877,7 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         f"{shlex.quote(wine)} steam.exe {steam_args} > {shlex.quote(log_path)} 2>&1"
     )
     log(f"Launching Steam (unified/DXMT, backend={game_backend}, silent={silent})")
-    proc = subprocess.Popen(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", cmd], env=env,
+    proc = subprocess.Popen(_x86_argv(["/bin/bash", "-lc", cmd], env), env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
     _steam_process = proc
@@ -4818,9 +4902,19 @@ def _steam_is_running() -> bool:
     # "steam.exe -tcp" so we anchor on line start n we dont match the webhelper or the SteamService bradar
     try:
         out = subprocess.run(["ps", "-Ao", "command"], capture_output=True, text=True, timeout=6).stdout
-        return any(line.startswith("steam.exe") for line in out.splitlines())
+        return any(_is_steam_client_cmdline(line) for line in out.splitlines())
     except Exception:
         return False
+
+
+def _is_steam_client_cmdline(line: str) -> bool:
+    """Rosetta Wine rewrites its title to "steam.exe -tcp"; a process AArchX runs keeps
+    ocerz's own argv, "<ocerz> -path <loader> -- <loader> steam.exe -tcp", so there the
+    client is the loader's first argument instead."""
+    if line.startswith("steam.exe"):
+        return True
+    _, sep, guest = line.partition(" -- ")
+    return bool(sep) and re.search(r"/wine steam\.exe(\s|$)", guest) is not None
 
 
 def _stage_syswow64(prefix: str) -> int:
@@ -4924,7 +5018,7 @@ def _ensure_progfiles_x86(prefix: str) -> None:
         for k, v, d in keys)
     sh = f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n" + lines
     try:
-        subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh], env=env, timeout=120)
+        subprocess.run(_x86_argv(["/bin/bash", "-lc", sh], env), env=env, timeout=120)
         log("_ensure_progfiles_x86: set ProgramFilesDir (x86) so 32-bit installers use Program Files (x86)")
     except Exception as exc:
         log(f"_ensure_progfiles_x86 failed: {exc}")
@@ -4983,7 +5077,7 @@ def _run_installer_unified(prefix: str, cmd_after_wine: List[str],
     sh = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
           f"exec {shlex.quote(wine)} {tail}")
     log(f"installer (unified wine): {cmd_after_wine}")
-    return subprocess.Popen(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh],
+    return subprocess.Popen(_x86_argv(["/bin/bash", "-lc", sh], env),
                             env=env, stdout=out, stderr=subprocess.STDOUT,
                             start_new_session=True)
 
@@ -5048,7 +5142,7 @@ def _run_installscript_redists(prefix: str, game_dir: str, backend: str) -> None
             sh = (f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n"
                   f"{shlex.quote(iw)} {shlex.quote(unixpath)} {cmd_args} >/dev/null 2>&1")
             try:
-                subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh],
+                subprocess.run(_x86_argv(["/bin/bash", "-lc", sh], env),
                                env=env, timeout=900)
             except Exception as exc:
                 log(f"redist {Path(unixpath).name} run failed: {exc}")
@@ -5061,7 +5155,7 @@ def _run_installscript_redists(prefix: str, game_dir: str, backend: str) -> None
                       f"{shlex.quote(iw)} reg add {shlex.quote(kp)} /v {shlex.quote(label)} "
                       f"/t REG_DWORD /d 1 /f >/dev/null 2>&1")
                 try:
-                    subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", rc],
+                    subprocess.run(_x86_argv(["/bin/bash", "-lc", rc], env),
                                    env=env, timeout=60)
                 except Exception:
                     pass
@@ -5160,7 +5254,7 @@ def _run_shared_commonredist(prefix: str, backend: str) -> None:
             log(f"shared redist install: {Path(unixpath).name} {cmd_args}".rstrip())
             sh = f"export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld)}\n{runcmd} >/dev/null 2>&1"
             try:
-                subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh], env=env, timeout=900)
+                subprocess.run(_x86_argv(["/bin/bash", "-lc", sh], env), env=env, timeout=900)
             except Exception as exc:
                 log(f"shared redist {Path(unixpath).name} run failed: {exc}")
             # set has-run (+ Wow6432Node mirror) so Steam skips its OWN storming run
@@ -5172,7 +5266,7 @@ def _run_shared_commonredist(prefix: str, backend: str) -> None:
                       f"{shlex.quote(iw)} reg add {shlex.quote(kp)} /v {shlex.quote(label)} "
                       f"/t REG_DWORD /d 1 /f >/dev/null 2>&1")
                 try:
-                    subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", rc], env=env, timeout=60)
+                    subprocess.run(_x86_argv(["/bin/bash", "-lc", rc], env), env=env, timeout=60)
                 except Exception:
                     pass
             # Blocker 3: mark done in the prefix-local marker (regardless of run outcome so a
@@ -5446,7 +5540,7 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
         f"> {shlex.quote(log_path)} 2>&1"
     )
     log(f"Launching game (unified, backend={backend}): {exe_path.name}")
-    proc = subprocess.Popen(["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", cmd], env=env,
+    proc = subprocess.Popen(_x86_argv(["/bin/bash", "-lc", cmd], env), env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
     _launched_games[(str(prefix), str(exe))] = proc.pid
@@ -6018,7 +6112,7 @@ def _mirror_steam_keys_into_stray_wow6432node(prefix: str) -> None:
     )
     for args in copys:
         try:
-            rc = subprocess.run([wine] + args, env=env, capture_output=True, timeout=60).returncode
+            rc = subprocess.run(_wine_argv([wine] + args, env), env=env, capture_output=True, timeout=60).returncode
         except Exception as exc:
             log(f"steam api: could not mirror {args[2]} into Wow6432Node: {exc}")
             return
@@ -6131,7 +6225,7 @@ def cmd_launch_launcher(params: Dict[str, Any]) -> Any:
 
     cmd = (
         f"cd {shlex.quote(str(exe_path.parent))} && "
-        f"arch -x86_64 {shlex.quote(wine)} "
+        f"{_x86_sh(env)} {shlex.quote(wine)} "
         f"{shlex.quote(str(exe_path))} "
         f"> {shlex.quote(log_path)} 2>&1"
     )
@@ -6405,7 +6499,7 @@ def cmd_create_bottle(params: Dict[str, Any]) -> Any:
         try:
             log(f"Running wineboot -u for {path_str}")
             subprocess.run(
-                [wine, "wineboot", "-u"],
+                _wine_argv([wine, "wineboot", "-u"], env),
                 env=env,
                 # backstop: gate makes this ~10s but allow the slow full install to finish
                 timeout=600,
@@ -6568,6 +6662,10 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     config.setdefault("apps_metal_hud", False)
     config.setdefault("apps_x87_jit", True)
     config.setdefault("discord_rpc", True)
+    # x86 translation: Rosetta unless the bottle opted in to AArchX. aarchx_available is
+    # computed, never stored -- the UI greys the option out when this install cannot run it.
+    config.setdefault("translator", "rosetta")
+    config["aarchx_available"] = _aarchx_bin() is not None
 
     return config
 
@@ -6581,8 +6679,18 @@ def cmd_set_bottle_config(params: Dict[str, Any]) -> Any:
     bottles = _load_bottles()
     existing = bottles.get(key, {})
 
-   
-    skip_keys = {"path", "cmd", "id"}
+    if "translator" in params:
+        if params["translator"] not in TRANSLATORS:
+            raise ValueError(f"translator must be one of {', '.join(TRANSLATORS)}")
+        if params["translator"] == "aarchx" and not _aarchx_bin():
+            raise ValueError("AArchX is not available on this Mac or in this build")
+        if params["translator"] != existing.get("translator", "rosetta"):
+            # A wineserver only serves clients translated the way it is, so the bottle's
+            # running Wine is stopped (with the translator it was started on) before the
+            # switch is saved; the next launch then starts clean on the new one.
+            _stop_prefix_wineserver(path)
+
+    skip_keys = {"path", "cmd", "id", "aarchx_available"}
     for k, v in params.items():
         if k not in skip_keys:
             existing[k] = v
@@ -6597,6 +6705,23 @@ def cmd_set_bottle_config(params: Dict[str, Any]) -> Any:
     bottles[key] = existing
     _save_bottles(bottles)
     return existing
+
+
+def _stop_prefix_wineserver(prefix: str) -> None:
+    """Gracefully end ONE bottle's Wine session (`wineserver -k` under that bottle's own
+    WINEPREFIX), leaving other bottles alone -- unlike cmd_kill_wineserver, which sweeps
+    every MacNCheese Wine process."""
+    bt = _unified_build_dir()
+    ws = str(bt / "server" / "wineserver") if bt is not None else _find_wineserver()
+    if not ws or not Path(ws).exists():
+        return
+    env = _wine_env(prefix)
+    try:
+        subprocess.run(_wine_argv([ws, "-k"], env), env=env, timeout=15,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log(f"translator switch: stopped the Wine session of {prefix}")
+    except Exception as exc:
+        log(f"translator switch: wineserver -k failed for {prefix}: {exc}")
 
 
 _libproc = None
@@ -6633,6 +6758,9 @@ def _mnc_engine_roots() -> List[str]:
         roots.append(str(active))
     if WINE_UNIFIED_BUNDLED.exists():
         roots.append(str(WINE_UNIFIED_BUNDLED))
+    # an AArchX bottle's Wine processes all run as the bundled ocerz binary
+    if AARCHX_BUNDLED.exists():
+        roots.append(str(AARCHX_BUNDLED.parent))
     return list(dict.fromkeys(roots))
 
 
@@ -6726,7 +6854,7 @@ def cmd_kill_wineserver(params: Dict[str, Any]) -> Any:
             servers.append(ws)
     for ws in servers:
         try:
-            subprocess.run([ws, "-k"], env=env, timeout=10,
+            subprocess.run(_wine_argv([ws, "-k"], env), env=env, timeout=10,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             log(f"wineserver -k timed out: {ws}")
@@ -6877,7 +7005,7 @@ def cmd_init_prefix(params: Dict[str, Any]) -> Any:
     env = _wine_env(prefix)
     log(f"init_prefix: wineboot -u for {prefix}")
     subprocess.run(
-        [wine, "wineboot", "-u"], env=env, timeout=600,
+        _wine_argv([wine, "wineboot", "-u"], env), env=env, timeout=600,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return None
@@ -6894,7 +7022,7 @@ def cmd_clean_prefix(params: Dict[str, Any]) -> Any:
     env = _wine_env(prefix)
     log(f"clean_prefix: wineboot -u for {prefix}")
     subprocess.run(
-        [wine, "wineboot", "-u"], env=env, timeout=600,
+        _wine_argv([wine, "wineboot", "-u"], env), env=env, timeout=600,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return None
@@ -6916,7 +7044,7 @@ def cmd_open_winecfg(params: Dict[str, Any]) -> Any:
     env = _wine_env(prefix)
     log(f"open_winecfg: {wine} winecfg for {prefix}")
     proc = subprocess.Popen(
-        [wine, "winecfg"],
+        _wine_argv([wine, "winecfg"], env),
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -8465,7 +8593,8 @@ def _stop_background_steam(reason: str) -> None:
     ws = _find_wineserver()
     if ws and _steam_prefix:
         try:
-            subprocess.run([ws, "-k"], env=_wine_env(_steam_prefix), timeout=10,
+            _ws_env = _wine_env(_steam_prefix)
+            subprocess.run(_wine_argv([ws, "-k"], _ws_env), env=_ws_env, timeout=10,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
@@ -8614,7 +8743,8 @@ def cmd_run_cheese_repair(params: Dict[str, Any]) -> Any:
                 if not wine:
                     raise FileNotFoundError("Wine not found")
                 Path(prefix).expanduser().mkdir(parents=True, exist_ok=True)
-                rc = _run_job_command(job, [wine, "wineboot", "-u"], env=_wine_env(prefix))
+                _boot_env = _wine_env(prefix)
+                rc = _run_job_command(job, _wine_argv([wine, "wineboot", "-u"], _boot_env), env=_boot_env)
                 job["failed"] = rc != 0
 
             elif action == "steam_simple_fix":
@@ -8636,7 +8766,8 @@ def cmd_run_cheese_repair(params: Dict[str, Any]) -> Any:
                         raise FileNotFoundError("Wine not found after install")
                     Path(prefix).expanduser().mkdir(parents=True, exist_ok=True)
                     _job_append(job, "=== Running wineboot -u on the bottle ===")
-                    rc = _run_job_command(job, [wine, "wineboot", "-u"], env=_wine_env(prefix))
+                    _boot_env = _wine_env(prefix)
+                    rc = _run_job_command(job, _wine_argv([wine, "wineboot", "-u"], _boot_env), env=_boot_env)
                     job["failed"] = rc != 0
 
             elif action == "backup_recreate_prefix":
@@ -8650,7 +8781,8 @@ def cmd_run_cheese_repair(params: Dict[str, Any]) -> Any:
                     _job_append(job, f"Moving {prefix_path} to {backup_path}")
                     shutil.move(str(prefix_path), str(backup_path))
                 prefix_path.mkdir(parents=True, exist_ok=True)
-                rc = _run_job_command(job, [wine, "wineboot", "-u"], env=_wine_env(str(prefix_path)))
+                _boot_env = _wine_env(str(prefix_path))
+                rc = _run_job_command(job, _wine_argv([wine, "wineboot", "-u"], _boot_env), env=_boot_env)
                 job["failed"] = rc != 0
 
             elif action == "reinstall_wine_stable":
@@ -8911,7 +9043,7 @@ def _winetricks_popen(prefix: str, verb: str, force: bool = False) -> subprocess
           f"exec {shlex.quote(wtk)} {flags} {shlex.quote(verb)}")
     log(f"winetricks: running {verb} (wine={wine})")
     return subprocess.Popen(
-        ["/usr/bin/arch", "-x86_64", "/bin/bash", "-lc", sh],
+        _x86_argv(["/bin/bash", "-lc", sh], env),
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         start_new_session=True,
     )
@@ -10295,7 +10427,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         uri = _epic_origin_launch_uri(app_name, prefix)
         if not uri:
             raise RuntimeError(f"Could not build the EA App launch link for {app_name}")
-        cmd = [wine_bin, "start", uri]
+        cmd = _wine_argv([wine_bin, "start", uri], env)
     else:
         # legendary launch handles Epic auth token generation and passes all required
         # -AUTH_TYPE / -AUTH_PASSWORD / -epicapp / etc. args to Wine automatically.
@@ -10304,6 +10436,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
             "--wine", wine_bin,
             "--wine-prefix", prefix_expanded,
             "--skip-version-check",
+            *_x86_wrapper_args(env),
         ]
     log(f"legendary launch: {shlex.join(cmd)}")
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", app_name)
@@ -10439,6 +10572,7 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
         "launch", amazon_id,
         "--wine", wine_bin,
         "--wine-prefix", prefix_expanded,
+        *_x86_wrapper_args(env),
     ]
     log(f"nile launch: {shlex.join(cmd)}")
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", amazon_id)

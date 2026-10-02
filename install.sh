@@ -88,6 +88,9 @@ if [ -f vendor/gamepolicyctl ]; then
     cp vendor/gamepolicyctl "$APP/Contents/Resources/gamepolicyctl"
     chmod +x "$APP/Contents/Resources/gamepolicyctl"
 fi
+# AArchX, the experimental translator a bottle can choose instead of Rosetta (Rosetta stays
+# the default); see bundle-aarchx.sh for where the binary comes from.
+bash bundle-aarchx.sh "$APP/Contents/Resources" "$(uname -m)"
 cp Sources/Info.plist "$APP/Contents/Info.plist"
 
 # Extract App Intents metadata so Siri/Apple Intelligence can discover shortcuts.
