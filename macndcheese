@@ -480,6 +480,24 @@ def _do_bottles_kill(ns, backend: "Backend", state: State) -> None:
         print(f"{remaining} still running -- try again, or check Activity Monitor.")
 
 
+def _do_bottles_translator(ns, backend: "Backend", state: State) -> None:
+    """Show or set how the bottle's Wine is translated: rosetta (the default) or aarchx
+    (experimental). Switching stops whatever is running in that bottle."""
+    bottle = _bottle_arg(ns, backend, state)
+    if ns.translator:
+        data = backend.call("set_bottle_config", {"path": bottle["path"], "translator": ns.translator})
+        print(f"translator = {data.get('translator')}")
+        return
+    data = backend.call("get_bottle_config", {"path": bottle["path"]})
+    if ns.as_json:
+        _emit({"translator": data.get("translator", "rosetta"),
+               "aarchx_available": data.get("aarchx_available", False)}, True)
+        return
+    print(f"translator = {data.get('translator', 'rosetta')}")
+    if not data.get("aarchx_available"):
+        print("AArchX is not available here (it needs Apple Silicon and a build that includes it).")
+
+
 def _do_bottles_folder(ns, backend: "Backend", state: State) -> None:
     bottle = _bottle_arg(ns, backend, state)
     backend.call("open_prefix_folder", {"prefix": bottle["path"]})
@@ -1252,7 +1270,7 @@ def _add_install_flags(sp: argparse.ArgumentParser) -> None:
 
 
 GROUP_VERBS = {
-    "bottles": ["list", "create", "delete", "info", "move", "init", "clean", "kill", "folder", "winecfg", "steam"],
+    "bottles": ["list", "create", "delete", "info", "move", "init", "clean", "kill", "translator", "folder", "winecfg", "steam"],
     "engines": ["list", "status", "install", "uninstall", "reinstall"],
     "list": ["games", "apps", "running"],
     "settings": ["get", "set"],
@@ -1315,6 +1333,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = bsub.add_parser("kill", help="stop everything running in the bottle")
     _add_bottle_positional(sp)
     sp.set_defaults(_handler=_do_bottles_kill)
+
+    sp = bsub.add_parser("translator",
+                          help="show or set the bottle's x86 translator: rosetta (default) or aarchx (experimental)")
+    _add_bottle_positional(sp)
+    sp.add_argument("--set", dest="translator", choices=("rosetta", "aarchx"),
+                     help="switch the bottle to this translator (stops what is running in it)")
+    sp.set_defaults(_handler=_do_bottles_translator)
 
     sp = bsub.add_parser("folder", help="reveal the bottle folder in Finder")
     _add_bottle_positional(sp)

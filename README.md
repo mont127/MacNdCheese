@@ -98,6 +98,15 @@ where you install and play it.
 The EA app also shows up in a bottle's **Applications** section once installed, so you can open
 it on its own.
 
+### What is "AArchX (Experimental)" in Bottle settings?
+Every bottle runs its Windows programs on Apple's **Rosetta** by default, and that does not change
+unless you change it. Under **Bottle settings → x86 translation** you can switch one bottle to
+**[AArchX](https://github.com/mont127/AArchX)** instead, an experimental from-scratch x86-64 → arm64
+translator that ships inside the app (Apple Silicon only). It is for people who want to test it:
+some games run, some don't yet, and switching stops whatever is running in that bottle. Switch back
+to Rosetta the same way. From the terminal: `macndcheese bottles translator <bottle> --set aarchx`
+(or `--set rosetta`). Release builds compile AArchX from a pinned commit of its public repository.
+
 ### Why don't anti-cheat games work?
 Anti-cheat software like Easy Anti-Cheat and BattlEye require deep Windows system access that wine can't provide. For few cases this is indeed a macndcheese issiue but games like marvel rivals do not work due to anticheat on every wine wrapper
 

@@ -135,6 +135,11 @@ struct BottleSettingsTab: View {
     @State private var iconPath = ""
     // the tuning flags below are opt-in and only shown while it is enabled.
     @State private var globalBackend = "d3dmetal3"
+    // How the bottle's Wine is translated to arm64. Every bottle starts on Rosetta; AArchX is
+    // the experimental translator a user can pick instead, offered wherever the backend says
+    // it can run.
+    @State private var translator = "rosetta"
+    @State private var aarchxAvailable = false
     @State private var isInitializing = false
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
@@ -199,6 +204,24 @@ struct BottleSettingsTab: View {
                         }
                         .pickerStyle(.segmented)
                         .onChange(of: globalBackend) { _ in saveBottleConfig() }
+                    }
+
+                    SettingsRow(label: L("x86 translation")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Picker("", selection: $translator) {
+                                Text("Rosetta").tag("rosetta")
+                                Text(L("AArchX (Experimental)")).tag("aarchx")
+                            }
+                            .pickerStyle(.segmented)
+                            .disabled(!aarchxAvailable && translator == "rosetta")
+                            .onChange(of: translator) { _ in saveBottleConfig() }
+                            Text(aarchxAvailable
+                                 ? L("Rosetta is the default. AArchX is an experimental translator you can choose instead. Switching stops anything running in this bottle.")
+                                 : L("AArchX needs Apple Silicon and a build that includes it."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
 
                     Divider()
@@ -330,6 +353,8 @@ struct BottleSettingsTab: View {
             Task {
                 if let config = await backend.getBottleConfig(path: bottle.path) {
                     globalBackend = config["default_backend"] as? String ?? "d3dmetal3"
+                    aarchxAvailable = config["aarchx_available"] as? Bool ?? false
+                    translator = config["translator"] as? String ?? "rosetta"
                 }
             }
         }
@@ -346,6 +371,11 @@ struct BottleSettingsTab: View {
                 "engine": "unified",
             ]
             vals["default_backend"] = globalBackend
+            // The backend refuses "aarchx" where AArchX cannot run, so a bottle carried over to
+            // such a Mac keeps its stored choice untouched instead of failing the whole save.
+            if aarchxAvailable || translator == "rosetta" {
+                vals["translator"] = translator
+            }
             await backend.setBottleConfig(path: prefix, values: vals)
         }
     }
