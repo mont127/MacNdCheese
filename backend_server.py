@@ -4846,7 +4846,10 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         f"{shlex.quote(wineserver)} -k 2>/dev/null; sleep 1\n"
         # Bradar: with the server now dead, disable the Steam Client Service DIRECTLY in system.reg
         # (flips Start 3->4 on disk) so even already-made bottles get it the moment wine loads the hive.
-        f"python3 {shlex.quote(str(_svcfix_path))} {shlex.quote(str(Path(prefix) / 'system.reg'))} 2>/dev/null\n"
+        # Run by the backend's own interpreter, not a bare `python3`: in this x86 shell that is
+        # /usr/bin/python3's x86 slice, an xcrun stub that dies loading an arm64-only libxcrun
+        # from the Command Line Tools, so the fix silently never ran.
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(_svcfix_path))} {shlex.quote(str(Path(prefix) / 'system.reg'))} 2>/dev/null\n"
         f"cd {shlex.quote(str(steam_dir))} || exit 1\n"
         f"rm -f .crash 2>/dev/null\n"
         # Bradar keep config/htmlcache (the CEF compiled-UI cache) so steam dont re-cache +
