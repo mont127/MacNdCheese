@@ -32,8 +32,14 @@ elif [ -n "${MNC_AARCHX_SRC:-}" ]; then
     # The app supports macOS 12, so the translator must at least load there; AArchX's
     # own Makefile targets the machine it is built on.
     echo "AArchX: building $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout'))"
-    make -C "$SRC" -j"$(sysctl -n hw.ncpu)" ocerz \
-        ARCHFLAGS="-arch arm64 -mmacosx-version-min=12.0" >/dev/null
+    if ! make -C "$SRC" -j"$(sysctl -n hw.ncpu)" ocerz \
+            ARCHFLAGS="-arch arm64 -mmacosx-version-min=12.0" >"$SRC/.mnc-build.log" 2>&1; then
+        # Experimental and optional: a translator that fails to compile on this toolchain
+        # must not cost the release. Say so loudly and ship the launcher without it.
+        tail -30 "$SRC/.mnc-build.log" >&2
+        echo "::warning::AArchX failed to build; this build ships without it (Rosetta only)"
+        exit 0
+    fi
     BIN="$SRC/ocerz"
 elif [ -x "../AArchX/ocerz" ]; then
     SRC="$(cd ../AArchX && pwd)"
