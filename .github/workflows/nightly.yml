@@ -323,11 +323,14 @@ jobs:
       - name: Delete previous nightly prereleases
         # Keep only the one we're about to publish — otherwise these accumulate
         # forever, one per commit to main. Deletes both the release and its tag.
+        # Only PRE-releases go: a nightly someone promoted to a full release (or
+        # Latest) is a release now, and this step used to delete it anyway --
+        # 11.2.6 was promoted to Latest and vanished with the next push to main.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
-            --jq '.[] | select(.tagName | startswith("nightly-")) | .tagName' \
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease and (.tagName | startswith("nightly-"))) | .tagName' \
           | while read -r old_tag; do
               echo "Deleting old nightly release: $old_tag"
               gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
