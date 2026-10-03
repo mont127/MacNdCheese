@@ -272,6 +272,23 @@ jobs:
             exit 1
           fi
 
+      - name: Package AArchX for the in-app installer
+        # The setup menu's AArchX entry (installer.sh install_aarchx) downloads this when
+        # the app it runs in has no AArchX inside: ocerz as bundle-aarchx.sh built it, its
+        # LICENSE, and the AArchX commit. A build whose AArchX failed publishes without it.
+        run: |
+          set -euo pipefail
+          if [ -x aarchx-src/ocerz ] && lipo -archs aarchx-src/ocerz | grep -qw arm64; then
+            mkdir -p aarchx-pkg
+            cp aarchx-src/ocerz aarchx-pkg/ocerz
+            [ -f aarchx-src/LICENSE ] && cp aarchx-src/LICENSE aarchx-pkg/LICENSE
+            git -C aarchx-src rev-parse HEAD > aarchx-pkg/VERSION
+            tar -czf aarchx-arm64.tar.gz -C aarchx-pkg .
+            ls -la aarchx-arm64.tar.gz
+          else
+            echo "::warning::no AArchX build to package; this release has no aarchx-arm64.tar.gz"
+          fi
+
       - name: Compute tag and release notes
         id: tag
         env:
@@ -347,7 +364,9 @@ jobs:
           # every user as an in-app update.
           prerelease: true
           body: ${{ steps.tag.outputs.notes }}
-          files: MacNCheese-universal.dmg
+          files: |
+            MacNCheese-universal.dmg
+            aarchx-arm64.tar.gz
 
       - name: Commit the version bump
         # Runs only after the release is published, so a failed build leaves the

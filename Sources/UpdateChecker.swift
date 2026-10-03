@@ -10,6 +10,12 @@ final class UpdateChecker: ObservableObject {
     }
     private static nonisolated let githubRepo = "mont127/MacNdCheese"
 
+    /// Result of the last manual check (Settings -> Updates, MacNCheese -> Check for Updates).
+    enum ManualState: Equatable {
+        case idle, checking, upToDate, available, failed
+    }
+    @Published var manualState: ManualState = .idle
+
     @Published var updateAvailable = false
     @Published var latestVersion = ""
     @Published var releaseURL = ""
@@ -34,8 +40,50 @@ final class UpdateChecker: ObservableObject {
         UserDefaults.standard.bool(forKey: autoInstallKey)
     }
 
-    func check(autoInstallWith backend: BackendClient? = nil) {
+    /// Check now because the user asked: same lookup as the launch check, but it reports
+    /// "up to date" or a failure instead of staying silent, and never installs by itself.
+    func checkNow(announce: Bool = false) {
+        guard manualState != .checking else { return }
+        announceResult = announce
+        manualState = .checking
+        check(autoInstallWith: nil, manual: true)
+    }
+
+    /// The menu command has no status line of its own, so it reports with an alert.
+    private var announceResult = false
+    private func announceIfAsked() {
+        guard announceResult else { return }
+        announceResult = false
+        let alert = NSAlert()
+        switch manualState {
+        case .upToDate:
+            alert.messageText = L("You're up to date")
+            alert.informativeText = String(format: L("MacNCheese %@ is the newest version."), Self.currentVersion)
+        case .available:
+            alert.messageText = String(format: L("MacNCheese %@ is available"), latestVersion)
+            alert.informativeText = L("Use the banner at the top of the window to update, or Settings → Updates.")
+        case .failed:
+            alert.messageText = L("Couldn't check for updates")
+            alert.informativeText = L("GitHub could not be reached. Try again in a moment.")
+        default:
+            return
+        }
+        alert.runModal()
+    }
+
+    /// The X.Y.Z inside a release tag or title. Nightly tags look like
+    /// "nightly-v11.2.7-20261003-c19d423"; stripping a leading "v" left "nightly-v11...",
+    /// which parsed as 0.2.7 and was never newer than anything, so no update was ever offered.
+    nonisolated static func versionIn(_ text: String) -> String? {
+        guard let r = text.range(of: #"\d+(\.\d+)+"#, options: .regularExpression) else { return nil }
+        return String(text[r])
+    }
+
+    func check(autoInstallWith backend: BackendClient? = nil, manual: Bool = false) {
         Task.detached(priority: .utility) {
+            let fail: @Sendable () async -> Void = {
+                if manual { await MainActor.run { self.manualState = .failed; self.announceIfAsked() } }
+            }
             do {
                 let apiURL = "https://api.github.com/repos/\(Self.githubRepo)/releases/latest"
                 guard let url = URL(string: apiURL) else { return }
@@ -45,21 +93,24 @@ final class UpdateChecker: ObservableObject {
                 request.timeoutInterval = 10
 
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
-                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { await fail(); return }
+                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { await fail(); return }
 
                 let tag = json["tag_name"] as? String ?? ""
                 let htmlURL = json["html_url"] as? String
                     ?? "https://github.com/\(Self.githubRepo)/releases/latest"
-                guard !tag.isEmpty else { return }
+                guard !tag.isEmpty else { await fail(); return }
 
                 // Locate the .dmg asset so the in-app updater can download it.
                 let assets = json["assets"] as? [[String: Any]] ?? []
                 let dmgAsset = assets.first { ($0["name"] as? String ?? "").lowercased().hasSuffix(".dmg") }
                 let dmgDownload = dmgAsset?["browser_download_url"] as? String ?? ""
 
-                let latestClean = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-                let currentClean = Self.currentVersion.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+                guard let latestClean = Self.versionIn(tag) ?? Self.versionIn(json["name"] as? String ?? "") else {
+                    await fail()
+                    return
+                }
+                let currentClean = Self.versionIn(Self.currentVersion) ?? Self.currentVersion
 
                 if Self.compareVersions(latestClean, isNewerThan: currentClean) {
                     await MainActor.run {
@@ -67,6 +118,7 @@ final class UpdateChecker: ObservableObject {
                         self.releaseURL = htmlURL
                         self.dmgURL = dmgDownload
                         self.updateAvailable = true
+                        if manual { self.manualState = .available; self.announceIfAsked() }
                         // Only self-install when the user has explicitly opted in
                         // (Settings -> "Install updates automatically"). Otherwise just
                         // raise the banner and let them press Update & Restart, or ignore
@@ -75,9 +127,11 @@ final class UpdateChecker: ObservableObject {
                             self.install(backend: backend)
                         }
                     }
+                } else if manual {
+                    await MainActor.run { self.manualState = .upToDate; self.announceIfAsked() }
                 }
             } catch {
-
+                await fail()
             }
         }
     }

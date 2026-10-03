@@ -267,6 +267,9 @@ struct ComponentsStatus: Codable {
     let engineBundled: Bool       // the .app carrys its own engine in Resources
     let needsRosetta: Bool        // Apple Silicon: the x86_64 engine runs thru Rosetta
     let hasRosetta: Bool          // true on Intel, where there is nothing to install
+    let aarchxSupported: Bool     // Apple Silicon: AArchX can run here
+    let hasAarchx: Bool           // an AArchX binary is in the app or installed by the setup menu
+    let aarchxBundled: Bool       // the .app carries its own AArchX in Resources
 
     enum CodingKeys: String, CodingKey {
         case hasTools = "has_tools"
@@ -297,6 +300,9 @@ struct ComponentsStatus: Codable {
         case engineBundled = "engine_bundled"
         case needsRosetta = "needs_rosetta"
         case hasRosetta = "has_rosetta"
+        case aarchxSupported = "aarchx_supported"
+        case hasAarchx = "has_aarchx"
+        case aarchxBundled = "aarchx_bundled"
     }
 
     // Backwards-compat init for older backends that don't yet send
@@ -332,6 +338,9 @@ struct ComponentsStatus: Codable {
         // an older backend cant tell -- assume fine rather than nag about a missing Rosetta
         needsRosetta      = try c.decodeIfPresent(Bool.self, forKey: .needsRosetta) ?? false
         hasRosetta        = try c.decodeIfPresent(Bool.self, forKey: .hasRosetta) ?? true
+        aarchxSupported   = try c.decodeIfPresent(Bool.self, forKey: .aarchxSupported) ?? false
+        hasAarchx         = try c.decodeIfPresent(Bool.self, forKey: .hasAarchx) ?? false
+        aarchxBundled     = try c.decodeIfPresent(Bool.self, forKey: .aarchxBundled) ?? false
     }
 }
 
