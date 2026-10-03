@@ -560,6 +560,23 @@ struct SetupSettingsTab: View {
                 install: "install_wine_unified", uninstall: "uninstall_wine_unified",
                 installed: s?.hasWineUnified ?? false, recommended: true))
         }
+        if s?.aarchxSupported == true {
+            // AArchX is opt-in per bottle (Bottle settings -> x86 translation); Rosetta stays
+            // the default, so it is never part of "install everything recommended".
+            let aarchxName = L("AArchX — experimental x86 translator")
+            if s?.aarchxBundled == true {
+                list.append(SetupPackage(
+                    id: "aarchx", kind: .engine, name: aarchxName,
+                    detail: L("An alternative to Rosetta that a bottle can switch to under Bottle settings → x86 translation. It ships inside the app, so there is nothing to download."),
+                    install: nil, uninstall: nil, installed: true))
+            } else {
+                list.append(SetupPackage(
+                    id: "aarchx", kind: .engine, name: aarchxName,
+                    detail: L("An alternative to Rosetta that a bottle can switch to under Bottle settings → x86 translation. Rosetta stays the default: nothing changes until a bottle picks AArchX."),
+                    install: "install_aarchx", uninstall: "uninstall_aarchx",
+                    installed: s?.hasAarchx ?? false))
+            }
+        }
         list.append(SetupPackage(
             id: "libs", kind: .engine, name: L("Engine libraries — fonts, TLS, Vulkan, SDL"),
             detail: L("FreeType, gnutls, MoltenVK and SDL for the engine. Without them text can go missing and Steam can claim it is offline."),
@@ -922,6 +939,7 @@ struct ComponentToggleRow: View {
 
 struct DiagnoseSettingsTab: View {
     @EnvironmentObject var backend: BackendClient
+    @EnvironmentObject var updateChecker: UpdateChecker
     @AppStorage(UpdateChecker.autoInstallKey) private var autoInstallUpdates = false
     @State private var diagnosis: CheeseDiagnosis?
     @State private var isDiagnosing = false
@@ -1003,6 +1021,43 @@ struct DiagnoseSettingsTab: View {
 
                 GroupBox(L("Updates")) {
                     VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Button {
+                                updateChecker.checkNow()
+                            } label: {
+                                Label(L("Check for Updates"), systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .disabled(updateChecker.manualState == .checking || updateChecker.installing)
+                            if updateChecker.manualState == .available && !updateChecker.dmgURL.isEmpty
+                                && !updateChecker.installing {
+                                Button(L("Update & Restart")) {
+                                    updateChecker.install(backend: backend)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                            Spacer()
+                        }
+                        switch updateChecker.manualState {
+                        case .checking:
+                            Text(L("Checking…"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        case .upToDate:
+                            Text(String(format: L("MacNCheese %@ is the newest version."), UpdateChecker.currentVersion))
+                                .font(.caption).foregroundStyle(.secondary)
+                        case .available:
+                            Text(String(format: L("Version %@ is available (you have %@)."),
+                                        updateChecker.latestVersion, UpdateChecker.currentVersion))
+                                .font(.caption).foregroundStyle(.secondary)
+                        case .failed:
+                            Text(L("Couldn't reach GitHub to check for updates."))
+                                .font(.caption).foregroundStyle(.orange)
+                        case .idle:
+                            EmptyView()
+                        }
+                        if updateChecker.installing {
+                            Text(updateChecker.currentStep.isEmpty ? L("Working…") : updateChecker.currentStep)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Toggle(L("Install updates automatically"), isOn: $autoInstallUpdates)
                         Text(L("Off: new versions show a banner and wait for you. On: MacNCheese downloads the update and restarts itself on launch."))
                             .font(.caption)

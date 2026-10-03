@@ -1009,6 +1009,59 @@ find_wine_win64_lib() {
   return 1
 }
 
+# AArchX, the experimental x86 translator a bottle can pick instead of Rosetta. A release
+# build ships it inside the app; this installs it for a build that has none. Every nightly
+# release carries the AArchX build it bundled as aarchx-arm64.tar.gz (ocerz, LICENSE and the
+# AArchX commit in VERSION). The newest non-prerelease is tried first, then the newest
+# release of any kind that has the file.
+AARCHX_DIR="${HOME}/Library/Application Support/MacNCheese/aarchx"
+install_aarchx() {
+  if [ "$(uname -m)" != "arm64" ]; then
+    echo "AArchX runs on Apple Silicon only"
+    exit 1
+  fi
+  echo "Step: Looking for the newest AArchX build..."
+  aarchx_url=""
+  for api in "https://api.github.com/repos/mont127/MacNdCheese/releases/latest" \
+             "https://api.github.com/repos/mont127/MacNdCheese/releases?per_page=30"; do
+    api_response=$(curl -s --connect-timeout 20 "$api" 2>/dev/null || true)
+    aarchx_url=$(printf '%s' "$api_response" | grep '"browser_download_url"' | grep 'aarchx-arm64\.tar\.gz' | head -n1 | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
+    [ -n "$aarchx_url" ] && break
+  done
+  if [ -z "$aarchx_url" ]; then
+    echo "No MacNdCheese release carries an AArchX build (aarchx-arm64.tar.gz) yet"
+    exit 1
+  fi
+
+  echo "Step: Downloading AArchX..."
+  archive="$WORK_DIR/aarchx-arm64.tar.gz"
+  unpack_dir="$WORK_DIR/aarchx"
+  rm -rf "$unpack_dir"
+  mkdir -p "$unpack_dir"
+  download_file "$aarchx_url" "$archive"
+  tar -xzf "$archive" -C "$unpack_dir"
+  if [ ! -f "$unpack_dir/ocerz" ] || ! lipo -archs "$unpack_dir/ocerz" 2>/dev/null | grep -qw arm64; then
+    echo "The AArchX download has no arm64 ocerz binary"
+    exit 1
+  fi
+
+  mkdir -p "$AARCHX_DIR"
+  for f in ocerz LICENSE VERSION; do
+    if [ -f "$unpack_dir/$f" ]; then
+      cp "$unpack_dir/$f" "$AARCHX_DIR/$f"
+    fi
+  done
+  chmod +x "$AARCHX_DIR/ocerz"
+  xattr -d com.apple.quarantine "$AARCHX_DIR/ocerz" 2>/dev/null || true
+  echo "AArchX installed at $AARCHX_DIR (AArchX $(cut -c1-7 "$AARCHX_DIR/VERSION" 2>/dev/null || echo unknown))."
+  echo "Pick it per bottle under Bottle settings -> x86 translation; Rosetta stays the default."
+}
+
+uninstall_aarchx() {
+  rm -rf "$AARCHX_DIR"
+  echo "AArchX removed. Bottles that used it run on Rosetta again."
+}
+
 install_dxmt() {
   if [ -z "$DXMT_DIR" ]; then
     echo "Missing DXMT target directory"
@@ -2698,6 +2751,12 @@ case "$ACTION" in
   build_dxvk32)
     install_tools
     build_dxvk32
+    ;;
+  install_aarchx)
+    install_aarchx
+    ;;
+  uninstall_aarchx)
+    uninstall_aarchx
     ;;
   install_dxmt|install_d3dmetal|install_d3dmetal3)
     install_dxmt

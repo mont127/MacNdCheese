@@ -377,6 +377,9 @@ WINE_UNIFIED_BUNDLED = Path(__file__).resolve().parent / "wine-unified"
 # bottle can run its Wine on instead of Rosetta. It ships next to this file the same way the
 # engine does; MNC_AARCHX_BIN points a dev run at a locally built one.
 AARCHX_BUNDLED = Path(__file__).resolve().parent / "aarchx" / "ocerz"
+# Where the setup menu installs AArchX when the app has none inside (a build that predates
+# bundling, or one whose AArchX build failed). Outside the .app, so its signature stays valid.
+AARCHX_USER = Path.home() / "Library" / "Application Support" / "MacNCheese" / "aarchx" / "ocerz"
 UNIFIED_GAME_BACKENDS = ("d3dmetal", "dxmt", "dxvk", "vr", "opengl")
 
 # Bradar redist runtimes we PRE-PROVISION into a prefix insted of runnin the 32-bit
@@ -799,10 +802,10 @@ TRANSLATORS = ("rosetta", "aarchx")
 
 def _aarchx_bin() -> Optional[str]:
     """The AArchX binary this install can run, or None: Apple Silicon only, and only when
-    the app was built with it (a launcher-only build has none)."""
+    the app was built with it or the setup menu installed it (install_aarchx)."""
     if not _is_apple_silicon():
         return None
-    for cand in (os.environ.get("MNC_AARCHX_BIN", ""), str(AARCHX_BUNDLED)):
+    for cand in (os.environ.get("MNC_AARCHX_BIN", ""), str(AARCHX_BUNDLED), str(AARCHX_USER)):
         if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand
     return None
@@ -7533,6 +7536,10 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "engine_source": _engine_sorce(),
         "engine_version": ".".join(map(str, engine_ver)) if engine_ver else None,
         "engine_bundled": (WINE_UNIFIED_BUNDLED / "loader" / "wine").exists(),
+        # AArchX, the experimental x86 translator a bottle can pick instead of Rosetta.
+        "aarchx_supported": _is_apple_silicon(),
+        "has_aarchx": _aarchx_bin() is not None,
+        "aarchx_bundled": AARCHX_BUNDLED.is_file(),
     }
 
 
@@ -8909,7 +8916,8 @@ def cmd_run_installer(params: Dict[str, Any]) -> Any:
     # Bradar Setup tab packages whose action name reads badly ("Installing Stage Redist")
     names = {"stage_mnc_fonts": "engine libraries", "stage_redist": "game runtimes",
              "install_rosetta": "Rosetta 2",
-             "install_gptk_dlls": "GPTK DLLs", "install_vr": "VR", "uninstall_vr": "VR"}
+             "install_gptk_dlls": "GPTK DLLs", "install_vr": "VR", "uninstall_vr": "VR",
+             "install_aarchx": "AArchX", "uninstall_aarchx": "AArchX"}
 
     def _friendly_action(action: str) -> str:
         verb = "Uninstalling" if action.startswith("uninstall_") else "Installing"

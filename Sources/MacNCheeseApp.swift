@@ -273,6 +273,11 @@ struct MacNCheeseApp: App {
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
+            CommandGroup(after: .appInfo) {
+                Button(L("Check for Updates…")) {
+                    updateChecker.checkNow(announce: true)
+                }
+            }
         }
 
         // Settings scene — hosts SettingsSheet so the gear button's
@@ -283,6 +288,7 @@ struct MacNCheeseApp: App {
             SettingsSheet()
                 .environmentObject(backend)
                 .environmentObject(loc)
+                .environmentObject(updateChecker)
         }
     }
 }
