@@ -1059,7 +1059,7 @@ struct DiagnoseSettingsTab: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Toggle(L("Install updates automatically"), isOn: $autoInstallUpdates)
-                        Text(L("Off: new versions show a banner and wait for you. On: MacNCheese downloads the update and restarts itself on launch."))
+                        Text(L("Off: MacNCheese only looks for updates when you press Check for Updates. On: it checks at every launch, downloads the update and restarts itself."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

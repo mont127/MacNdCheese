@@ -207,7 +207,11 @@ struct MacNCheeseApp: App {
                 .onAppear {
                     backend.start()
                     announcements.check()
-                    updateChecker.check(autoInstallWith: backend)
+                    // Updates are checked from Settings -> Updates. Only someone who turned on
+                    // "Install updates automatically" gets a check at launch.
+                    if UpdateChecker.autoInstallEnabled {
+                        updateChecker.check(autoInstallWith: backend)
+                    }
                     // Launch-time wine version gate: if the on-disk wine is older than this
                     // app version, re-sync it (blockin overlay) then stamp the marker file.
                     wineGate.check(with: backend)
@@ -272,11 +276,6 @@ struct MacNCheeseApp: App {
                     NotificationCenter.default.post(name: .createNewBottle, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
-            }
-            CommandGroup(after: .appInfo) {
-                Button(L("Check for Updates…")) {
-                    updateChecker.checkNow(announce: true)
-                }
             }
         }
 
