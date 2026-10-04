@@ -53,7 +53,7 @@ jobs:
         # bundle-aarchx.sh. Pinned to a commit like every other download here; bump
         # AARCHX_REF to ship a newer one.
         env:
-          AARCHX_REF: 91696800f0a73dda798e70bb08dcd80473dcf4e0
+          AARCHX_REF: d10d38699698d65da24306532dfe1ad46ba49d5e
         run: |
           git clone --quiet --filter=blob:none https://github.com/mont127/AArchX.git aarchx-src
           git -C aarchx-src checkout --quiet --detach "$AARCHX_REF"
