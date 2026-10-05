@@ -357,6 +357,7 @@ enum Localization {
         "Update & Restart": "更新并重启",
         "Release notes": "发行说明",
         "MacNCheese Announcement": "MacNCheese 公告",
+        "Emergency Announcement": "紧急公告",
         "Posted %@": "发布于 %@",
         "Read on GitHub": "在 GitHub 上阅读",
         "Don't show again": "不再显示",

@@ -10,17 +10,24 @@ struct AnnouncementSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "megaphone.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.tint)
-                    .padding(.top, 2)
+                if checker.isEmergency {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.red)
+                        .padding(.top, 2)
+                } else {
+                    Image(systemName: "megaphone.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.tint)
+                        .padding(.top, 2)
+                }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(L("MacNCheese Announcement"))
+                    Text(checker.isEmergency ? L("Emergency Announcement") : L("MacNCheese Announcement"))
                         .font(.system(size: 11, weight: .semibold))
                         .kerning(0.5)
                         .textCase(.uppercase)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(checker.isEmergency ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                     Text(checker.title)
                         .font(.title2)
                         .fontWeight(.semibold)
@@ -60,17 +67,27 @@ struct AnnouncementSheet: View {
                     }
                 }
                 Spacer()
+                if checker.isEmergency {
+                    // shown again at the next launch for as long as the post is an emergency
+                    Button(L("Got it")) {
+                        checker.dismissForNow()
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                } else {
                 Button(L("Don't show again")) {
-                    checker.markShown(id: checker.url)
+                    checker.markShown(id: checker.entryID)
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
                 Button(L("Got it")) {
-                    checker.markShown(id: checker.url)
+                    checker.markShown(id: checker.entryID)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
+                }
             }
             .padding(20)
         }
