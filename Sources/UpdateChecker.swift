@@ -10,7 +10,7 @@ final class UpdateChecker: ObservableObject {
     }
     private static nonisolated let githubRepo = "mont127/MacNdCheese"
 
-    /// Result of the last manual check (Settings -> Updates, MacNCheese -> Check for Updates).
+    /// Result of the last check made with the Settings -> Updates button.
     enum ManualState: Equatable {
         case idle, checking, upToDate, available, failed
     }
@@ -42,33 +42,10 @@ final class UpdateChecker: ObservableObject {
 
     /// Check now because the user asked: same lookup as the launch check, but it reports
     /// "up to date" or a failure instead of staying silent, and never installs by itself.
-    func checkNow(announce: Bool = false) {
+    func checkNow() {
         guard manualState != .checking else { return }
-        announceResult = announce
         manualState = .checking
         check(autoInstallWith: nil, manual: true)
-    }
-
-    /// The menu command has no status line of its own, so it reports with an alert.
-    private var announceResult = false
-    private func announceIfAsked() {
-        guard announceResult else { return }
-        announceResult = false
-        let alert = NSAlert()
-        switch manualState {
-        case .upToDate:
-            alert.messageText = L("You're up to date")
-            alert.informativeText = String(format: L("MacNCheese %@ is the newest version."), Self.currentVersion)
-        case .available:
-            alert.messageText = String(format: L("MacNCheese %@ is available"), latestVersion)
-            alert.informativeText = L("Use the banner at the top of the window to update, or Settings → Updates.")
-        case .failed:
-            alert.messageText = L("Couldn't check for updates")
-            alert.informativeText = L("GitHub could not be reached. Try again in a moment.")
-        default:
-            return
-        }
-        alert.runModal()
     }
 
     /// The X.Y.Z inside a release tag or title. Nightly tags look like
@@ -82,7 +59,7 @@ final class UpdateChecker: ObservableObject {
     func check(autoInstallWith backend: BackendClient? = nil, manual: Bool = false) {
         Task.detached(priority: .utility) {
             let fail: @Sendable () async -> Void = {
-                if manual { await MainActor.run { self.manualState = .failed; self.announceIfAsked() } }
+                if manual { await MainActor.run { self.manualState = .failed } }
             }
             do {
                 let apiURL = "https://api.github.com/repos/\(Self.githubRepo)/releases/latest"
@@ -117,8 +94,8 @@ final class UpdateChecker: ObservableObject {
                         self.latestVersion = tag
                         self.releaseURL = htmlURL
                         self.dmgURL = dmgDownload
-                        self.updateAvailable = true
-                        if manual { self.manualState = .available; self.announceIfAsked() }
+                        // a check from the Settings button answers in Settings, not with the banner
+                        if manual { self.manualState = .available } else { self.updateAvailable = true }
                         // Only self-install when the user has explicitly opted in
                         // (Settings -> "Install updates automatically"). Otherwise just
                         // raise the banner and let them press Update & Restart, or ignore
@@ -128,7 +105,7 @@ final class UpdateChecker: ObservableObject {
                         }
                     }
                 } else if manual {
-                    await MainActor.run { self.manualState = .upToDate; self.announceIfAsked() }
+                    await MainActor.run { self.manualState = .upToDate }
                 }
             } catch {
                 await fail()
