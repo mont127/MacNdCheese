@@ -419,6 +419,8 @@ struct InstallProgress: Codable {
     let done: Bool
     let failed: Bool
     let current: String
+    /// Overall fraction 0...1 for jobs that report one (the app self-update); nil otherwise.
+    let progress: Double?
 
     enum CodingKeys: String, CodingKey {
         case lines
@@ -426,6 +428,7 @@ struct InstallProgress: Codable {
         case done
         case failed
         case current
+        case progress
     }
 }
 

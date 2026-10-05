@@ -1055,11 +1055,14 @@ struct DiagnoseSettingsTab: View {
                             EmptyView()
                         }
                         if updateChecker.installing {
-                            Text(updateChecker.currentStep.isEmpty ? L("Working…") : updateChecker.currentStep)
-                                .font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                UpdateProgressBar(progress: updateChecker.progress)
+                                Text(updateChecker.currentStep.isEmpty ? L("Working…") : updateChecker.currentStep)
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                         Toggle(L("Install updates automatically"), isOn: $autoInstallUpdates)
-                        Text(L("Off: MacNCheese only looks for updates when you press Check for Updates. On: it checks at every launch, downloads the update and restarts itself."))
+                        Text(L("Off: MacNCheese checks at every launch and shows a banner when an update is out; it installs when you press Update & Restart. On: it downloads the update at launch and restarts itself."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

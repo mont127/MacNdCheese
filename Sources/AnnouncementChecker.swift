@@ -8,6 +8,12 @@ final class AnnouncementChecker: ObservableObject {
     private static nonisolated let lastShownKey = "MacNCheese.LastShownAnnouncementID"
 
     @Published var hasNewAnnouncement = false
+    /// An emergency announcement: a post in the Announcements category whose title starts
+    /// with "🚨", "[Emergency]" or "Emergency:". It opens by itself at every launch, seen or
+    /// not, until the post is retitled or deleted; "Don't show again" is not offered.
+    @Published var isEmergency = false
+    /// The feed entry's id, which is what "seen" is remembered by.
+    @Published var entryID: String = ""
     @Published var title: String = ""
     @Published var htmlContent: String = ""
     @Published var plainTextContent: String = ""
@@ -17,6 +23,33 @@ final class AnnouncementChecker: ObservableObject {
     func markShown(id: String) {
         UserDefaults.standard.set(id, forKey: Self.lastShownKey)
         hasNewAnnouncement = false
+    }
+
+    /// Close the announcement for this session without remembering it as seen
+    /// (an emergency one comes back at the next launch).
+    func dismissForNow() {
+        hasNewAnnouncement = false
+    }
+
+    private static nonisolated let emergencyMarkers = ["🚨", "[emergency]", "emergency:"]
+
+    nonisolated static func isEmergencyTitle(_ title: String) -> Bool {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return emergencyMarkers.contains { t.hasPrefix($0) }
+    }
+
+    /// The title without its emergency marker(s); the sheet's header already says it.
+    nonisolated static func strippingEmergencyMarkers(_ title: String) -> String {
+        var t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        var changed = true
+        while changed {
+            changed = false
+            for m in emergencyMarkers where t.lowercased().hasPrefix(m) {
+                t = String(t.dropFirst(m.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                changed = true
+            }
+        }
+        return t.isEmpty ? title : t
     }
 
 
@@ -32,20 +65,27 @@ final class AnnouncementChecker: ObservableObject {
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
                 guard let xml = String(data: data, encoding: .utf8) else { return }
 
-                guard let entry = Self.parseFirstEntry(xml) else { return }
-
-                let lastShown = UserDefaults.standard.string(forKey: Self.lastShownKey) ?? ""
-                guard entry.id != lastShown else { return }
+                let entries = Self.parseEntries(xml)
+                // The newest emergency post wins and is shown whether or not it was seen;
+                // otherwise the newest post, once.
+                let emergency = entries.first { Self.isEmergencyTitle($0.title) }
+                guard let entry = emergency ?? entries.first else { return }
+                if emergency == nil {
+                    let lastShown = UserDefaults.standard.string(forKey: Self.lastShownKey) ?? ""
+                    guard entry.id != lastShown else { return }
+                }
 
                 let plain = Self.htmlToPlain(entry.htmlContent)
 
                 await MainActor.run {
-                    self.title = entry.title
+                    self.isEmergency = emergency != nil
+                    self.entryID = entry.id
+                    self.title = emergency != nil ? Self.strippingEmergencyMarkers(entry.title) : entry.title
                     self.htmlContent = entry.htmlContent
                     self.plainTextContent = plain
                     self.url = entry.url
                     self.publishedDate = entry.published
-                    
+
                     self.hasNewAnnouncement = true
                 }
             } catch {
@@ -64,12 +104,19 @@ final class AnnouncementChecker: ObservableObject {
         let published: String
     }
 
-    nonisolated private static func parseFirstEntry(_ xml: String) -> Entry? {
-       
-        guard let entryRange = rangeBetween(xml, start: "<entry>", end: "</entry>") else {
-            return nil
+    /// Every entry in the feed, newest first (the order GitHub writes them).
+    nonisolated private static func parseEntries(_ xml: String) -> [Entry] {
+        var out: [Entry] = []
+        var rest = xml[...]
+        while let lo = rest.range(of: "<entry>")?.upperBound,
+              let hi = rest.range(of: "</entry>", range: lo..<rest.endIndex) {
+            if let e = parseEntry(String(rest[lo..<hi.lowerBound])) { out.append(e) }
+            rest = rest[hi.upperBound...]
         }
-        let entryXml = String(xml[entryRange])
+        return out
+    }
+
+    nonisolated private static func parseEntry(_ entryXml: String) -> Entry? {
 
         let title   = (extractTag(entryXml, "title") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)

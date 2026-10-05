@@ -860,12 +860,13 @@ final class BackendClient: ObservableObject {
     /// mont127/MacNdCheese, extract+codesign the .app, and stage a detached
     /// swapper. Returns a job id; poll getInstallProgress, then quit the app so
     /// the swapper can replace it and relaunch.
-    func applyAppUpdate(appPath: String, appPid: Int, dmgURL: String) async -> String? {
+    func applyAppUpdate(appPath: String, appPid: Int, dmgURL: String, dmgSize: Int = 0) async -> String? {
         do {
             let result = try await send(cmd: "apply_app_update", params: [
                 "app_path": appPath,
                 "app_pid": appPid,
                 "dmg_url": dmgURL,
+                "dmg_size": dmgSize,
             ])
             if let dict = result as? [String: Any], let jobId = dict["job_id"] as? String {
                 return jobId

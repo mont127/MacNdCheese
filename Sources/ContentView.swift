@@ -329,6 +329,10 @@ struct ContentView: View {
         .sheet(isPresented: $showAnnouncement) {
             AnnouncementSheet(checker: announcements)
         }
+        // an emergency announcement opens by itself at every launch
+        .onChange(of: announcements.isEmergency) { emergency in
+            if emergency && announcements.hasNewAnnouncement { showAnnouncement = true }
+        }
         .onChange(of: showStore) { isStore in
             // Clear the sidebar selection while in store mode so List
             // doesn't draw a highlighted bottle row.

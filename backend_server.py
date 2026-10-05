@@ -8993,6 +8993,7 @@ def cmd_get_install_progress(params: Dict[str, Any]) -> Any:
         "done": job["done"],
         "failed": job.get("failed", False),
         "current": job.get("current", ""),
+        "progress": job.get("progress"),
     }
 
 # ---------------------------------------------------------------------------
@@ -10802,6 +10803,9 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
     app_path = str(params.get("app_path", "")).strip()
     app_pid = int(params.get("app_pid", 0) or 0)
     dmg_url = str(params.get("dmg_url", "")).strip()
+    # Size of the DMG asset as GitHub reports it, so the download can show a real
+    # progress fraction; 0 = unknown (the bar then only moves between the steps).
+    dmg_size = int(params.get("dmg_size", 0) or 0)
 
     if not app_path or not Path(app_path).exists():
         raise ValueError("app_path missing or does not exist")
@@ -10814,7 +10818,10 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
 
     import uuid
     job_id = str(uuid.uuid4())
-    job: Dict[str, Any] = {"lines": [], "done": False, "failed": False, "current": "", "ready": False}
+    # progress: overall fraction 0..1 for the app's progress bar -- the download is
+    # 0..0.9 of it, mounting/extracting/codesigning the rest. None until known.
+    job: Dict[str, Any] = {"lines": [], "done": False, "failed": False, "current": "", "ready": False,
+                           "progress": None}
     _install_jobs[job_id] = job
 
     def emit(msg: str) -> None:
@@ -10835,11 +10842,15 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
                 if not dmg:
                     raise RuntimeError("Latest release has no .dmg asset")
                 url = dmg["url"]
+                total = dmg_size or int(dmg.get("size", 0) or 0)
                 emit(f"Latest: {rel.get('tag_name','?')} ({dmg['name']})")
+            else:
+                total = dmg_size
 
             work = Path(tempfile.mkdtemp(prefix="mnc-update-"))
             dmg_path = work / "update.dmg"
             job["current"] = "Downloading"
+            job["progress"] = 0.0
             emit(f"Downloading {url}")
             # System curl, NOT urllib: framework Pythons without CA certs fail
             # with SSL CERTIFICATE_VERIFY_FAILED (seen in the wild on the v9.0.0
@@ -10852,8 +10863,10 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
             )
             last = 0
             while proc.poll() is None:
-                time.sleep(1)
+                time.sleep(0.25)
                 got = dmg_path.stat().st_size if dmg_path.exists() else 0
+                if total > 0:
+                    job["progress"] = 0.9 * min(got / total, 1.0)
                 if got - last >= 25 * 1024 * 1024:
                     last = got
                     emit(f"  {got // (1024 * 1024)} MiB")
@@ -10863,6 +10876,7 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
             emit(f"Downloaded {dmg_path.stat().st_size // (1024 * 1024)} MiB")
 
             job["current"] = "Mounting"
+            job["progress"] = 0.9
             emit("Mounting DMG…")
             att = subprocess.run(
                 ["hdiutil", "attach", str(dmg_path), "-nobrowse", "-noverify", "-readonly"],
@@ -10884,6 +10898,7 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
             emit(f"Found {src_app.name}")
 
             job["current"] = "Extracting"
+            job["progress"] = 0.93
             staging = work / src_app.name
             emit("Copying app out of the DMG…")
             d = subprocess.run(["ditto", str(src_app), str(staging)], capture_output=True, text=True)
@@ -10894,6 +10909,7 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
             mount = ""
 
             job["current"] = "Codesigning"
+            job["progress"] = 0.97
             emit("Codesigning the new app (ad-hoc)…")
             subprocess.run(["xattr", "-cr", str(staging)], capture_output=True)
             cs = subprocess.run(
@@ -10914,6 +10930,7 @@ def cmd_apply_app_update(params: Dict[str, Any]) -> Any:
             )
             job["ready"] = True
             job["current"] = ""
+            job["progress"] = 1.0
             job["done"] = True
         except Exception as exc:
             if mount:
