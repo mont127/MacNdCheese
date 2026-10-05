@@ -92,6 +92,7 @@ enum Localization {
         // ── Updates ──────────────────────────────────────────────────────
         "Updates": "更新",
         "Install updates automatically": "自动安装更新",
+        "Off: MacNCheese checks at every launch and shows a banner when an update is out; it installs when you press Update & Restart. On: it downloads the update at launch and restarts itself.": "关闭：MacNCheese 每次启动时检查更新，有新版本时显示横幅，点击「更新并重启」后才安装。开启：启动时自动下载更新并重启。",
         "Off: new versions show a banner and wait for you. On: MacNCheese downloads the update and restarts itself on launch.": "关闭：有新版本时显示横幅并等待你操作。开启：MacNCheese 启动时自动下载更新并重启。",
         "Skip this version": "跳过此版本",
 
@@ -363,6 +364,11 @@ enum Localization {
         "Starting…": "正在启动…",
         "Couldn't start update": "无法启动更新",
         "Restarting…": "正在重启…",
+        "Checking release": "正在检查版本",
+        "Downloading": "正在下载",
+        "Mounting": "正在装载",
+        "Extracting": "正在提取",
+        "Codesigning": "正在签名",
         "Failed to start backend: %@": "无法启动后端：%@",
         "Failed to load bottles: %@": "无法加载容器：%@",
         "Failed to scan games: %@": "无法扫描游戏：%@",

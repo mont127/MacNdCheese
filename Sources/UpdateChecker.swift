@@ -20,6 +20,8 @@ final class UpdateChecker: ObservableObject {
     @Published var latestVersion = ""
     @Published var releaseURL = ""
     @Published var dmgURL = ""
+    /// DMG size in bytes from the release asset, so the download shows a real fraction.
+    @Published var dmgSize = 0
 
     // In-app updater state
     @Published var installing = false
@@ -27,12 +29,13 @@ final class UpdateChecker: ObservableObject {
     @Published var installFailed = false
     @Published var currentStep = ""
     @Published var installLog: [String] = []
+    /// Overall progress of the running install, 0...1; nil until the backend knows it.
+    @Published var progress: Double?
 
-    /// Opt-in key for silent auto-install. DEFAULTS TO OFF: a launcher that
-    /// swaps itself out and relaunches without asking is hostile, and it used
-    /// to do exactly that -- the "Update & Restart" button in the banner was
-    /// dead code because install() had allready fired by the time you saw it.
-    /// Off = the banner offers the update and the user decides.
+    /// "Install updates automatically", off by default. Every launch checks GitHub and
+    /// raises the banner when a newer release exists; with this on, the launch check also
+    /// downloads it (progress bar in the banner), swaps the app out and relaunches.
+    /// Off = the banner's Update & Restart installs when the user presses it.
     static let autoInstallKey = "autoInstallUpdates"
     /// tag the user chose to skip; the banner stays quiet for exactly that version
     static let skippedVersionKey = "skippedUpdateVersion"
@@ -82,6 +85,7 @@ final class UpdateChecker: ObservableObject {
                 let assets = json["assets"] as? [[String: Any]] ?? []
                 let dmgAsset = assets.first { ($0["name"] as? String ?? "").lowercased().hasSuffix(".dmg") }
                 let dmgDownload = dmgAsset?["browser_download_url"] as? String ?? ""
+                let dmgBytes = dmgAsset?["size"] as? Int ?? 0
 
                 guard let latestClean = Self.versionIn(tag) ?? Self.versionIn(json["name"] as? String ?? "") else {
                     await fail()
@@ -94,13 +98,13 @@ final class UpdateChecker: ObservableObject {
                         self.latestVersion = tag
                         self.releaseURL = htmlURL
                         self.dmgURL = dmgDownload
+                        self.dmgSize = dmgBytes
                         // a check from the Settings button answers in Settings, not with the banner
                         if manual { self.manualState = .available } else { self.updateAvailable = true }
-                        // Only self-install when the user has explicitly opted in
-                        // (Settings -> "Install updates automatically"). Otherwise just
-                        // raise the banner and let them press Update & Restart, or ignore
-                        // it. Never swap the app out from under someone mid-session.
-                        if Self.autoInstallEnabled, let backend, !dmgDownload.isEmpty {
+                        // Install by itself only with "Install updates automatically" on,
+                        // and never a version the user skipped; otherwise the banner offers it.
+                        let skipped = UserDefaults.standard.string(forKey: Self.skippedVersionKey) == tag
+                        if Self.autoInstallEnabled, let backend, !dmgDownload.isEmpty, !skipped {
                             self.install(backend: backend)
                         }
                     }
@@ -121,12 +125,15 @@ final class UpdateChecker: ObservableObject {
         installFailed = false
         installDone = false
         installLog = []
+        progress = nil
         currentStep = L("Starting…")
         let appPath = Bundle.main.bundlePath
         let pid = Int(ProcessInfo.processInfo.processIdentifier)
         let dmg = dmgURL
+        let size = dmgSize
         Task {
-            guard let jobId = await backend.applyAppUpdate(appPath: appPath, appPid: pid, dmgURL: dmg) else {
+            guard let jobId = await backend.applyAppUpdate(appPath: appPath, appPid: pid, dmgURL: dmg,
+                                                           dmgSize: size) else {
                 self.installFailed = true
                 self.installing = false
                 self.currentStep = L("Couldn't start update")
@@ -138,7 +145,8 @@ final class UpdateChecker: ObservableObject {
                 guard let p = await backend.getInstallProgress(jobId: jobId, offset: offset) else { break }
                 self.installLog.append(contentsOf: p.lines)
                 offset = p.totalLines
-                if !p.current.isEmpty { self.currentStep = p.current }
+                if !p.current.isEmpty { self.currentStep = L(p.current) }
+                if let f = p.progress { self.progress = f }
                 if p.done {
                     if p.failed {
                         self.installFailed = true

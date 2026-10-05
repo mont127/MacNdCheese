@@ -43,7 +43,7 @@ struct AppUpdateBanner: View {
                 Spacer()
 
                 if updateChecker.installing {
-                    ProgressView().controlSize(.small)
+                    UpdateProgressBar(progress: updateChecker.progress)
                 } else {
                     if !updateChecker.dmgURL.isEmpty && !updateChecker.installFailed {
                         Button(L("Update & Restart")) {
@@ -73,6 +73,28 @@ struct AppUpdateBanner: View {
             .padding(.vertical, 8)
             .background(.ultraThinMaterial)
             .overlay(Divider(), alignment: .bottom)
+        }
+    }
+}
+
+/// Progress of the app self-update: a bar with the percentage once the backend reports a
+/// fraction (the download knows its size), a spinner until then.
+struct UpdateProgressBar: View {
+    let progress: Double?
+
+    var body: some View {
+        if let p = progress {
+            HStack(spacing: 8) {
+                ProgressView(value: min(max(p, 0), 1))
+                    .progressViewStyle(.linear)
+                    .frame(width: 160)
+                Text(String(format: "%d%%", Int((min(max(p, 0), 1) * 100).rounded())))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, alignment: .trailing)
+            }
+        } else {
+            ProgressView().controlSize(.small)
         }
     }
 }
