@@ -140,6 +140,10 @@ struct BottleSettingsTab: View {
     // it can run.
     @State private var translator = "rosetta"
     @State private var aarchxAvailable = false
+    // AArchX's mode while the bottle is on AArchX: cache (the default, Rosetta's x86 system
+    // libraries) or native (macOS's own arm64 frameworks), offered where the build carries it.
+    @State private var aarchxMode = "cache"
+    @State private var aarchxNativeAvailable = false
     @State private var isInitializing = false
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
@@ -221,6 +225,26 @@ struct BottleSettingsTab: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    if translator == "aarchx" {
+                        SettingsRow(label: L("AArchX mode")) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Picker("", selection: $aarchxMode) {
+                                    Text(L("Cache")).tag("cache")
+                                    Text(L("Native (Experimental)")).tag("native")
+                                }
+                                .pickerStyle(.segmented)
+                                .disabled(!aarchxNativeAvailable && aarchxMode == "cache")
+                                .onChange(of: aarchxMode) { _ in saveBottleConfig() }
+                                Text(aarchxNativeAvailable
+                                     ? L("Cache runs Wine on the x86 system libraries from Rosetta's shared cache. Native runs it on macOS's own arm64 frameworks instead; it is newer and less tested. Switching stops anything running in this bottle.")
+                                     : L("Native mode is not included in this build of AArchX."))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
 
@@ -355,6 +379,8 @@ struct BottleSettingsTab: View {
                     globalBackend = config["default_backend"] as? String ?? "d3dmetal3"
                     aarchxAvailable = config["aarchx_available"] as? Bool ?? false
                     translator = config["translator"] as? String ?? "rosetta"
+                    aarchxNativeAvailable = config["aarchx_native_available"] as? Bool ?? false
+                    aarchxMode = config["aarchx_mode"] as? String ?? "cache"
                 }
             }
         }
@@ -375,6 +401,10 @@ struct BottleSettingsTab: View {
             // such a Mac keeps its stored choice untouched instead of failing the whole save.
             if aarchxAvailable || translator == "rosetta" {
                 vals["translator"] = translator
+            }
+            // Same rule for the mode: native is refused where this build cannot run it.
+            if aarchxNativeAvailable || aarchxMode == "cache" {
+                vals["aarchx_mode"] = aarchxMode
             }
             await backend.setBottleConfig(path: prefix, values: vals)
         }

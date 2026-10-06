@@ -92,6 +92,11 @@ enum Localization {
         // ── Updates ──────────────────────────────────────────────────────
         "Updates": "更新",
         "Install updates automatically": "自动安装更新",
+        "AArchX mode": "AArchX 模式",
+        "Cache": "缓存",
+        "Native (Experimental)": "原生（实验性）",
+        "Cache runs Wine on the x86 system libraries from Rosetta's shared cache. Native runs it on macOS's own arm64 frameworks instead; it is newer and less tested. Switching stops anything running in this bottle.": "缓存模式使用 Rosetta 共享缓存中的 x86 系统库运行 Wine。原生模式改用 macOS 自带的 arm64 框架运行，较新且测试较少。切换会停止此容器中正在运行的程序。",
+        "Native mode is not included in this build of AArchX.": "此 AArchX 版本未包含原生模式。",
         "Off: MacNCheese checks at every launch and shows a banner when an update is out; it installs when you press Update & Restart. On: it downloads the update at launch and restarts itself.": "关闭：MacNCheese 每次启动时检查更新，有新版本时显示横幅，点击「更新并重启」后才安装。开启：启动时自动下载更新并重启。",
         "Off: new versions show a banner and wait for you. On: MacNCheese downloads the update and restarts itself on launch.": "关闭：有新版本时显示横幅并等待你操作。开启：MacNCheese 启动时自动下载更新并重启。",
         "Skip this version": "跳过此版本",

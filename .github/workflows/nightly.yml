@@ -240,7 +240,7 @@ jobs:
         # bundle-aarchx.sh. Pinned to a commit like every other download here; bump
         # AARCHX_REF to ship a newer one.
         env:
-          AARCHX_REF: 608599b5aa128b03e0ad8a973eb9f25d3161b9ec
+          AARCHX_REF: 3471bcf04b832d11296ddab87748d82f38038800
         run: |
           git clone --quiet --filter=blob:none https://github.com/mont127/AArchX.git aarchx-src
           git -C aarchx-src checkout --quiet --detach "$AARCHX_REF"
@@ -282,6 +282,11 @@ jobs:
             mkdir -p aarchx-pkg
             cp aarchx-src/ocerz aarchx-pkg/ocerz
             [ -f aarchx-src/LICENSE ] && cp aarchx-src/LICENSE aarchx-pkg/LICENSE
+            # native mode's runtime (API databases + guest C++ runtime), when it built
+            if [ -d aarchx-src/runtime/apis/macos ] && [ -f aarchx-src/runtime/guest/usr/lib/libc++.1.dylib ]; then
+              mkdir -p aarchx-pkg/runtime
+              cp -R aarchx-src/runtime/apis aarchx-src/runtime/guest aarchx-pkg/runtime/
+            fi
             git -C aarchx-src rev-parse HEAD > aarchx-pkg/VERSION
             tar -czf aarchx-arm64.tar.gz -C aarchx-pkg .
             ls -la aarchx-arm64.tar.gz

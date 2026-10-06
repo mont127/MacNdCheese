@@ -12,6 +12,12 @@
 #   ../AArchX/ocerz a sibling dev checkout's existing build, for the local install.sh loop
 # None of them = a build without AArchX. That is fine: the backend then reports it as
 # unavailable, the setting is greyed out and every bottle runs on Rosetta as before.
+#
+# AArchX's native mode (Bottle settings -> AArchX mode) loads two more things from
+# runtime/ beside the binary: the API databases `make apis` generates from the SDK, and
+# the x86 C++ runtime tools/build_guest_cxx.sh builds. They are built with the binary
+# from MNC_AARCHX_SRC and copied from any source that has them; a build without them
+# ships cache mode only, and the backend greys native out.
 set -eu
 
 RES="$1"
@@ -41,6 +47,17 @@ elif [ -n "${MNC_AARCHX_SRC:-}" ]; then
         exit 0
     fi
     BIN="$SRC/ocerz"
+    # Native mode's runtime. Optional like the binary: a failure leaves cache mode only.
+    echo "AArchX: generating the native-mode API databases"
+    if ! make -C "$SRC" apis >"$SRC/.mnc-apis.log" 2>&1; then
+        tail -20 "$SRC/.mnc-apis.log" >&2
+        echo "::warning::AArchX's API databases failed to build; this build ships cache mode only"
+    fi
+    echo "AArchX: building the guest C++ runtime"
+    if ! bash "$SRC/tools/build_guest_cxx.sh" >"$SRC/.mnc-guestcxx.log" 2>&1; then
+        tail -20 "$SRC/.mnc-guestcxx.log" >&2
+        echo "::warning::AArchX's guest C++ runtime failed to build; this build ships cache mode only"
+    fi
 elif [ -x "../AArchX/ocerz" ]; then
     SRC="$(cd ../AArchX && pwd)"
     BIN="$SRC/ocerz"
@@ -62,3 +79,11 @@ if [ -f "$SRC/LICENSE" ]; then
     cp "$SRC/LICENSE" "$RES/aarchx/LICENSE"
 fi
 echo "AArchX: bundled $BIN -> $RES/aarchx/ocerz"
+rm -rf "$RES/aarchx/runtime"
+if [ -d "$SRC/runtime/apis/macos" ] && [ -f "$SRC/runtime/guest/usr/lib/libc++.1.dylib" ]; then
+    mkdir -p "$RES/aarchx/runtime"
+    cp -R "$SRC/runtime/apis" "$SRC/runtime/guest" "$RES/aarchx/runtime/"
+    echo "AArchX: bundled native mode's runtime ($(du -sh "$RES/aarchx/runtime" | cut -f1))"
+else
+    echo "AArchX: no native-mode runtime beside $BIN; this build offers cache mode only"
+fi

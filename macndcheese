@@ -482,20 +482,32 @@ def _do_bottles_kill(ns, backend: "Backend", state: State) -> None:
 
 def _do_bottles_translator(ns, backend: "Backend", state: State) -> None:
     """Show or set how the bottle's Wine is translated: rosetta (the default) or aarchx
-    (experimental). Switching stops whatever is running in that bottle."""
+    (experimental), and AArchX's mode: cache (the default) or native. Switching either
+    stops whatever is running in that bottle."""
     bottle = _bottle_arg(ns, backend, state)
-    if ns.translator:
-        data = backend.call("set_bottle_config", {"path": bottle["path"], "translator": ns.translator})
-        print(f"translator = {data.get('translator')}")
+    if ns.translator or ns.mode:
+        vals = {"path": bottle["path"]}
+        if ns.translator:
+            vals["translator"] = ns.translator
+        if ns.mode:
+            vals["aarchx_mode"] = ns.mode
+        data = backend.call("set_bottle_config", vals)
+        print(f"translator = {data.get('translator', 'rosetta')}")
+        print(f"aarchx mode = {data.get('aarchx_mode', 'cache')}")
         return
     data = backend.call("get_bottle_config", {"path": bottle["path"]})
     if ns.as_json:
         _emit({"translator": data.get("translator", "rosetta"),
-               "aarchx_available": data.get("aarchx_available", False)}, True)
+               "aarchx_mode": data.get("aarchx_mode", "cache"),
+               "aarchx_available": data.get("aarchx_available", False),
+               "aarchx_native_available": data.get("aarchx_native_available", False)}, True)
         return
     print(f"translator = {data.get('translator', 'rosetta')}")
+    print(f"aarchx mode = {data.get('aarchx_mode', 'cache')}")
     if not data.get("aarchx_available"):
         print("AArchX is not available here (it needs Apple Silicon and a build that includes it).")
+    elif not data.get("aarchx_native_available"):
+        print("AArchX's native mode is not available in this build (cache mode only).")
 
 
 def _do_bottles_folder(ns, backend: "Backend", state: State) -> None:
@@ -1339,6 +1351,9 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_bottle_positional(sp)
     sp.add_argument("--set", dest="translator", choices=("rosetta", "aarchx"),
                      help="switch the bottle to this translator (stops what is running in it)")
+    sp.add_argument("--mode", dest="mode", choices=("cache", "native"),
+                     help="AArchX's mode for this bottle: cache (default, Rosetta's x86 system "
+                          "libraries) or native (macOS's own arm64 frameworks); stops what is running")
     sp.set_defaults(_handler=_do_bottles_translator)
 
     sp = bsub.add_parser("folder", help="reveal the bottle folder in Finder")
