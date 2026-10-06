@@ -1051,6 +1051,11 @@ install_aarchx() {
       cp "$unpack_dir/$f" "$AARCHX_DIR/$f"
     fi
   done
+  # native mode's runtime (API databases + guest C++ runtime) sits in runtime/ beside ocerz
+  rm -rf "$AARCHX_DIR/runtime"
+  if [ -d "$unpack_dir/runtime" ]; then
+    cp -R "$unpack_dir/runtime" "$AARCHX_DIR/runtime"
+  fi
   chmod +x "$AARCHX_DIR/ocerz"
   xattr -d com.apple.quarantine "$AARCHX_DIR/ocerz" 2>/dev/null || true
   echo "AArchX installed at $AARCHX_DIR (AArchX $(cut -c1-7 "$AARCHX_DIR/VERSION" 2>/dev/null || echo unknown))."

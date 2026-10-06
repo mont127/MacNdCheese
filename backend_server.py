@@ -798,6 +798,12 @@ def _find_moltenvk_icd() -> str:
 # drop-in for `arch -x86_64 X args`: it runs X's x86_64 slice, every x86 process X starts
 # stays on AArchX, and an arm64-only child runs natively, as it would under Rosetta.
 TRANSLATORS = ("rosetta", "aarchx")
+# How an AArchX bottle runs: "cache", the default, binds Wine against the x86 system
+# libraries in Rosetta's shared cache, as Rosetta itself does; "native" binds it against
+# macOS's own arm64 frameworks through AArchX's x86 personality (newer, less tested). Native
+# needs the API databases and the guest C++ runtime that ship beside ocerz (runtime/). Like
+# the translator, one mode covers the whole Wine session, so switching stops the bottle.
+AARCHX_MODES = ("cache", "native")
 
 
 def _aarchx_bin() -> Optional[str]:
@@ -824,37 +830,77 @@ def _bottle_translator(prefix: str) -> str:
     return "aarchx" if _unified_engine_active(bottle_cfg) else "rosetta"
 
 
+def _aarchx_native_ready(ocerz: Optional[str] = None) -> bool:
+    """Whether the AArchX here can run native mode: its API databases and the guest C++
+    runtime it loads in place of the x86 shared cache sit in runtime/ beside the binary."""
+    ocerz = ocerz or _aarchx_bin()
+    if not ocerz:
+        return False
+    root = Path(ocerz).resolve().parent / "runtime"
+    apis = root / "apis" / "macos"
+    try:
+        has_apis = apis.is_dir() and any(p.is_dir() for p in apis.iterdir())
+    except OSError:
+        has_apis = False
+    return has_apis and (root / "guest" / "usr" / "lib" / "libc++.1.dylib").is_file()
+
+
+def _bottle_aarchx_mode(prefix: str) -> str:
+    """"native" only when the bottle chose it and this AArchX can run it; "cache" otherwise."""
+    try:
+        mode = _load_bottles().get(_resolve_key(prefix), {}).get("aarchx_mode", "cache")
+    except Exception:
+        mode = "cache"
+    return "native" if mode == "native" and _aarchx_native_ready() else "cache"
+
+
 def _apply_translator(env: Dict[str, str], prefix: str) -> None:
-    """Mark env for an AArchX bottle; clear any mark inherited from elsewhere otherwise."""
+    """Mark env for an AArchX bottle; clear any mark inherited from elsewhere otherwise.
+    The mode rides along twice: as ocerz's -native/-cache flag on every x86 command, and as
+    OCERZ_MODE, which ocerz children inherit, so a stray OCERZ_MODE in the user's own
+    environment cannot split a session between the two."""
     env.pop("MNC_TRANSLATOR_BIN", None)
+    env.pop("MNC_TRANSLATOR_MODE", None)
+    env.pop("OCERZ_MODE", None)
     ocerz = _aarchx_bin()
     if ocerz and _bottle_translator(prefix) == "aarchx":
+        mode = _bottle_aarchx_mode(prefix)
         env["MNC_TRANSLATOR_BIN"] = ocerz
+        env["MNC_TRANSLATOR_MODE"] = mode
+        env["OCERZ_MODE"] = mode
+
+
+def _translator_words(env: Optional[Dict[str, str]]) -> List[str]:
+    """ocerz and its mode flag for an AArchX env; empty for Rosetta."""
+    t = (env or {}).get("MNC_TRANSLATOR_BIN")
+    if not t:
+        return []
+    mode = (env or {}).get("MNC_TRANSLATOR_MODE")
+    return [t, f"-{mode}"] if mode in AARCHX_MODES else [t]
 
 
 def _x86_argv(argv: List[str], env: Optional[Dict[str, str]]) -> List[str]:
     """`arch -x86_64 argv...`, or the AArchX equivalent when env belongs to an AArchX bottle."""
-    t = (env or {}).get("MNC_TRANSLATOR_BIN")
-    return [t, *argv] if t else ["/usr/bin/arch", "-x86_64", *argv]
+    t = _translator_words(env)
+    return [*t, *argv] if t else ["/usr/bin/arch", "-x86_64", *argv]
 
 
 def _wine_argv(argv: List[str], env: Optional[Dict[str, str]]) -> List[str]:
     """argv for running an x86_64 Wine binary directly. Unchanged on Rosetta, where macOS
     picks Rosetta for an Intel-only binary by itself; prefixed with ocerz on AArchX."""
-    t = (env or {}).get("MNC_TRANSLATOR_BIN")
-    return [t, *argv] if t else list(argv)
+    return [*_translator_words(env), *argv]
 
 
 def _x86_sh(env: Optional[Dict[str, str]]) -> str:
     """The words that go in front of an x86 command inside a shell string."""
-    t = (env or {}).get("MNC_TRANSLATOR_BIN")
-    return shlex.quote(t) if t else "/usr/bin/arch -x86_64"
+    t = _translator_words(env)
+    return " ".join(shlex.quote(w) for w in t) if t else "/usr/bin/arch -x86_64"
 
 
 def _x86_wrapper_args(env: Optional[Dict[str, str]]) -> List[str]:
     """legendary / nile launch flags: both shlex-split --wrapper and put it before wine."""
-    t = (env or {}).get("MNC_TRANSLATOR_BIN")
-    return ["--wrapper", shlex.quote(t)] if t else []
+    t = _translator_words(env)
+    return ["--wrapper", " ".join(shlex.quote(w) for w in t)] if t else []
 
 
 def _wine_env(prefix: str) -> Dict[str, str]:
@@ -6672,6 +6718,10 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     # computed, never stored -- the UI greys the option out when this install cannot run it.
     config.setdefault("translator", "rosetta")
     config["aarchx_available"] = _aarchx_bin() is not None
+    # cache or native, used while the translator is aarchx; native is offered only where the
+    # bundled AArchX carries what native mode loads (aarchx_native_available, computed).
+    config.setdefault("aarchx_mode", "cache")
+    config["aarchx_native_available"] = _aarchx_native_ready()
 
     return config
 
@@ -6685,6 +6735,7 @@ def cmd_set_bottle_config(params: Dict[str, Any]) -> Any:
     bottles = _load_bottles()
     existing = bottles.get(key, {})
 
+    stopped = False
     if "translator" in params:
         if params["translator"] not in TRANSLATORS:
             raise ValueError(f"translator must be one of {', '.join(TRANSLATORS)}")
@@ -6695,8 +6746,18 @@ def cmd_set_bottle_config(params: Dict[str, Any]) -> Any:
             # running Wine is stopped (with the translator it was started on) before the
             # switch is saved; the next launch then starts clean on the new one.
             _stop_prefix_wineserver(path)
+            stopped = True
 
-    skip_keys = {"path", "cmd", "id", "aarchx_available"}
+    if "aarchx_mode" in params:
+        if params["aarchx_mode"] not in AARCHX_MODES:
+            raise ValueError(f"aarchx_mode must be one of {', '.join(AARCHX_MODES)}")
+        if params["aarchx_mode"] == "native" and not _aarchx_native_ready():
+            raise ValueError("AArchX's native mode is not available in this build")
+        if params["aarchx_mode"] != existing.get("aarchx_mode", "cache") and not stopped:
+            # the same one-session rule as the translator: stop it in the mode it runs in
+            _stop_prefix_wineserver(path)
+
+    skip_keys = {"path", "cmd", "id", "aarchx_available", "aarchx_native_available"}
     for k, v in params.items():
         if k not in skip_keys:
             existing[k] = v
@@ -7540,6 +7601,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "aarchx_supported": _is_apple_silicon(),
         "has_aarchx": _aarchx_bin() is not None,
         "aarchx_bundled": AARCHX_BUNDLED.is_file(),
+        "aarchx_native": _aarchx_native_ready(),
     }
 
 
