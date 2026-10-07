@@ -144,6 +144,8 @@ struct BottleSettingsTab: View {
     // libraries) or native (macOS's own arm64 frameworks), offered where the build carries it.
     @State private var aarchxMode = "cache"
     @State private var aarchxNativeAvailable = false
+    // The bottle's own Metal HUD switch: on, everything the bottle runs shows the HUD.
+    @State private var bottleMetalHud = false
     @State private var isInitializing = false
     @State private var isCleaning = false
     @State private var isOpeningWinecfg = false
@@ -198,7 +200,8 @@ struct BottleSettingsTab: View {
                     // choose between and the switch's only remaining effect was to hide the
                     // backend picker below. Metal HUD and x87 JIT moved to the bottle's
                     // Applications section, which is what they govern; games carry their
-                    // own copies in each game's detail view.
+                    // own copies in each game's detail view. The Metal HUD switch further
+                    // down is the bottle's own, over both.
                     SettingsRow(label: L("Global game backend")) {
                         Picker("", selection: $globalBackend) {
                             Text("D3DMetal").tag("d3dmetal3")
@@ -245,6 +248,18 @@ struct BottleSettingsTab: View {
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
+                        }
+                    }
+
+                    SettingsRow(label: L("Metal HUD")) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Toggle(L("Show the Metal HUD in this bottle"), isOn: $bottleMetalHud)
+                                .toggleStyle(.switch)
+                                .onChange(of: bottleMetalHud) { _ in saveBottleConfig() }
+                            Text(L("Apple's frame-rate and frame-time overlay, for Steam, applications and every game in this bottle, whatever their own Metal HUD settings say. It appears where a game draws through Metal, and takes effect on the next launch."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
 
@@ -381,6 +396,7 @@ struct BottleSettingsTab: View {
                     translator = config["translator"] as? String ?? "rosetta"
                     aarchxNativeAvailable = config["aarchx_native_available"] as? Bool ?? false
                     aarchxMode = config["aarchx_mode"] as? String ?? "cache"
+                    bottleMetalHud = config["bottle_metal_hud"] as? Bool ?? false
                 }
             }
         }
@@ -397,6 +413,7 @@ struct BottleSettingsTab: View {
                 "engine": "unified",
             ]
             vals["default_backend"] = globalBackend
+            vals["bottle_metal_hud"] = bottleMetalHud
             // The backend refuses "aarchx" where AArchX cannot run, so a bottle carried over to
             // such a Mac keeps its stored choice untouched instead of failing the whole save.
             if aarchxAvailable || translator == "rosetta" {
