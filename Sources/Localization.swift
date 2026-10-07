@@ -211,6 +211,8 @@ enum Localization {
         "Retina hi-res mode": "Retina 高分辨率模式",
         "Enable high resolution for retina screens. Game compatibility might be affected.": "为 Retina 屏幕启用高分辨率。可能影响游戏兼容性。",
         "Metal HUD": "Metal HUD",
+        "Show the Metal HUD in this bottle": "在此容器中显示 Metal HUD",
+        "Apple's frame-rate and frame-time overlay, for Steam, applications and every game in this bottle, whatever their own Metal HUD settings say. It appears where a game draws through Metal, and takes effect on the next launch.": "Apple 的帧率与帧时间叠加层，适用于此容器中的 Steam、应用程序和所有游戏，不论它们各自的 Metal HUD 设置如何。仅在游戏通过 Metal 绘制时显示，下次启动时生效。",
         "Advanced debug (verbose logs)": "高级调试（详细日志）",
         "Runs with WINEDEBUG=+loaddll,+module,+seh instead of -all (shows DLL load failures, missing imports, crashes) and adds -log for Unreal games. Use this when a game won't start, then check the per-game log in ~/Library/Logs/MacNCheese.": "使用 WINEDEBUG=+loaddll,+module,+seh 替代 -all 运行（显示 DLL 加载失败、缺失导入、崩溃信息），并为 Unreal 游戏添加 -log。在游戏无法启动时使用，日志位于 ~/Library/Logs/MacNCheese。",
         "Environment Variables:": "环境变量：",

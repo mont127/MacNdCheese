@@ -4302,6 +4302,17 @@ def _native_d3d9_staged(prefix: str) -> bool:
         return False
 
 
+def _bottle_metal_hud(prefix: str) -> bool:
+    """The bottle's own Metal HUD switch (Bottle settings). When it is on, everything the
+    bottle runs shows the HUD - Steam, applications and every game - whatever the game's
+    or the Applications section's own switch says. It is a new key, not the bottle-wide
+    "metal_hud" that 2533523 retired, because older bottles may still carry that one set."""
+    try:
+        return bool(_load_bottles().get(_resolve_key(prefix or ""), {}).get("bottle_metal_hud", False))
+    except Exception:
+        return False
+
+
 def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  for_steam: bool = False, gst_debug: str = "",
                  cef_safe_mode: bool = False,
@@ -4521,7 +4532,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         env["MNC_WEBHELPER_FLAGS"] += " --disable-gpu-compositing"
     for var in ("GTK_PATH", "WINEPATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
         env.pop(var, None)
-    if metal_hud:
+    if metal_hud or _bottle_metal_hud(prefix):
         env["MTL_HUD_ENABLED"] = "1"
         # MTL_DEBUG_BUILD too, matching the classic d3dmetal heredoc path, which has
         # always exported both. The unified path only ever set MTL_HUD_ENABLED and the
@@ -5664,7 +5675,7 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
     retina_mode = params.get("retina_mode", False)
     screen_info = params.get("screen_info", "unknown")
     bottle_cfg = _load_bottles().get(_resolve_key(prefix or ""), {})
-    metal_hud = bool(params.get("metal_hud", False))
+    metal_hud = bool(params.get("metal_hud", False)) or bool(bottle_cfg.get("bottle_metal_hud", False))
     esync = params.get("esync")
     if esync is None:
         esync = bottle_cfg.get("game_esync")
@@ -6072,8 +6083,9 @@ def cmd_launch_steam(params: Dict[str, Any]) -> Any:
 
     
     metal_hud_line = ""
-    # Steam is the bottle's launcher, so it follows the Applications section.
-    if bottle_cfg.get("apps_metal_hud", False):
+    # Steam is the bottle's launcher, so it follows the Applications section, or the
+    # bottle's own switch.
+    if bottle_cfg.get("apps_metal_hud", False) or bottle_cfg.get("bottle_metal_hud", False):
         metal_hud_line = "export MTL_HUD_ENABLED=1\nexport MTL_DEBUG_BUILD=1\n"
 
     
@@ -6712,6 +6724,8 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     # game_msync: games are configured one at a time in their own detail view.
     config.setdefault("apps_msync", True)
     config.setdefault("apps_metal_hud", False)
+    # The bottle's own switch, over the games' and the Applications section's (Bottle settings).
+    config.setdefault("bottle_metal_hud", False)
     config.setdefault("apps_x87_jit", True)
     config.setdefault("discord_rpc", True)
     # x86 translation: Rosetta unless the bottle opted in to AArchX. aarchx_available is
@@ -10357,7 +10371,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
     prefix = params.get("prefix", "").strip()
     backend = params.get("backend", "auto")
     retina_mode = params.get("retina_mode", False)
-    metal_hud = params.get("metal_hud", False)
+    metal_hud = params.get("metal_hud", False) or _bottle_metal_hud(prefix)
     esync = params.get("esync")
     msync = params.get("msync")
     custom_env_str = params.get("custom_env", "")
@@ -10546,7 +10560,7 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
     prefix = params.get("prefix", "").strip()
     backend = params.get("backend", "auto")
     retina_mode = params.get("retina_mode", False)
-    metal_hud = params.get("metal_hud", False)
+    metal_hud = params.get("metal_hud", False) or _bottle_metal_hud(prefix)
     esync = params.get("esync")
     msync = params.get("msync")
     custom_env_str = params.get("custom_env", "")
