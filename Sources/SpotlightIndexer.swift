@@ -33,8 +33,10 @@ enum SpotlightIndexer {
         for game in games {
             let attrs = CSSearchableItemAttributeSet(contentType: .item)
             attrs.title = game.name
-            attrs.contentDescription = "Windows game · \(bottleName)"
-            attrs.keywords = [game.name, bottleName, "wine", "windows", "game", "macncheese"]
+            let typeLabel = game.isMacNative == true ? "Mac game" : "Windows game"
+            attrs.contentDescription = "\(typeLabel) · \(bottleName)"
+            let platformKeyword = game.isMacNative == true ? "mac" : "windows"
+            attrs.keywords = [game.name, bottleName, "wine", platformKeyword, "game", "macncheese"]
 
             if let epicAppName = game.epicAppName, !epicAppName.isEmpty {
                 epicItems.append(CSSearchableItem(
