@@ -1113,6 +1113,118 @@ def _wineserver_msync_mode(prefix: str) -> Optional[bool]:
         return False
 
 
+# --- Steam's keys in the 32-bit view of HKCU -------------------------------------------------
+# steam_api(64).dll opens HKCU\Software\Valve\Steam with KEY_WOW64_32KEY. Windows does not
+# redirect HKCU\Software (only Software\Classes), but wine's kernelbase steps into any
+# Wow6432Node subkey it finds on the way, so once something has created
+# HKCU\Software\Wow6432Node (Chromium-based launchers, Rockstar's, wineboot) the 32-bit view of
+# Software\Valve is an empty Software\Wow6432Node\Valve: SteamAPI_Init fails with "Could not
+# determine Steam client install directory" and the game quits right after its first frame
+# (R.E.P.O. on the owner's main bottle, 2026-10-10). The 64-bit Steam client writes the plain path.
+# The fix is a registry link Software\Wow6432Node\Valve -> Software\Valve, written straight into
+# user.reg in the form wine itself saves (a #link section with a REG_LINK SymbolicLinkValue), so
+# both views read the same keys. Only while no wineserver serves the prefix: a live server holds
+# the hive in memory and rewrites user.reg over any edit. Only when Software\Wow6432Node exists
+# and Software\Wow6432Node\Valve does not; the first edit keeps user.reg.bak-mnc-valve-link.
+# The engine's kernelbase is being fixed too; this repairs bottles on any engine.
+_VALVE_LINK_PY = r"""
+import io, os, re, sys, time
+
+def ensure_valve_link(user_reg):
+    try:
+        raw = io.open(user_reg, encoding="utf-8", errors="surrogateescape", newline="").read()
+    except OSError:
+        return False
+    lines = raw.split("\n")
+    if not lines or not lines[0].startswith("WINE REGISTRY Version 2"):
+        return False
+    sid = None
+    for ln in lines[:5]:
+        m = re.match(r";; All keys relative to REGISTRY\\\\User\\\\(S-[0-9-]+)", ln)
+        if m:
+            sid = m.group(1)
+            break
+    if not sid:
+        return False
+    node = "software\\\\wow6432node"
+    valve = node + "\\\\valve"
+    has_node = has_valve = False
+    for ln in lines:
+        if not ln.startswith("["):
+            continue
+        end = ln.rfind("]")
+        if end < 0:
+            continue
+        key = ln[1:end].lower()
+        if key == node or key.startswith(node + "\\\\"):
+            has_node = True
+        if key == valve or key.startswith(valve + "\\\\"):
+            has_valve = True
+    if not has_node or has_valve:
+        return False
+    data = ("\\Registry\\User\\" + sid + "\\Software\\Valve").encode("utf-16-le")
+    out = '"SymbolicLinkValue"=hex(6):'
+    count = len(out)
+    for i, byte in enumerate(data):
+        out += "%02x" % byte
+        count += 2
+        if i < len(data) - 1:
+            out += ","
+            count += 1
+            if count > 76:
+                out += "\\\n  "
+                count = 2
+    now = int(time.time())
+    filetime = (now + 11644473600) * 10000000
+    section = ("[Software\\\\Wow6432Node\\\\Valve] %d\n#time=%x\n#link\n%s\n" % (now, filetime, out))
+    body = raw if raw.endswith("\n") else raw + "\n"
+    if not body.endswith("\n\n"):
+        body += "\n"
+    body += section
+    bak = user_reg + ".bak-mnc-valve-link"
+    tmp = user_reg + ".mnc-tmp"
+    try:
+        if not os.path.exists(bak):
+            io.open(bak, "w", encoding="utf-8", errors="surrogateescape", newline="").write(raw)
+        io.open(tmp, "w", encoding="utf-8", errors="surrogateescape", newline="").write(body)
+        os.replace(tmp, user_reg)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+if __name__ == "__main__":
+    for p in sys.argv[1:]:
+        ensure_valve_link(p)
+"""
+_valve_link_ns: Dict[str, Any] = {}
+exec(compile(_VALVE_LINK_PY, "mnc_valve_link", "exec"), _valve_link_ns)
+
+
+def _ensure_valve_link(prefix: str) -> None:
+    """Link HKCU\\Software\\Wow6432Node\\Valve to Software\\Valve in an idle prefix (see above)."""
+    try:
+        if _valve_link_ns["ensure_valve_link"](str(Path(prefix) / "user.reg")):
+            log(f"registry: linked Software\\Wow6432Node\\Valve to Software\\Valve in {prefix} "
+                f"so 32-bit-view Steam API lookups find Steam (backup user.reg.bak-mnc-valve-link)")
+    except Exception as exc:
+        log(f"registry: Valve link check failed (non-fatal): {exc}")
+
+
+def _valve_link_script() -> Optional[Path]:
+    """The same fix as a script, for shell launch paths that kill the wineserver first."""
+    path = Path(tempfile.gettempdir()) / "mnc_valve_link.py"
+    try:
+        path.write_text(_VALVE_LINK_PY, encoding="utf-8")
+        return path
+    except OSError as exc:
+        log(f"registry: Valve link script write failed (non-fatal): {exc}")
+        return None
+
+
 def _reconcile_msync(env: Dict[str, str], prefix: Optional[str]) -> Dict[str, str]:
     """Force WINEMSYNC to agree with the wineserver already serving this prefix."""
     if not prefix:
@@ -1124,6 +1236,8 @@ def _reconcile_msync(env: Dict[str, str], prefix: Optional[str]) -> Dict[str, st
             (Path(prefix) / ".mnc_msync").write_text("1" if want else "0")
         except OSError:
             pass
+        # No server serves the prefix, so its user.reg can still be edited before one starts.
+        _ensure_valve_link(prefix)
         return env
     if live != want:
         log(f"msync: this prefix already has a wineserver running with msync "
@@ -4886,6 +5000,10 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         "if changd:\n"
         "    io.open(p, 'w', encoding='utf-8').write(''.join(L))\n"
     )
+    _valve_link_path = _valve_link_script()
+    _valve_link_cmd = (f"{shlex.quote(sys.executable)} {shlex.quote(str(_valve_link_path))} "
+                       f"{shlex.quote(str(Path(prefix) / 'user.reg'))} 2>/dev/null\n"
+                       if _valve_link_path else "")
     _svcfix_path = Path(tempfile.gettempdir()) / "mnc_svcfix.py"
     try:
         _svcfix_path.write_text(_svcfix_py, encoding="utf-8")
@@ -4910,6 +5028,8 @@ def _launch_steam_unified(prefix: str, bottle_cfg: Dict[str, Any], params: Dict[
         # /usr/bin/python3's x86 slice, an xcrun stub that dies loading an arm64-only libxcrun
         # from the Command Line Tools, so the fix silently never ran.
         f"{shlex.quote(sys.executable)} {shlex.quote(str(_svcfix_path))} {shlex.quote(str(Path(prefix) / 'system.reg'))} 2>/dev/null\n"
+        # and, the server still dead, the Wow6432Node\\Valve link in user.reg (_ensure_valve_link)
+        f"{_valve_link_cmd}"
         f"cd {shlex.quote(str(steam_dir))} || exit 1\n"
         f"rm -f .crash 2>/dev/null\n"
         # Bradar keep config/htmlcache (the CEF compiled-UI cache) so steam dont re-cache +
