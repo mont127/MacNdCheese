@@ -4638,12 +4638,6 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
             "--disable-background-networking --disable-component-update "
             "--disable-domain-reliability --disable-breakpad --no-first-run"),
     })
-    # AArchX cannot hand CEF's composited frame over as a d3d11 SHARED TEXTURE yet: DXMT's
-    # CreateSharedImage fails ("could not create backing"), the context is marked lost and the
-    # window stays blank. CPU bitmaps -- the pre-v0.80-172 workaround described above -- still
-    # render, so an AArchX bottle keeps them until that handoff works there.
-    if "MNC_TRANSLATOR_BIN" in env:
-        env["MNC_WEBHELPER_FLAGS"] += " --disable-gpu-compositing"
     for var in ("GTK_PATH", "WINEPATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
         env.pop(var, None)
     if metal_hud or _bottle_metal_hud(prefix):
