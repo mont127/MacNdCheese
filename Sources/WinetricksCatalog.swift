@@ -64,8 +64,8 @@ enum WinetricksRisk {
         if v == "mf" || v == "mfplat" {
             return L("This replaces the Media Foundation DLLs, which is known to stop Steam's web helper from drawing — Steam opens as a black window afterwards.")
         }
-        if v.hasPrefix("dxvk") || v.hasPrefix("galliumnine") || v.hasPrefix("vkd3d") {
-            return L("This overwrites d3d11, dxgi and d3d10core in this bottle — the same files MacNdCheese sets up for Steam and for game rendering. Steam or your games may stop rendering until the bottle is set up again.")
+        if v.hasPrefix("dxvk") || v.hasPrefix("galliumnine") || v.hasPrefix("vkd3d") || v.hasPrefix("d3d") {
+            return L("This overwrites DirectX/D3D DLLs in this bottle — the same files MacNdCheese sets up for graphics rendering. Games in this bottle may stop rendering until the bottle is set up again.")
         }
         return nil
     }
