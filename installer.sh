@@ -1417,7 +1417,7 @@ install_vr() {
   local wineruut res dxo c woxdll
   wineruut="${PORTABLE_DIR}/wine-unified"
   res="${RESOURCES_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
-  # (1) openxr-DXMT d3d DLLs -> mnc-d3d as the _openxr slots the loader routes MNC_GAME_BACKEND=vr to
+  # (1) openxr-DXMT d3d DLLs -> mnc-d3d as the _openxr slots the loader routes MNC_GRAPHICS_ENGINE=vr to
   dxo=""
   for c in "$res/dxmt-openxr" "$HOME/macndcheese/dxmt-openxr" "$HOME/dxmt-openxr"; do
     [ -f "$c/d3d11.dll" ] && { dxo="$c"; break; }

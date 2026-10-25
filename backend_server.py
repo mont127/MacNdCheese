@@ -353,8 +353,8 @@ GPTK3_ROOT = Path.home() / "gptk3" / "Game Porting Toolkit.app"
 D3DMETAL_NATIVE_DIR = Path.home() / "D3DMetalTesting" / "lib" / "external"
 
 # Bradar Unified engine: one wine renders Steam CEF via DXMT and routes games-from-Steam
-# Bradar to a chosen backend (MNC_GAME_BACKEND) via the loader. Steam exes are pinned to
-# Bradar DXMT by the loader no matter what MNC_GAME_BACKEND is. WINE_UNIFIED_DIR holds the
+# Bradar to a chosen backend (MNC_GRAPHICS_ENGINE) via the loader. Steam exes are pinned to
+# Bradar DXMT by the loader no matter what MNC_GRAPHICS_ENGINE is. WINE_UNIFIED_DIR holds the
 # bundled build (build64 layout: loader/wine + dlls + server). DEV path is a fallback.
 WINE_UNIFIED_DIR = PORTABLE_DIR / "wine-unified"
 WINE_UNIFIED_DEV = Path("/Volumes/ASAFE/D3DMETALWINEDEV/wine-11.0-clean/build64")
@@ -788,7 +788,7 @@ def _wine_env(prefix: str) -> Dict[str, str]:
         env["VK_ICD_FILENAMES"] = vk_icd
 
     # fast wineboot gate (no-op unless the unified patched wine is used)
-    env["MNC_SKIP_WOW64_INSTALL"] = "1"
+    env["MNC_SKIP_32BIT_SETUP"] = "1"
 
     # freetype fallback so direct-Popen launches (cmd_run_exe etc.) find libfreetype.
     # paths that wrap wine in `arch` re-export this in-shell since arch strips DYLD_*
@@ -1184,7 +1184,7 @@ def _d3dmetal3_available() -> bool:
     Requires: GPTK DLLs in x86_64-windows/, and D3DMetal native runtime
     (D3DMetal.framework + libd3dshared.dylib) in the native dir.
     """
-    # Bradar The unified wine now provides D3DMetal via the loader (MNC_GAME_BACKEND).
+    # Bradar The unified wine now provides D3DMetal via the loader (MNC_GRAPHICS_ENGINE).
     if _unified_available():
         return True
     # Bradar The no-shim wine-11-d3dmetal app is fully self-contained (bundles
@@ -1478,7 +1478,7 @@ def _backend_wine_binary(backend: str, exe: str) -> Optional[str]:
             log(f"Backend wine_devel using Wine Devel.app: {wine_bin} ({_get_wine_version(wine_bin)})")
             return wine_bin
         # The OpenGL path is folded into the unified wine now (the _opengl DLL set +
-        # the macdrv GL 3.2 clamp, routed by MNC_GAME_BACKEND=opengl), so a missing
+        # the macdrv GL 3.2 clamp, routed by MNC_GRAPHICS_ENGINE=opengl), so a missing
         # standalone Wine Devel.app is normal -- fall through to unified insted of
         # failing the launch outright like it used to.
         unified = _find_wine()
@@ -3379,7 +3379,7 @@ def _d3d_pack_file(d: Path, flat: str) -> Optional[Path]:
         # Only a CANONICAL slot may fall back to base/. A backend-suffixed one must
         # not: base/ holds wine's own builtins, so letting d3d10core_openxr.dll fall
         # through to base/d3d10core.dll would stage wine's d3d10core into the VR slot
-        # and the loader would route MNC_GAME_BACKEND=vr straight at it. An absent
+        # and the loader would route MNC_GRAPHICS_ENGINE=vr straight at it. An absent
         # backend slot has to stay absent so the caller skips it.
         if canonical:
             p = d / "base" / name
@@ -4159,7 +4159,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  x87_opts: Optional[Dict[str, Any]] = None,
                  msync: Optional[bool] = None) -> Dict[str, str]:
     """Env for the unified wine. Steam exes always render via DXMT (loader gate);
-    non-steam games follow MNC_GAME_BACKEND. GStreamer (MF/H.264 video) is wired for
+    non-steam games follow MNC_GRAPHICS_ENGINE. GStreamer (MF/H.264 video) is wired for
     GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none.
     cef_safe_mode generalizes the Steam/EA CEF workaround (winegstreamer-block +
     GPU-spoof flag injection) to any launch that opted in via force_dxmt_cef --
@@ -4233,7 +4233,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     # own builtin from the wine tree regardless of what sits in system32.
     if _is_apple_silicon() and _native_d3d9_staged(prefix):
         dll_ovr += ";d3d9=n"
-    env.pop("ROSETTA_X87_PATH", None)   # never inherit a stale one from the shell
+    env.pop("MNC_X87_LOADER_PATH", None)   # never inherit a stale one from the shell
     for _stale in ("ROSETTA_X87_EXTENDED_FPR_SCRATCH", "ROSETTA_X87_FAST_ROUND",
                    "ROSETTA_X87_F32_ARITH", "ROSETTA_X87_F32_NARROW",
                    "ROSETTA_X87_FAST_RECIP_DIV"):
@@ -4241,7 +4241,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     if x87_jit:
         _x87 = _rosetta_x87_loader()
         if _x87:
-            env["ROSETTA_X87_PATH"] = _x87
+            env["MNC_X87_LOADER_PATH"] = _x87
             # Opt-in tuning flags, surfaced in the UI only while x87 is enabled.
             # Every one is off unless the bottle asks for it: the first two are
             # semantics-preserving, the last three are explicitly not bit-exact
@@ -4288,22 +4288,22 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         "DYLD_FALLBACK_LIBRARY_PATH": dyld,
         "MNC_DYLD": dyld,
         "WINEDLLOVERRIDES": dll_ovr,
-        "MNC_STEAM_DXMT": "1",
+        "MNC_STEAM_CLIENT_ON_DXMT": "1",
         # Bradar skip the slow i386 Wow64Install during wineboot (10s vs 309s) and keep
         # the PE loader resolving 32-bit builtins from the wine lib dir post-bootstrap
-        "MNC_SKIP_WOW64_INSTALL": "1",
-        "MNC_GAME_BACKEND": game_backend,
+        "MNC_SKIP_32BIT_SETUP": "1",
+        "MNC_GRAPHICS_ENGINE": game_backend,
         # Bradar generalizes is_steam_client_process()'s hardcoded name-list gate (loader.c) and
-        # kernelbase's MNC_WEBHELPER_FLAGS/MNC_EA_WEBHELPER_EXTRA_FLAGS name checks (process.c) to
+        # kernelbase's MNC_CEF_FLAGS/MNC_CEF_APP_EXTRA_FLAGS name checks (process.c) to
         # any launch, not just Steam/EA -- inherited by the whole process tree so it reaches CEF
         # helper subprocesses regardless of what they're named.
-        "MNC_CEF_SAFE_MODE": "1" if cef_safe_mode else "0",
-        # Bradar MNC_EA_WEBHELPER_EXTRA_FLAGS is deliberately NOT set (the engine still honours
+        "MNC_CEF_COMPAT_MODE": "1" if cef_safe_mode else "0",
+        # Bradar MNC_CEF_APP_EXTRA_FLAGS is deliberately NOT set (the engine still honours
         # it as a manual escape hatch for a CEF app that needs extra switches -- it just has no
         # default any more). It used to carry "--single-process" on the theory that EA App's
         # multi-process CEF would make its GPU subprocess build a Metal swapchain for a HWND
         # owned by another process, which DXMT rejects. 2026-07-25: measured, and BOTH halves of
-        # that were wrong. --in-process-gpu (in MNC_WEBHELPER_FLAGS below) already puts the GPU
+        # that were wrong. --in-process-gpu (in MNC_CEF_FLAGS below) already puts the GPU
         # in the browser process -- the one that owns the HWND -- so with a normal multi-process
         # CEF there are ZERO GPU-process crashes, zero cross-process swapchain rejections and
         # zero "Failed to get metal layer" (the earlier blue-window run that prompted this had
@@ -4338,7 +4338,7 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         # --disable-software-rasterizer stays out. It was dropped alongside the original
         # change because it forbids the software path cpu compositing needed; leaving it out
         # keeps that path available as a fallback rather than forcing GPU or nothing.
-        "MNC_WEBHELPER_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
+        "MNC_CEF_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
             "--ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds "
             "--disable-gpu-watchdog --disable-gpu-process-crash-limit --gpu-no-context-lost "
             "--disable-gpu-process-for-dx12-info-collection --no-delay-for-dx12-vulkan-info-collection "
@@ -4797,7 +4797,7 @@ def _steam_is_running() -> bool:
 
 def _stage_syswow64(prefix: str) -> int:
     """Give the prefix a REAL 32-bit system dir (syswow64) by clonin the wine builds i386 PE
-    builtins into it. new bottles r booted with MNC_SKIP_WOW64_INSTALL=1 (fast: ~10s vs ~5min)
+    builtins into it. new bottles r booted with MNC_SKIP_32BIT_SETUP=1 (fast: ~10s vs ~5min)
     which SKIPs the slow i386 Wow64Install, so syswow64 stays EMPTY. the unified wines HACK ntdll
     papers over that (it resolvs 32-bit builtins from the lib dir), but the pre-HACK22 installer
     overlay wine (n Wine Stable) have NO such hack -> a 32-bit installer (SteamSetup, vc_redist,
@@ -4864,7 +4864,7 @@ def _stage_syswow64(prefix: str) -> int:
 def _ensure_progfiles_x86(prefix: str) -> None:
     """Set the WoW64 ProgramFilesDir (x86) registry keys so 32-bit installers (SteamSetup, redists)
     land in 'Program Files (x86)' like on real Windows, insted of the 64-bit 'Program Files'. the
-    fast wineboot (MNC_SKIP_WOW64_INSTALL) skips the wine.inf step that writes these, so on a fresh
+    fast wineboot (MNC_SKIP_32BIT_SETUP) skips the wine.inf step that writes these, so on a fresh
     prefix a 32-bit installer's $PROGRAMFILES falls back to the 64-bit dir (thats why Steam landed in
     'Program Files' not '(x86)'). idempotent: no-op once the key is present (proper-booted / already
     -fixed prefixes have it). See steamsetup-installer-wine-overlay."""
@@ -5395,8 +5395,8 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     # switches to its own children, so one delivery covers the whole tree. Never clobber a
     # user-supplied switch.
     if force_cef:
-        _cef_argv = (env.get("MNC_WEBHELPER_FLAGS", "") + " "
-                     + env.get("MNC_EA_WEBHELPER_EXTRA_FLAGS", "")).split()
+        _cef_argv = (env.get("MNC_CEF_FLAGS", "") + " "
+                     + env.get("MNC_CEF_APP_EXTRA_FLAGS", "")).split()
         _have = {p.split("=", 1)[0] for p in (shlex.split(args) if args else []) if p.startswith("--")}
         _add = [f for f in _cef_argv if f.split("=", 1)[0] not in _have]
         if _add:
@@ -6223,7 +6223,7 @@ def _download_and_run_eaapp_setup(prefix: str, wine: str, setup_path: Optional[s
             _apply_gecko_regedit(gecko_wine, install_env)   # mshtml is enabled above (needs_dotnet)
         # the installer stub IS a CEF browser process, and we start it directly, so hand it
         # the switches on argv (the engine's CreateProcess hook only sees its children)
-        cef_argv = install_env.get("MNC_WEBHELPER_FLAGS", "").split()
+        cef_argv = install_env.get("MNC_CEF_FLAGS", "").split()
         proc = _run_installer_unified(
             prefix, [str(exe), "/silent"] + cef_argv, log_path=logf, env=install_env,
         )
@@ -9980,7 +9980,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
 
     if unified:
         # Same engine Steam/manual launches use (issue #122). Epic titles were stuck on
-        # the pre-unified classic path: no D3D DLL staging, no MNC_GAME_BACKEND, no
+        # the pre-unified classic path: no D3D DLL staging, no MNC_GRAPHICS_ENGINE, no
         # WINE_MAC_GL_CONTEXT_CLAMP -> Unity/OpenGL games (Among Us) crashed on load.
         bt = _unified_build_dir()
         _stage_unified_dlls(prefix_expanded)
@@ -9996,7 +9996,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         # Bradar a third-party-managed title (BF4 etc.) launches by handing a link2ea:// URI to
         # the EA App, so this launch IS a CEF launch even though the exe we invoke is `wine
         # start`. It needs the same CEF treatment the Applications section gets or EA App comes
-        # up as an empty blue window: MNC_CEF_SAFE_MODE is what lets the engine recognise
+        # up as an empty blue window: MNC_CEF_COMPAT_MODE is what lets the engine recognise
         # EADesktop.exe as a CEF browser process (libcef.dll beside it) and put the GPU-spoof
         # switches on the command line Link2EA/EALaunchHelper builds for it -- we never invoke
         # EADesktop ourselves here, so argv delivery cannot reach it. Also blocks winegstreamer
@@ -10168,7 +10168,7 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
 
     if unified:
         # Same engine Steam/manual launches use (issue #122). Amazon titles were stuck on
-        # the pre-unified classic path: no D3D DLL staging, no MNC_GAME_BACKEND, no
+        # the pre-unified classic path: no D3D DLL staging, no MNC_GRAPHICS_ENGINE, no
         # WINE_MAC_GL_CONTEXT_CLAMP -> Unity/OpenGL games crashed on load.
         bt = _unified_build_dir()
         _stage_unified_dlls(prefix_expanded)
