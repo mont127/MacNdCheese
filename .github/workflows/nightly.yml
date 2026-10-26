@@ -190,6 +190,11 @@ jobs:
             # without it wine has no TLS and Steam fails "needs to be online to update"
             has lib/libgnutls.30.dylib \
               || { echo "no gnutls closure (lib/libgnutls.30.dylib), so wine would have no TLS"; return; }
+            # win32u dlopens this by leaf name and macOS has none: without it a Mac with no
+            # Homebrew logs "Wine cannot find the FreeType font library" and Steam never opens
+            # a window (#222). The backend puts the engine's lib/ on the search path for it.
+            has lib/libfreetype.6.dylib \
+              || { echo "no FreeType (lib/libfreetype.6.dylib), so a Mac without Homebrew gets no fonts"; return; }
             for bin in loader/wine dlls/ntdll/ntdll.so; do
               m="$(otool -l "$E/$bin" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
               [ -n "$m" ] || continue

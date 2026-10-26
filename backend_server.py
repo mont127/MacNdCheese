@@ -3535,8 +3535,18 @@ def _unified_available() -> bool:
     return _unified_build_dir() is not None
 
 
+def _engine_lib_dir() -> Optional[Path]:
+    """The running engine's own lib/: the gnutls closure, and FreeType once the engine
+    carries it (#222). None when there is no engine or it has no lib/."""
+    bt = _unified_build_dir()
+    if bt is None or not (bt / "lib").is_dir():
+        return None
+    return bt / "lib"
+
+
 def _mnc_fonts_staged() -> bool:
-    """True once the bundled freetype/fontconfig closure is in deps/mnc-fonts.
+    """True when wine can find a FreeType without Homebrew: the engine carries one in its
+    lib/ (#222), or the old bundled closure is in deps/mnc-fonts.
 
     Asked separately from the engine because the two stopped moving together. Onboarding
     used to gate stage_mnc_fonts on has_wine_unified, which was sound while the engine
@@ -3544,6 +3554,9 @@ def _mnc_fonts_staged() -> bool:
     stage the fonts. With the engine shipping inside the .app, has_wine_unified is true
     on a box that has never run anything, so that gate would skip the fonts forever and
     no-Homebrew machines would hit "Wine cannot find the FreeType font library"."""
+    lib = _engine_lib_dir()
+    if lib is not None and (lib / "libfreetype.6.dylib").exists():
+        return True
     return any((PORTABLE_DIR / "mnc-fonts").glob("*.dylib"))
 
 
@@ -4460,6 +4473,11 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                      # fontless games). DYLD_FALLBACK matches by leaf name when the Homebrew abs
                      # paths above are absent. After Homebrew so existing dev setups are unchanged.
                      str(PORTABLE_DIR / "mnc-fonts"), str(PORTABLE_DIR / "mnc-tls"), str(PORTABLE_DIR / "mnc-vulkan"), str(PORTABLE_DIR / "mnc-sdl"),
+                     # Bradar the running engine's own lib/. wine finds gnutls there by itself, but
+                     # win32u dlopens libfreetype.6.dylib by leaf name, so FreeType riding with the
+                     # engine is only reachable thru this path. Without it a Mac with no Homebrew
+                     # logs "Wine cannot find the FreeType font library" and Steam never opens (#222)
+                     *([str(_engine_lib_dir())] if _engine_lib_dir() else []),
                      "/usr/lib"])
     # Bradar d3dcompiler_47=n,b -> the real MS DLL we provision (native FIRST) with wines weak
     # builtin as fallbak (NEVER native alone, winetricks #2344).
@@ -11409,7 +11427,15 @@ def main() -> None:
     _uni = _unified_build_dir()
     log(f"MacNCheese backend server started -- app {_app_version()}")
     log(f"unified wine = {_uni if _uni else 'NOT INSTALLED (old pre-unified layout; run Setup)'}")
-    log(f"mnc-tls      = {'present' if (PORTABLE_DIR / 'mnc-tls' / 'libgnutls.30.dylib').exists() else 'MISSING (Steam login can fail on a mac with no Homebrew)'}")
+    _elib = _engine_lib_dir()
+    _tls = ("engine lib/" if _elib and (_elib / "libgnutls.30.dylib").exists()
+            else "deps/mnc-tls" if (PORTABLE_DIR / "mnc-tls" / "libgnutls.30.dylib").exists()
+            else "MISSING (Steam login can fail on a mac with no Homebrew)")
+    _ft = ("engine lib/" if _elib and (_elib / "libfreetype.6.dylib").exists()
+           else "deps/mnc-fonts" if any((PORTABLE_DIR / "mnc-fonts").glob("*.dylib"))
+           else "MISSING (no fonts on a mac with no Homebrew: Steam never opens, #222)")
+    log(f"tls          = {_tls}")
+    log(f"freetype     = {_ft}")
     log(f"mnc-vulkan   = {'present' if (PORTABLE_DIR / 'mnc-vulkan' / 'libvulkan.1.dylib').exists() else 'MISSING (DXVK/VR unavailable on a mac with no Homebrew)'}")
     log(f"mnc-sdl      = {'present' if (PORTABLE_DIR / 'mnc-sdl' / 'libSDL2-2.0.0.dylib').exists() else 'MISSING (game controllers wont work without Homebrew)'}")
     log(f"PORTABLE_DIR = {PORTABLE_DIR}")
