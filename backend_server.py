@@ -1148,20 +1148,41 @@ def ensure_valve_link(user_reg):
         return False
     node = "software\\\\wow6432node"
     valve = node + "\\\\valve"
-    has_node = has_valve = False
+    # a section is a "[key] stamp" line plus every line up to the next one
+    pre, secs = [], []
     for ln in lines:
-        if not ln.startswith("["):
-            continue
-        end = ln.rfind("]")
-        if end < 0:
-            continue
-        key = ln[1:end].lower()
-        if key == node or key.startswith(node + "\\\\"):
-            has_node = True
-        if key == valve or key.startswith(valve + "\\\\"):
-            has_valve = True
-    if not has_node or has_valve:
+        if ln.startswith("[") and ln.rfind("]") > 0:
+            secs.append([ln[1:ln.rfind("]")], [ln]])
+        elif secs:
+            secs[-1][1].append(ln)
+        else:
+            pre.append(ln)
+
+    def under(key, base):
+        k = key.lower()
+        return k == base or k.startswith(base + "\\\\")
+
+    if not any(under(k, node) for k, _ in secs):
         return False
+    for k, body in secs:
+        if k.lower() == valve and any(l.strip() == "#link" for l in body):
+            return False                      # allready linked
+    # Bradar a REAL Wow6432Node\Valve blocked the link for good: the 11.2.5 mirror writes one, and
+    # so does any 32-bit Valve write the redirect sent there. Windows has ONE Software\Valve for
+    # both views, so fold it in: a subkey Software\Valve lacks moves over (a 32-bit game's own
+    # settings survive), one it allready has is a stale copy and goes. Then link as usual.
+    have64 = {k.lower() for k, _ in secs if under(k, "software\\\\valve")}
+    kept = []
+    for k, body in secs:
+        if not under(k, valve):
+            kept.append([k, body])
+            continue
+        target = "Software\\\\Valve" + k[len(valve):]
+        if target.lower() in have64:
+            continue
+        have64.add(target.lower())
+        kept.append([target, ["[" + target + body[0][body[0].rfind("]"):]] + body[1:]])
+    merged = "\n".join(pre + [ln for _, body in kept for ln in body])
     data = ("\\Registry\\User\\" + sid + "\\Software\\Valve").encode("utf-16-le")
     out = '"SymbolicLinkValue"=hex(6):'
     count = len(out)
@@ -1177,7 +1198,7 @@ def ensure_valve_link(user_reg):
     now = int(time.time())
     filetime = (now + 11644473600) * 10000000
     section = ("[Software\\\\Wow6432Node\\\\Valve] %d\n#time=%x\n#link\n%s\n" % (now, filetime, out))
-    body = raw if raw.endswith("\n") else raw + "\n"
+    body = merged if merged.endswith("\n") else merged + "\n"
     if not body.endswith("\n\n"):
         body += "\n"
     body += section
@@ -5625,6 +5646,12 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
                                        "msync": _launch_msync})
             except Exception as exc:
                 log(f"unified: steam auto-launch failed: {exc} (continuing)")
+    elif is_steam_bottle and _steam_is_alive():
+        # Bradar "no Steam" mode next to a Steam thats allready up: nothing above waited for it,
+        # so the 32-bit Steam lookup never got its repair and a 32-bit game's Steam DRM wrapper
+        # or steam_api said "Failed to find Steam" (Hitman: Blood Money). The bottle is live, so
+        # the link cant be written now; refresh the copy insted (a no-op when the link exists).
+        _mirror_steam_keys_into_stray_wow6432node(str(prefix))
     # 4GB patch before we launch, not after: the flag is read by the loader when the
     # image is mapped, so patching a running process would do nothing. No-op on a
     # 64-bit exe and on one that already ships the bit.
@@ -6276,6 +6303,15 @@ def _steam_is_alive() -> bool:
     return any("\\Steam\\steam.exe" in line for line in ps.splitlines())  # x86 OR non-x86 Steam
 
 
+def _valve_link_present(user_reg_text: str) -> bool:
+    """True when user.reg holds the Software\\Wow6432Node\\Valve -> Software\\Valve link."""
+    lines = user_reg_text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.lower().startswith("[software\\\\wow6432node\\\\valve]"):
+            return any(l.strip() == "#link" for l in lines[i + 1:i + 4])
+    return False
+
+
 def _mirror_steam_keys_into_stray_wow6432node(prefix: str) -> None:
     """Bradar keep steam_api working on engines w/o the kernelbase HKCU-Wow6432Node fix.
 
@@ -6293,6 +6329,8 @@ def _mirror_steam_keys_into_stray_wow6432node(prefix: str) -> None:
         return
     if "[software\\\\wow6432node" not in text.lower():
         return
+    if _valve_link_present(text):
+        return      # the 11.4.5 link allready makes both views one key; nothing to copy
     bt = _unified_build_dir()
     if bt is None:
         return
