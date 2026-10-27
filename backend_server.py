@@ -4154,17 +4154,14 @@ def _native_d3d9_staged(prefix: str) -> bool:
 
 def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  for_steam: bool = False, gst_debug: str = "",
-                 cef_safe_mode: bool = False,
                  debug: bool = False, x87_jit: bool = True,
                  x87_opts: Optional[Dict[str, Any]] = None,
                  msync: Optional[bool] = None) -> Dict[str, str]:
     """Env for the unified wine. Steam exes always render via DXMT (loader gate);
     non-steam games follow MNC_GRAPHICS_ENGINE. GStreamer (MF/H.264 video) is wired for
     GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none.
-    cef_safe_mode generalizes the Steam/EA CEF workaround (winegstreamer-block +
-    GPU-spoof flag injection) to any launch that opted in via force_dxmt_cef --
-    e.g. arbitrary "Applications" whose own CEF/Electron helper subprocesses
-    have no fixed name to hardcode, unlike Steam's/EA's."""
+    A CEF host (a libcef.dll beside its exe) is recognised by the engine itself, which routes its
+    Direct3D to DXMT and blocks winegstreamer for it; no CEF switch or variable is given."""
     env = dict(os.environ)
     for var in ("GTK_PATH", "GTK_EXE_PREFIX", "GTK_DATA_PREFIX", "GDK_PIXBUF_MODULEDIR",
                 "GDK_PIXBUF_MODULE_FILE", "GTK_IM_MODULE_FILE", "XDG_DATA_DIRS"):
@@ -4293,70 +4290,6 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
         # the PE loader resolving 32-bit builtins from the wine lib dir post-bootstrap
         "MNC_SKIP_32BIT_SETUP": "1",
         "MNC_GRAPHICS_ENGINE": game_backend,
-        # Bradar generalizes is_steam_client_process()'s hardcoded name-list gate (loader.c) and
-        # kernelbase's MNC_CEF_FLAGS/MNC_CEF_APP_EXTRA_FLAGS name checks (process.c) to
-        # any launch, not just Steam/EA -- inherited by the whole process tree so it reaches CEF
-        # helper subprocesses regardless of what they're named.
-        "MNC_CEF_COMPAT_MODE": "1" if cef_safe_mode else "0",
-        # Bradar MNC_CEF_APP_EXTRA_FLAGS is deliberately NOT set (the engine still honours
-        # it as a manual escape hatch for a CEF app that needs extra switches -- it just has no
-        # default any more). It used to carry "--single-process" on the theory that EA App's
-        # multi-process CEF would make its GPU subprocess build a Metal swapchain for a HWND
-        # owned by another process, which DXMT rejects. 2026-07-25: measured, and BOTH halves of
-        # that were wrong. --in-process-gpu (in MNC_CEF_FLAGS below) already puts the GPU
-        # in the browser process -- the one that owns the HWND -- so with a normal multi-process
-        # CEF there are ZERO GPU-process crashes, zero cross-process swapchain rejections and
-        # zero "Failed to get metal layer" (the earlier blue-window run that prompted this had
-        # NO flags at all on its command line, so --in-process-gpu had never actually been tried
-        # on its own). And --single-process actively BROKE the app: it collapses the renderer
-        # into the browser process, so the renderer-side OnContextCreated that injects
-        # qt.webChannelTransport never runs -> EA's qwebchannelwrapper.js sees `qt` undefined,
-        # falls back to `new WebSocket("ws://127.0.0.1:4695")` which nothing ever listens on,
-        # times out after its own 30s CHANNEL_CONNECTION_TIMEOUT and leaves onLoginSuccess
-        # undefined -- sign-in completed but the UI never advanced past the login page. CEF
-        # documents single-process as debug-only; don't reach for it.
-        # Bradar GPU-spoof so Steam CEF accepts ANGLE d3d11 -> DXMT (null-GPU crashes SwiftShader)
-        # this is the exact load-bearing set from the proven steam-unified-run.sh
-        #
-        # CEF composites on the GPU, for every app. There is no per-app carve-out here and
-        # there should not be one: whatever renders through this path renders the same way.
-        #
-        # --disable-gpu-compositing used to sit here, from b6a93c3 (2026-08-13, "Fix the
-        # black Steam window"). Steam renders CEF offscreen and composites the result itself
-        # through CBrowserComposerSystem, and with gpu compositing on CEF hands that result
-        # over as a d3d11 SHARED TEXTURE. That handoff produced nothing through the DXMT of
-        # the time, so steam composited an empty surface with no error anywhere -- nothing
-        # failed, the pixels just never arrived. CPU bitmaps were the workaround.
-        #
-        # The cost of that workaround is that the UI composite never touches a CAMetalLayer,
-        # so no Metal HUD can appear over Steam or the EA App however the bottle is set, and
-        # the compositing work lands on the CPU. Removed: the shipped DXMT is v0.80-172
-        # against v0.80-13x when that was written and now carries real shared-resource
-        # machinery (CreateSharedHandle, OpenSharedResource, IDXGIResource1) rather than
-        # stubs. If a CEF window comes up black again, this is the first thing to put back.
-        #
-        # --disable-software-rasterizer stays out. It was dropped alongside the original
-        # change because it forbids the software path cpu compositing needed; leaving it out
-        # keeps that path available as a fallback rather than forcing GPU or nothing.
-        "MNC_CEF_FLAGS": ("--no-sandbox --in-process-gpu --use-gl=angle --use-angle=d3d11 "
-            "--ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds "
-            "--disable-gpu-watchdog --disable-gpu-process-crash-limit --gpu-no-context-lost "
-            "--disable-gpu-process-for-dx12-info-collection --no-delay-for-dx12-vulkan-info-collection "
-            "--gpu-vendor-id=0x1002 --gpu-device-id=0x67df --gpu-driver-version=20.45.0 "
-            "--gpu-sub-system-id=0 --gpu-revision=0 "
-            # Bradar trim the CEF cost -- 1 renderer proc insted of 9 (each one was runnin the
-            # wineserver-round-trip IPC loop that dominate wh.sample), + kill the native-occlusion
-            # recalc n the chromecast discovery utility proc = fewer background wakeups.
-            # if a steam panel ever go blank/white its this cap -> bump to 2
-            "--renderer-process-limit=1 --disable-features=CalculateNativeWinOcclusion,MediaRouter,"
-            "Translate,OptimizationHints,AutofillServerCommunication "
-            "--disable-smooth-scrolling "
-            # Bradar kill the CEF background chatter -- none of it works usefully under wine + it
-            # just burns wakeups/net during the boot window. breakpad here is CEFs OWN crash
-            # reporter (steamwebhelper), NOT steam.exe crashhandler, so the self-heal dumps we key
-            # on r untouched. component/domain-reliability/first-run r pure startup dead weight.
-            "--disable-background-networking --disable-component-update "
-            "--disable-domain-reliability --disable-breakpad --no-first-run"),
     })
     for var in ("GTK_PATH", "WINEPATH", "VKD3D_PROTON_PATH", "GALLIUM_DRIVER", "DXVK_LOG_PATH"):
         env.pop(var, None)
@@ -5247,7 +5180,6 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     # is enough. DXMT doesn't have that failure mode, so force it for this whole launch class
     # regardless of the bottle's configured default_backend, same as EA App's own origin-launch.
     _cef_backend = _cef_launcher_backend(params.get("exe", ""))
-    force_cef = bool(params.get("force_dxmt_cef")) or _cef_backend is not None
     if _cef_backend is not None:
         backend = _cef_backend       # per-launcher, see _CEF_LAUNCHER_BACKENDS
     elif params.get("force_dxmt_cef"):
@@ -5318,7 +5250,7 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     # the bottle-level copy moved to the Applications section as apps_x87_jit and governs
     # applications, not games.
     env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"),
-                       cef_safe_mode=force_cef, debug=debug, msync=_launch_msync,
+                       debug=debug, msync=_launch_msync,
                        x87_jit=bool(params.get("x87_jit", True)),
                        x87_opts={k: bool(params.get(k, False))
                                  for k in ("x87_extended_fpr", "x87_fast_round",
@@ -5384,24 +5316,6 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
         _apply_gecko_regedit(wine, env)   # mshtml is enabled above (needs_dotnet); give it a Gecko to render with
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", exe_path.stem)
     log_path = str(LOG_DIR / f"{safe_name}-wine.log")
-    # CEF-safe-mode Applications: deliver the GPU-spoof + single-process switches on the
-    # launched exe's OWN argv. The engine (kernelbase/process.c) only injects these when it
-    # intercepts CreateProcess -- i.e. for CHILD processes -- but the exe we start here IS the
-    # CEF *browser* process, launched directly by us, so that hook never fires for it and it
-    # comes up with no window at all (confirmed live with EA App: CEF children spawned n died,
-    # EADesktop sat at 0% CPU logging "Ui initialization completed" with nothing on screen).
-    # The old EA-only path hardcoded these onto EADesktop.exe's argv; doing it here instead
-    # means ANY Application/launcher gets it with no exe-name gating. Chromium forwards the
-    # switches to its own children, so one delivery covers the whole tree. Never clobber a
-    # user-supplied switch.
-    if force_cef:
-        _cef_argv = (env.get("MNC_CEF_FLAGS", "") + " "
-                     + env.get("MNC_CEF_APP_EXTRA_FLAGS", "")).split()
-        _have = {p.split("=", 1)[0] for p in (shlex.split(args) if args else []) if p.startswith("--")}
-        _add = [f for f in _cef_argv if f.split("=", 1)[0] not in _have]
-        if _add:
-            args = ((args + " ") if args else "") + " ".join(_add)
-            log(f"CEF-safe-mode Application: appended {len(_add)} CEF/GPU switch(es) to argv")
     _ue_project = _ue_project_token(exe_path, args)
     if _ue_project:
         args = f"{_ue_project} {args}".strip()
@@ -6210,10 +6124,9 @@ def _download_and_run_eaapp_setup(prefix: str, wine: str, setup_path: Optional[s
         # CPU to 64-bit, so syscall_32to64's body decoded as 32-bit and faulted). With that
         # fixed in the engine, EA's own Burn installer runs to "Apply complete, result: 0x0"
         # on the unified wine (live-confirmed 2026-07-25), so it takes the same generic CEF
-        # path as everything else: DXMT + cef_safe_mode, and real GPU rendering rather than
+        # path as everything else: DXMT, and real GPU rendering rather than
         # the software fallback. The prerequisites above stay -- they are genuinely needed.
-        install_env = _unified_env(prefix, "dxmt", False, for_steam=False,
-                                   cef_safe_mode=True)
+        install_env = _unified_env(prefix, "dxmt", False, for_steam=False)
         install_env["WINEDEBUG"] = "-all,+err"
         # unified engine is optional; fall back to whatever wine _run_installer_unified will
         # itself fall back to, so the gecko regedit never becomes the thing that fails here
@@ -6221,11 +6134,8 @@ def _download_and_run_eaapp_setup(prefix: str, wine: str, setup_path: Optional[s
         gecko_wine = str(_ubt / "wine") if _ubt else _installer_wine()
         if gecko_wine:
             _apply_gecko_regedit(gecko_wine, install_env)   # mshtml is enabled above (needs_dotnet)
-        # the installer stub IS a CEF browser process, and we start it directly, so hand it
-        # the switches on argv (the engine's CreateProcess hook only sees its children)
-        cef_argv = install_env.get("MNC_CEF_FLAGS", "").split()
         proc = _run_installer_unified(
-            prefix, [str(exe), "/silent"] + cef_argv, log_path=logf, env=install_env,
+            prefix, [str(exe), "/silent"], log_path=logf, env=install_env,
         )
         _ea_app_setup_proc = proc
     except Exception as exc:
@@ -9993,17 +9903,11 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
         # host processes itself (is_cef_host_process(), libcef.dll beside the exe), so the
         # launcher gets DXMT and the game gets whatever the user actually chose.
         game_backend = _unified_game_backend(bottle_cfg, backend)
-        # Bradar a third-party-managed title (BF4 etc.) launches by handing a link2ea:// URI to
-        # the EA App, so this launch IS a CEF launch even though the exe we invoke is `wine
-        # start`. It needs the same CEF treatment the Applications section gets or EA App comes
-        # up as an empty blue window: MNC_CEF_COMPAT_MODE is what lets the engine recognise
-        # EADesktop.exe as a CEF browser process (libcef.dll beside it) and put the GPU-spoof
-        # switches on the command line Link2EA/EALaunchHelper builds for it -- we never invoke
-        # EADesktop ourselves here, so argv delivery cannot reach it. Also blocks winegstreamer
-        # for the tree, same as any other CEF app.
+        # A third-party-managed title (BF4 etc.) launches by handing a link2ea:// URI to the EA
+        # App. The engine recognises EADesktop.exe as a CEF host by the libcef.dll beside it, so
+        # nothing is given to it here.
         env = _unified_env(prefix_expanded, game_backend, metal_hud,
                             gst_debug=("5" if verbose_debug else "3"),
-                            cef_safe_mode=bool(third_party_store),
                             debug=verbose_debug)
         # Bradar backend-specific env, same as _launch_game_unified does for Steam/manual
         # launches. This path never had it, so an Epic game set to DXVK came up with
