@@ -75,6 +75,14 @@ fi
 mkdir -p "$RES/aarchx"
 cp "$BIN" "$RES/aarchx/ocerz"
 chmod +x "$RES/aarchx/ocerz"
+# Since AArchX 0.9.1 ocerz links libSystem's parts weakly and, on a macOS where one of
+# its imports is missing, starts ocerz-umbrella from beside itself instead; `make ocerz`
+# builds both. Without it that fallback can only tell the user to reinstall AArchX.
+rm -f "$RES/aarchx/ocerz-umbrella"
+if [ -x "$(dirname "$BIN")/ocerz-umbrella" ]; then
+    cp "$(dirname "$BIN")/ocerz-umbrella" "$RES/aarchx/ocerz-umbrella"
+    chmod +x "$RES/aarchx/ocerz-umbrella"
+fi
 if [ -f "$SRC/LICENSE" ]; then
     cp "$SRC/LICENSE" "$RES/aarchx/LICENSE"
 fi
