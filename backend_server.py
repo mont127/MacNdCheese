@@ -854,20 +854,61 @@ def _bottle_aarchx_mode(prefix: str) -> str:
     return "native" if mode == "native" and _aarchx_native_ready() else "cache"
 
 
+# FEX: an AArchX bottle can run its x86 code on FEX-Emu's translator (FEXCore, linked into
+# ocerz) instead of AArchX's own -- experimental, slower, a second opinion for a program
+# AArchX's translator gets wrong. Everything else stays AArchX's, so it is a switch on top of
+# the translator and the mode, and like them it covers the whole Wine session: OCERZ_FEX=1 in
+# the env, which every ocerz child inherits. Cache mode only (AArchX refuses -fex for Wine in
+# native mode). Only an ocerz built with FEXCore has it, on macOS 14.4 or newer, and such an
+# ocerz answers 64 to a -fex it cannot run before it looks at the program it was given.
+_AARCHX_FEX_PROBED: Dict[Any, bool] = {}
+
+
+def _aarchx_fex_ready(ocerz: Optional[str] = None) -> bool:
+    """Whether the AArchX here can run -fex (asked once per ocerz binary)."""
+    ocerz = ocerz or _aarchx_bin()
+    if not ocerz:
+        return False
+    try:
+        key = (ocerz, os.path.getmtime(ocerz))
+    except OSError:
+        return False
+    if key not in _AARCHX_FEX_PROBED:
+        try:
+            r = subprocess.run([ocerz, "-fex", "/nonexistent/mnc-fex-probe"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            _AARCHX_FEX_PROBED[key] = r.returncode != 64
+        except (OSError, subprocess.SubprocessError):
+            _AARCHX_FEX_PROBED[key] = False
+    return _AARCHX_FEX_PROBED[key]
+
+
+def _bottle_aarchx_fex(prefix: str) -> bool:
+    """True only when the bottle chose FEX, runs AArchX in cache mode and this AArchX has -fex."""
+    try:
+        on = bool(_load_bottles().get(_resolve_key(prefix), {}).get("aarchx_fex", False))
+    except Exception:
+        on = False
+    return on and _bottle_aarchx_mode(prefix) == "cache" and _aarchx_fex_ready()
+
+
 def _apply_translator(env: Dict[str, str], prefix: str) -> None:
     """Mark env for an AArchX bottle; clear any mark inherited from elsewhere otherwise.
     The mode rides along twice: as ocerz's -native/-cache flag on every x86 command, and as
     OCERZ_MODE, which ocerz children inherit, so a stray OCERZ_MODE in the user's own
-    environment cannot split a session between the two."""
+    environment cannot split a session between the two. FEX rides on OCERZ_FEX the same way."""
     env.pop("MNC_TRANSLATOR_BIN", None)
     env.pop("MNC_TRANSLATOR_MODE", None)
     env.pop("OCERZ_MODE", None)
+    env.pop("OCERZ_FEX", None)
     ocerz = _aarchx_bin()
     if ocerz and _bottle_translator(prefix) == "aarchx":
         mode = _bottle_aarchx_mode(prefix)
         env["MNC_TRANSLATOR_BIN"] = ocerz
         env["MNC_TRANSLATOR_MODE"] = mode
         env["OCERZ_MODE"] = mode
+        if _bottle_aarchx_fex(prefix):
+            env["OCERZ_FEX"] = "1"
 
 
 def _translator_words(env: Optional[Dict[str, str]]) -> List[str]:
@@ -6906,6 +6947,10 @@ def cmd_get_bottle_config(params: Dict[str, Any]) -> Any:
     # bundled AArchX carries what native mode loads (aarchx_native_available, computed).
     config.setdefault("aarchx_mode", "cache")
     config["aarchx_native_available"] = _aarchx_native_ready()
+    # FEX-Emu's translator instead of AArchX's own, used in cache mode; offered where this
+    # AArchX was built with it (aarchx_fex_available, computed).
+    config.setdefault("aarchx_fex", False)
+    config["aarchx_fex_available"] = _aarchx_fex_ready()
 
     return config
 
@@ -6940,8 +6985,17 @@ def cmd_set_bottle_config(params: Dict[str, Any]) -> Any:
         if params["aarchx_mode"] != existing.get("aarchx_mode", "cache") and not stopped:
             # the same one-session rule as the translator: stop it in the mode it runs in
             _stop_prefix_wineserver(path)
+            stopped = True
 
-    skip_keys = {"path", "cmd", "id", "aarchx_available", "aarchx_native_available"}
+    if "aarchx_fex" in params:
+        params["aarchx_fex"] = bool(params["aarchx_fex"])
+        if params["aarchx_fex"] and not _aarchx_fex_ready():
+            raise ValueError("This build of AArchX has no FEX translator, or this macOS is older than 14.4")
+        if params["aarchx_fex"] != bool(existing.get("aarchx_fex", False)) and not stopped:
+            # one session, one translator: stop it on the one it runs on
+            _stop_prefix_wineserver(path)
+
+    skip_keys = {"path", "cmd", "id", "aarchx_available", "aarchx_native_available", "aarchx_fex_available"}
     for k, v in params.items():
         if k not in skip_keys:
             existing[k] = v
@@ -7786,6 +7840,7 @@ def cmd_get_components_status(params: Dict[str, Any]) -> Any:
         "has_aarchx": _aarchx_bin() is not None,
         "aarchx_bundled": AARCHX_BUNDLED.is_file(),
         "aarchx_native": _aarchx_native_ready(),
+        "aarchx_fex": _aarchx_fex_ready(),
     }
 
 
