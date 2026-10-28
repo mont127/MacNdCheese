@@ -144,6 +144,10 @@ struct BottleSettingsTab: View {
     // libraries) or native (macOS's own arm64 frameworks), offered where the build carries it.
     @State private var aarchxMode = "cache"
     @State private var aarchxNativeAvailable = false
+    // FEX-Emu's translator in place of AArchX's own, in cache mode, where the bundled AArchX
+    // was built with it (and macOS is 14.4 or newer).
+    @State private var aarchxFex = false
+    @State private var aarchxFexAvailable = false
     // The bottle's own Metal HUD switch: on, everything the bottle runs shows the HUD.
     @State private var bottleMetalHud = false
     @State private var isInitializing = false
@@ -244,6 +248,23 @@ struct BottleSettingsTab: View {
                                 Text(aarchxNativeAvailable
                                      ? L("Cache runs Wine on the x86 system libraries from Rosetta's shared cache. Native runs it on macOS's own arm64 frameworks instead; it is newer and less tested. Switching stops anything running in this bottle.")
                                      : L("Native mode is not included in this build of AArchX."))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        SettingsRow(label: L("FEX translator")) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Toggle(L("Run this bottle's code on FEX-Emu (Experimental)"), isOn: $aarchxFex)
+                                    .toggleStyle(.switch)
+                                    .disabled((!aarchxFexAvailable || aarchxMode == "native") && !aarchxFex)
+                                    .onChange(of: aarchxFex) { _ in saveBottleConfig() }
+                                Text(!aarchxFexAvailable
+                                     ? L("This build of AArchX does not include FEX-Emu, or this macOS is older than 14.4.")
+                                     : aarchxMode == "native"
+                                        ? L("FEX-Emu runs in cache mode only.")
+                                        : L("AArchX runs Wine's x86 code on FEX-Emu's translator instead of its own: slower, and a second opinion when a program goes wrong on AArchX's. Switching stops anything running in this bottle."))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -396,6 +417,8 @@ struct BottleSettingsTab: View {
                     translator = config["translator"] as? String ?? "rosetta"
                     aarchxNativeAvailable = config["aarchx_native_available"] as? Bool ?? false
                     aarchxMode = config["aarchx_mode"] as? String ?? "cache"
+                    aarchxFexAvailable = config["aarchx_fex_available"] as? Bool ?? false
+                    aarchxFex = config["aarchx_fex"] as? Bool ?? false
                     bottleMetalHud = config["bottle_metal_hud"] as? Bool ?? false
                 }
             }
@@ -422,6 +445,10 @@ struct BottleSettingsTab: View {
             // Same rule for the mode: native is refused where this build cannot run it.
             if aarchxNativeAvailable || aarchxMode == "cache" {
                 vals["aarchx_mode"] = aarchxMode
+            }
+            // And for FEX: turning it on is refused where this build has no -fex.
+            if aarchxFexAvailable || !aarchxFex {
+                vals["aarchx_fex"] = aarchxFex
             }
             await backend.setBottleConfig(path: prefix, values: vals)
         }

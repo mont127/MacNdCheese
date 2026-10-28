@@ -245,11 +245,26 @@ jobs:
         # bundle-aarchx.sh. Pinned to a commit like every other download here; bump
         # AARCHX_REF to ship a newer one.
         env:
-          AARCHX_REF: 7f2aa3ab22cc9771edccbe00e4810c92beee75dc
+          AARCHX_REF: 691146fbca1850326b71ecc4eca0643b0e2914d9
         run: |
           git clone --quiet --filter=blob:none https://github.com/mont127/AArchX.git aarchx-src
           git -C aarchx-src checkout --quiet --detach "$AARCHX_REF"
           echo "MNC_AARCHX_SRC=$PWD/aarchx-src" >> "$GITHUB_ENV"
+
+      - name: Build FEXCore for AArchX's -fex
+        # An AArchX bottle can run its code on FEX-Emu's translator instead of AArchX's own
+        # (Bottle settings -> FEX translator). FEXCore is fetched at the revision AArchX's
+        # tools/fex-build.sh pins and built for the macOS 12 the app supports; a build that
+        # fails costs only -fex, which the app then greys out.
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          if bash aarchx-src/tools/fex-build.sh "$PWD/aarchx-fex" > fex-build.log 2>&1; then
+            echo "MNC_AARCHX_FEX=$PWD/aarchx-fex" >> "$GITHUB_ENV"
+          else
+            tail -30 fex-build.log
+            echo "::warning::FEXCore failed to build; this build's AArchX has no -fex"
+          fi
 
       - name: Build universal DMG
         env:

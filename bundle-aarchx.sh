@@ -10,6 +10,9 @@
 #   MNC_AARCHX_BIN  a built ocerz binary, copied as is
 #   MNC_AARCHX_SRC  an AArchX checkout, built here (this is what the release workflows do)
 #   ../AArchX/ocerz a sibling dev checkout's existing build, for the local install.sh loop
+# With MNC_AARCHX_SRC, MNC_AARCHX_FEX names a FEXCore build (AArchX's tools/fex-build.sh) to
+# link in, which gives ocerz -fex (Bottle settings -> FEX translator); without it, or when the
+# build with it fails, ocerz is built without -fex and the backend greys the setting out.
 # None of them = a build without AArchX. That is fine: the backend then reports it as
 # unavailable, the setting is greyed out and every bottle runs on Rosetta as before.
 #
@@ -38,7 +41,14 @@ elif [ -n "${MNC_AARCHX_SRC:-}" ]; then
     # The app supports macOS 12, so the translator must at least load there; AArchX's
     # own Makefile targets the machine it is built on.
     echo "AArchX: building $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout'))"
-    if ! make -C "$SRC" -j"$(sysctl -n hw.ncpu)" ocerz \
+    if [ -n "${MNC_AARCHX_FEX:-}" ] && ! make -C "$SRC" -j"$(sysctl -n hw.ncpu)" ocerz FEX="$MNC_AARCHX_FEX" \
+            ARCHFLAGS="-arch arm64 -mmacosx-version-min=12.0" >"$SRC/.mnc-build.log" 2>&1; then
+        tail -30 "$SRC/.mnc-build.log" >&2
+        echo "::warning::AArchX failed to build with FEXCore; building it without -fex"
+        rm -f "$SRC/src/fex.o" "$SRC/src/main.o"
+        MNC_AARCHX_FEX=""
+    fi
+    if [ -z "${MNC_AARCHX_FEX:-}" ] && ! make -C "$SRC" -j"$(sysctl -n hw.ncpu)" ocerz \
             ARCHFLAGS="-arch arm64 -mmacosx-version-min=12.0" >"$SRC/.mnc-build.log" 2>&1; then
         # Experimental and optional: a translator that fails to compile on this toolchain
         # must not cost the release. Say so loudly and ship the launcher without it.
