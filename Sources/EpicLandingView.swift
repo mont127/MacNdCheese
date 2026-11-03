@@ -142,7 +142,8 @@ struct EpicLandingView: View {
             }
             // Keep polling downloads; refresh library only when a download is active.
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                let delay: UInt64 = backend.epicDownloads.isEmpty ? 10_000_000_000 : 3_000_000_000
+                try? await Task.sleep(nanoseconds: delay)
                 guard !Task.isCancelled, backend.activePrefix == prefix else { break }
                 await backend.refreshEpicDownloads()
                 if !backend.epicDownloads.isEmpty {
