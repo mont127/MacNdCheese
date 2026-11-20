@@ -5578,6 +5578,36 @@ def _ue_project_token(exe_path: Path, args: str) -> str:
     return cands[0] if len(cands) == 1 else ""   # ambiguous -> dont guess
 
 
+# Flags a user (or the game's own bootstrap) uses to pick Unreal's graphics API. A quirk never
+# adds one when any of these is allready there, so typing -dx12 in Args always wins.
+_UE_RHI_FLAGS = ("-d3d11", "-d3d12", "-dx11", "-dx12", "-sm5", "-sm6", "-vulkan", "-opengl", "-d3d10")
+
+
+def _title_quirk_args(exe_path: Path, steam_appid: str, args: str) -> List[str]:
+    """Extra launch args for the few titles no backend setting can fix, or [].
+
+    Satisfactory (526870, #178): UE5 picks D3D12 and, because D3DMetal reports binding tier 3
+    / SM 6.6, sizes a bindless sampler heap D3DMetal doesnt have -> "Assertion failed:
+    GGlobalSamplerDescriptorHeapSize <= MaximumSamplerHeapSize" in RHIInit before any window.
+    No ini value clears it (tested down to 16) and Vulkan fails too (VK_ERROR_INCOMPATIBLE_DRIVER
+    on VP_UE_Vulkan_SM6), so D3D12 cant work on any backend we ship; DX11 runs the whole game.
+    A launch arg also beats the in-game API picker, which writes DefaultGraphicsRHI to the
+    user Engine.ini and would otherwise break startup with no window.
+
+    Keyed per title on purpose: the UE4 -d3d11 rule doesnt extend to UE5 in general (Nanite and
+    Lumen need D3D12), so a blanket rule would downgrade every UE5 game to fix this one."""
+    try:
+        given = [p.lower() for p in shlex.split(args)] if args else []
+    except ValueError:
+        return []   # unbalanced quotes: leave the argv exactly as given
+    if any(p in _UE_RHI_FLAGS for p in given):
+        return []
+    stem = exe_path.stem.lower()
+    if steam_appid == "526870" or stem.startswith("factorygame"):
+        return ["-dx11"]
+    return []
+
+
 def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str, Any],
                          params: Dict[str, Any]) -> Any:
     """Launch a game through the unified wine; the loader routes its d3d to the
@@ -5787,6 +5817,11 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
         if _add:
             args = ((args + " ") if args else "") + " ".join(_add)
             log(f"CEF-safe-mode Application: appended {len(_add)} CEF/GPU switch(es) to argv")
+    _quirk = _title_quirk_args(exe_path, steam_appid, args)
+    if _quirk:
+        args = ((args + " ") if args else "") + " ".join(_quirk)
+        log(f"title quirk: added {' '.join(_quirk)} for {exe_path.name} "
+            f"(D3D12 cant run it on our backends, #178; put -dx12 in Args to override)")
     _ue_project = _ue_project_token(exe_path, args)
     if _ue_project:
         args = f"{_ue_project} {args}".strip()
