@@ -466,6 +466,24 @@ install_tools() {
   "$BREW_BIN" install git p7zip winetricks zstd || true
 }
 
+# Bradar: the deps zip ships libidn2.0 and libssl.3 with there load paths
+# rewriten by install_name_tool and never re-signed, so macOS SIGKILLs wget
+# the momment it loads them and every winetricks download fails (#228). The
+# +x find above skips them becuase dylibs arent executable. So re-sign every
+# Mach-O in bin/ and lib/ whos signature dosnt verify, and leave the rest be.
+resign_broken_portable_machos() {
+  for f in "$PORTABLE_DIR"/bin/* "$PORTABLE_DIR"/lib/*; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    file -b "$f" | grep -q "Mach-O" || continue
+    /usr/bin/codesign --verify "$f" >/dev/null 2>&1 && continue
+    if /usr/bin/codesign --force --sign - --timestamp=none "$f" >/dev/null 2>&1; then
+      echo "Re-signed $(basename "$f") (its signature was broken)"
+    else
+      echo "Warning: could not re-sign $f"
+    fi
+  done
+}
+
 install_portable_tools() {
   echo "Step: Installing portable tools (7-Zip, Git, Wget, Zstd)..."
   mkdir -p "$PORTABLE_DIR"
@@ -526,7 +544,8 @@ install_portable_tools() {
 
   echo "Applying security signatures to portable tools..."
   find "$PORTABLE_DIR" -type f -perm +111 -exec /usr/bin/codesign --force --sign - --timestamp=none {} \; 2>/dev/null || true
-  
+  resign_broken_portable_machos
+
   write_component_version "tools" "$PORTABLE_BASE_TAG"
   echo "Portable tools installed to $PORTABLE_DIR"
 }
