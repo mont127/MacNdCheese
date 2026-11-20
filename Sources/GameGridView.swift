@@ -603,7 +603,8 @@ struct GameCardView: View {
                 metalHud: cfg["metal_hud"] as? Bool ?? false,
                 esync: finalEsync,
                 msync: msync,
-                customEnv: cfg["custom_env"] as? String ?? ""
+                customEnv: cfg["custom_env"] as? String ?? "",
+                d3d9Impl: cfg["d3d9_impl"] as? String ?? ""
             )
             isLaunching = false
         }

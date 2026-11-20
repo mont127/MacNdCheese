@@ -4569,7 +4569,8 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
                  cef_safe_mode: bool = False,
                  debug: bool = False, x87_jit: bool = True,
                  x87_opts: Optional[Dict[str, Any]] = None,
-                 msync: Optional[bool] = None) -> Dict[str, str]:
+                 msync: Optional[bool] = None,
+                 d3d9_builtin: bool = False) -> Dict[str, str]:
     """Env for the unified wine. Steam exes always render via DXMT (loader gate);
     non-steam games follow MNC_GAME_BACKEND. GStreamer (MF/H.264 video) is wired for
     GAMES ONLY -- Steam CEF crashes if it touches GStreamer so it gets none.
@@ -4649,8 +4650,17 @@ def _unified_env(prefix: str, game_backend: str, metal_hud: bool = False,
     # builtin. The switch is the override alone: _stage_unified_d3d9() only drops the
     # native DXMT d3d9 into the prefix on Apple Silicon, and without "=n" wine loads its
     # own builtin from the wine tree regardless of what sits in system32.
+    #
+    # Bradar d3d9_builtin is the per-game way out when DXMT's d3d9 cant run a game yet (GTA IV
+    # crashes in it, #230): leave the override off and wine picks its own builtin, same as on an
+    # Intel Mac. The staged DXMT file stays in system32 for every other game; without "=n" wine
+    # ignores it (see _stage_unified_d3d9). No "d3d9=b" either, so a d3d9.dll proxy a mod drops
+    # next to the game exe still loads first.
     if _is_apple_silicon() and _native_d3d9_staged(prefix):
-        dll_ovr += ";d3d9=n"
+        if d3d9_builtin:
+            log("unified: d3d9 left on wine's builtin (wined3d) for this game, DXMT d3d9 off (#230)")
+        else:
+            dll_ovr += ";d3d9=n"
     env.pop("ROSETTA_X87_PATH", None)   # never inherit a stale one from the shell
     for _stale in ("ROSETTA_X87_EXTENDED_FPR_SCRATCH", "ROSETTA_X87_FAST_ROUND",
                    "ROSETTA_X87_F32_ARITH", "ROSETTA_X87_F32_NARROW",
@@ -5764,8 +5774,11 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
     # patched handlers upset, not a thing users should have to find. Per-launch only --
     # the bottle-level copy moved to the Applications section as apps_x87_jit and governs
     # applications, not games.
+    # "Direct3D 9" picker in the game's Wine & Graphics panel: "dxmt" (default) or "wined3d".
+    _d3d9_impl = str(params.get("d3d9_impl") or bottle_cfg.get("d3d9_impl") or "dxmt").strip().lower()
     env = _unified_env(prefix, backend, metal_hud, gst_debug=("5" if debug else "3"),
                        cef_safe_mode=force_cef, debug=debug, msync=_launch_msync,
+                       d3d9_builtin=_d3d9_impl in ("wined3d", "builtin", "wine"),
                        x87_jit=bool(params.get("x87_jit", True)),
                        x87_opts={k: bool(params.get(k, False))
                                  for k in ("x87_extended_fpr", "x87_fast_round",

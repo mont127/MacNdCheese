@@ -108,7 +108,8 @@ final class MacNCheeseURLHandler {
                 msync: msync,
                 gameName: game.name,
                 steamAppId: game.appid,
-                customEnv: customEnv
+                customEnv: customEnv,
+                d3d9Impl: cfg["d3d9_impl"] as? String ?? ""
             )
         }
 

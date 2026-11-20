@@ -41,6 +41,7 @@ struct GameDetailView: View {
     @State private var x87FastRound: Bool = false
     @State private var x87F32Arith: Bool = false
     @State private var x87FastRecipDiv: Bool = false
+    @State private var d3d9Impl: String = "dxmt"
     @State private var enableMsync: Bool = true
     @State private var advertiseAVX: Bool = false
     @State private var customEnv: String = ""
@@ -297,6 +298,8 @@ struct GameDetailView: View {
             Divider()
             exeSection
             graphicsSection
+            // DXMT's d3d9 is only used on Apple Silicon; an Intel Mac is always on wined3d.
+            if isAppleSilicon { d3d9Section }
             argsSection
             retinaSection
             dpiAwareSection
@@ -409,6 +412,25 @@ struct GameDetailView: View {
                 }
                 .labelsHidden()
             }
+        }
+    }
+
+    /// Bradar DX9 games always go through DXMT's d3d9 on Apple Silicon, whatever the Graphics
+    /// Engine says. This is the per-game way back to Wine's own d3d9 for a game DXMT can't run
+    /// yet (GTA IV, #230).
+    private var d3d9Section: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L("Direct3D 9:")).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+            Picker("", selection: $d3d9Impl) {
+                Text("DXMT").tag("dxmt")
+                Text(L("Wine builtin (wined3d)")).tag("wined3d")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text(L("Only affects DirectX 9 games. Switch to Wine builtin if a DX9 game crashes or draws wrong on DXMT; it is slower but more compatible."))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -603,6 +625,7 @@ struct GameDetailView: View {
         if let v = cfg["x87_fast_round"] as? Bool { x87FastRound = v }
         if let v = cfg["x87_f32_arith"] as? Bool { x87F32Arith = v }
         if let v = cfg["x87_fast_recip_div"] as? Bool { x87FastRecipDiv = v }
+        if let v = cfg["d3d9_impl"] as? String { d3d9Impl = v }
         if let sm = cfg["steam_mode"] as? String { steamMode = sm }
     }
 
@@ -618,6 +641,7 @@ struct GameDetailView: View {
             "x87_jit": x87Jit, "x87_extended_fpr": x87ExtendedFpr,
             "x87_fast_round": x87FastRound, "x87_f32_arith": x87F32Arith,
             "x87_fast_recip_div": x87FastRecipDiv,
+            "d3d9_impl": d3d9Impl,
             "dpi_aware": dpiAware,
         ])
         // Written separately: "auto" must leave the key ABSENT so the backend's
@@ -752,7 +776,8 @@ struct GameDetailView: View {
                     dpiAware: dpiAware,
                     largeAddressAware: largeAddressAware,
                     x87Jit: x87Jit, x87ExtendedFpr: x87ExtendedFpr, x87FastRound: x87FastRound,
-                    x87F32Arith: x87F32Arith, x87FastRecipDiv: x87FastRecipDiv)
+                    x87F32Arith: x87F32Arith, x87FastRecipDiv: x87FastRecipDiv,
+                    d3d9Impl: d3d9Impl)
             }
             isLaunching = false
             onClose()
