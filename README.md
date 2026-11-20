@@ -32,7 +32,7 @@ Go to [store.steampowered.com](https://store.steampowered.com/about/) and downlo
 
 Or install via [Homebrew](https://brew.sh/):
 ```bash
-brew install --cask realmaitreal/macndcheese/macndcheese
+brew install --cask macndcheese-org/tap/macndcheese
 ```
 
 ### Mac says the app "can't be verified"?
