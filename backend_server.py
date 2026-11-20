@@ -1312,6 +1312,64 @@ def _reconcile_msync(env: Dict[str, str], prefix: Optional[str]) -> Dict[str, st
     return env
 
 
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _parse_custom_env(custom_env_str: Any) -> List[Tuple[str, str]]:
+    """The game's "Environment Variables" box: KEY=value, one per line. Blank lines and
+    lines starting with # are skiped, a leading "export " is tolerated and matching quotes around
+    the value are dropped (WINEDLLOVERRIDES="dinput8=n,b" used to keep the quotes)."""
+    pairs: List[Tuple[str, str]] = []
+    for raw in str(custom_env_str or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        if _ENV_KEY_RE.match(k):
+            pairs.append((k, v))
+    return pairs
+
+
+def _apply_custom_env(env: Dict[str, str], custom_env_str: Any) -> List[Tuple[str, str]]:
+    """Apply the user's KEY=value lines on top of the launch env, last so they win.
+
+    Bradar WINEDLLOVERRIDES is the one exeption: the launcher's own value carrys the
+    backend wiring (d3d9=n for DXMT, d3dcompiler_47, mscoree...) and replacing it breaks the
+    game in new ways. So the users value is APPENDED. Wine keeps the last entry it sees for
+    a dll, so "d3d9=b" or "dinput8=n,b" still wins over ours (#229, #230)."""
+    pairs = _parse_custom_env(custom_env_str)
+    for k, v in pairs:
+        if k == "WINEDLLOVERRIDES" and env.get(k):
+            if v:
+                env[k] = f"{env[k]};{v}"
+        else:
+            env[k] = v
+    if pairs:
+        log(f"custom env: {', '.join(k for k, _ in pairs)}"
+            + (f" (WINEDLLOVERRIDES now {env.get('WINEDLLOVERRIDES')})"
+               if any(k == "WINEDLLOVERRIDES" for k, _ in pairs) else ""))
+    return pairs
+
+
+def _custom_env_exports(pairs: List[Tuple[str, str]]) -> str:
+    """The same lines as shell exports, for the launch heredocs that rebuild ther own env
+    (D3DMetal/GPTK) and would otherwise overwrite them."""
+    out = []
+    for k, v in pairs:
+        if k == "WINEDLLOVERRIDES":
+            out.append(f'export WINEDLLOVERRIDES="${{WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}}"{shlex.quote(v)}')
+        else:
+            out.append(f"export {k}={shlex.quote(v)}")
+    return "".join(line + "\n" for line in out)
+
+
 def _apply_sync_env(env: Dict[str, str], esync: Optional[bool], msync: Optional[bool],
                     prefix: Optional[str] = None) -> Dict[str, str]:
     """Apply optional per-launch esync/msync flags.
@@ -1807,7 +1865,8 @@ def _derive_steam_appid(exe_dir: str) -> Optional[str]:
 def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
                         prefix: str, exe_full: str, quoted_args: str, log_path: str,
                         extra_env: Optional[Dict[str, str]] = None,
-                        debug: bool = False) -> str:
+                        debug: bool = False,
+                        user_env: Optional[List[Tuple[str, str]]] = None) -> str:
     # Advanced-debug toggle: verbose WINEDEBUG instead of the default "-all".
     wine_debug = WINE_DEBUG_VERBOSE if debug else "-all"
     """Build the full bash launch command for a given backend."""
@@ -1877,6 +1936,7 @@ def _backend_launch_cmd(backend: str, wine: str, exe_dir: str, exe_name: str,
         env_block = "\n".join(env_lines)
         heredoc = (
             f"{env_block}\n"
+            f"{_custom_env_exports(user_env or [])}"
             f"cd {shlex.quote(exe_dir)} || exit 1\n"
             f"arch -x86_64 {shlex.quote(str(launcher))} "
             f"{shlex.quote(exe_full)} {quoted_args} > {shlex.quote(log_path)} 2>&1\n"
@@ -1911,7 +1971,7 @@ export DYLD_FALLBACK_LIBRARY_PATH={shlex.quote(dyld_fallback)}
 export ROSETTA_ADVERTISE_AVX=1
 export WINEDLLOVERRIDES="{dll_ovr}"
 export WINEDEBUG={wine_debug}
-{steam_id_lines}{metal_hud_line}cd {shlex.quote(exe_dir)} || exit 1
+{steam_id_lines}{metal_hud_line}{_custom_env_exports(user_env or [])}cd {shlex.quote(exe_dir)} || exit 1
 "$MNC_WINE" {shlex.quote('./' + exe_name)} {quoted_args} 2>&1 | tee {shlex.quote(log_path)}
 """
         return f"cd ~ && /usr/bin/arch -x86_64 /bin/zsh <<'MNCEOF'\n{heredoc}MNCEOF"
@@ -1928,7 +1988,9 @@ export WINEDEBUG={wine_debug}
     inner = (
         'export DYLD_FALLBACK_LIBRARY_PATH="$MNC_DYLD"; '
         f'export {debug_prefix}; '
-        f"exec {shlex.quote(wine)} {shlex.quote(exe_name)} {quoted_args}"
+        + _custom_env_exports([(k, v) for k, v in (user_env or [])
+                               if k in ("WINEDEBUG", "DYLD_FALLBACK_LIBRARY_PATH")]).replace("\n", "; ")
+        + f"exec {shlex.quote(wine)} {shlex.quote(exe_name)} {quoted_args}"
     )
     return (
         f"cd {shlex.quote(exe_dir)} && "
@@ -5793,6 +5855,12 @@ def _launch_game_unified(prefix: str, exe: str, args: str, bottle_cfg: Dict[str,
         log(f"UE: prepended project '{_ue_project}' -- {exe_path.name} doesnt resolve to a "
             f"project dir, so UE would die on 'Failed to open descriptor file'")
     quoted_args = (" " + args) if args else ""
+    # Bradar the game's "Environment Variables" box. It was saved n sent with every launch but
+    # only the Epic/Amazon paths ever read it, so for a game in a bottle it did nothing (#229).
+    # Applied last (after every regedit above, so those helper wine runs stay clean) so the
+    # users values win; WINEDLLOVERRIDES is appended to ours, see _apply_custom_env.
+    env = dict(env)
+    _apply_custom_env(env, params.get("custom_env", ""))
     cmd = (
         # export DYLD inside the shell. the outer arch (SIP-restricted) strips DYLD_* so
         # running wine via `arch wine` loses the fallback path and wine cannot dlopen
@@ -6086,10 +6154,14 @@ def cmd_launch_game(params: Dict[str, Any]) -> Any:
         # Bradar The d3dmetal3/gptk heredocs export SteamAppId from extra_env.
         launch_extra_env["SteamAppId"] = steam_appid
         launch_extra_env["SteamGameId"] = steam_appid
+    # The game's "Environment Variables" box, applied last so it wins (#229).
+    env = dict(env)
+    user_env = _apply_custom_env(env, params.get("custom_env", ""))
     cmd = _backend_launch_cmd(
         backend, wine, exe_dir, exe_name, prefix, exe, quoted_args, log_path,
         extra_env=launch_extra_env or None,
         debug=verbose_debug,
+        user_env=user_env,
     )
 
     
@@ -10754,10 +10826,7 @@ def cmd_legendary_launch_game(params: Dict[str, Any]) -> Any:
             wine_bin = _write_d3dmetal_legendary_wrapper(prefix_expanded, metal_hud, verbose_debug)
 
     env = _apply_sync_env(env, esync, msync, prefix=str(prefix))
-    for line in (custom_env_str or "").splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip()
+    _apply_custom_env(env, custom_env_str)
 
     # Always apply retina regedit (handles both on and off states)
     if unified:
@@ -10905,10 +10974,7 @@ def cmd_nile_launch_game(params: Dict[str, Any]) -> Any:
             wine_bin = _write_d3dmetal_legendary_wrapper(prefix_expanded, metal_hud, verbose_debug)
 
     env = _apply_sync_env(env, esync, msync, prefix=str(prefix))
-    for line in (custom_env_str or "").splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip()
+    _apply_custom_env(env, custom_env_str)
 
     # Always apply retina regedit (handles both on and off states)
     if unified:
