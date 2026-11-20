@@ -318,7 +318,8 @@ final class BackendClient: ObservableObject {
 
     func launchGame(prefix: String, exe: String, args: String = "", backend: String = "auto", installDir: String = "", retinaMode: Bool = false, metalHud: Bool = false, gameMode: Bool = true, esync: Bool = true, msync: Bool = true, gameName: String = "", steamAppId: String = "", steamMode: String = "silent", customEnv: String = "", debug: Bool = false, forceDxmtCef: Bool = false, dpiAware: Bool? = nil,
                     largeAddressAware: Bool = true, x87Jit: Bool = true, x87ExtendedFpr: Bool = false, x87FastRound: Bool = false,
-                    x87F32Arith: Bool = false, x87FastRecipDiv: Bool = false) async {
+                    x87F32Arith: Bool = false, x87FastRecipDiv: Bool = false,
+                    d3d9Impl: String = "") async {
         do {
             let screenInfo = NSScreen.screens.map { s in
                 "\(s.localizedName): scale=\(s.backingScaleFactor) res=\(Int(s.frame.width))x\(Int(s.frame.height))"
@@ -334,6 +335,8 @@ final class BackendClient: ObservableObject {
                 "x87_jit": x87Jit, "x87_extended_fpr": x87ExtendedFpr,
                 "x87_fast_round": x87FastRound, "x87_f32_arith": x87F32Arith,
                 "x87_fast_recip_div": x87FastRecipDiv,
+                // "dxmt" | "wined3d"; empty = the backend's default (DXMT on Apple Silicon)
+                "d3d9_impl": d3d9Impl,
                 // omitted entirely when nil so the backend's per-title detection still runs
                 "dpi_aware": dpiAware as Any? ?? NSNull(),
             ])

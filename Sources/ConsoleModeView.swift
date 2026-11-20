@@ -421,7 +421,8 @@ struct ConsoleModeView: View {
                 steamAppId: g.appid,
                 steamMode: cfg["steam_mode"] as? String ?? "silent",
                 customEnv: cfg["custom_env"] as? String ?? "",
-                debug: cfg["debug"] as? Bool ?? false)
+                debug: cfg["debug"] as? Bool ?? false,
+                d3d9Impl: cfg["d3d9_impl"] as? String ?? "")
             launching = false
             // Bradar drop back to the desktop so the games own window is visible (a wine
             // window openin behind our fullscreen Space would look like nothin happend)
