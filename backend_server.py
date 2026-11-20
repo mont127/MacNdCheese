@@ -9309,6 +9309,48 @@ def _winetricks_bin() -> Optional[str]:
     return str(p) if p.exists() else None
 
 
+# Bradar: the portable tools zip (v1.0.0) has libidn2.0 + libssl.3 with broken
+# signatures (install_name_tool ran on them, nobody re-signed). wget links both,
+# so macOS kills it with SIGKILL on startup and winetricks cant download a thing
+# (#228). The installer now re-signs them, but people who installed the tools
+# allready never re-run that, so heal it here: re-sign any Mach-O in deps/bin
+# and deps/lib whos signature fails to verify. Once per backend run.
+_MACHO_MAGICS = (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf")
+_portable_sigs_lock = threading.Lock()
+_portable_sigs_checked = False
+
+
+def _heal_portable_tool_sigs() -> None:
+    global _portable_sigs_checked
+    with _portable_sigs_lock:
+        if _portable_sigs_checked:
+            return
+        _portable_sigs_checked = True
+        for sub in ("bin", "lib"):
+            d = PORTABLE_DIR / sub
+            if not d.is_dir():
+                continue
+            for f in sorted(d.iterdir()):
+                try:
+                    if f.is_symlink() or not f.is_file():
+                        continue
+                    with open(f, "rb") as fh:
+                        if fh.read(4) not in _MACHO_MAGICS:
+                            continue
+                    if subprocess.run(["/usr/bin/codesign", "--verify", str(f)],
+                                      capture_output=True, timeout=30).returncode == 0:
+                        continue
+                    r = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
+                                        "--timestamp=none", str(f)],
+                                       capture_output=True, text=True, timeout=30)
+                    if r.returncode == 0:
+                        log(f"portable tools: re-signed {sub}/{f.name} (its signature was broken, #228)")
+                    else:
+                        log(f"portable tools: could not re-sign {sub}/{f.name}: {r.stderr.strip()}")
+                except (OSError, subprocess.SubprocessError) as exc:
+                    log(f"portable tools: signature check failed for {sub}/{f.name}: {exc}")
+
+
 def _winetricks_wine_and_server(prefix: str) -> Tuple[str, str]:
     """Resolve the wine winetricks should use: the unified engine, same as every other
     installer path (see _installer_wine()). Deliberately ignores the bottle's own
@@ -9341,6 +9383,7 @@ def _winetricks_popen(prefix: str, verb: str, force: bool = False) -> subprocess
     if not wtk:
         raise FileNotFoundError("Winetricks isn't installed yet — run Setup first.")
     wine, wineserver = _winetricks_wine_and_server(prefix)
+    _heal_portable_tool_sigs()  # wget dies with SIGKILL otherwise, #228
     # Same prerequisites _run_installer_unified requires: a fast-booted
     # bottle can have an empty syswow64, which makes 32-bit installers die
     # with c0000135 before winetricks even gets a chance to run them.
@@ -11536,6 +11579,7 @@ def main() -> None:
     log(f"DEFAULT_PREFIX = {DEFAULT_PREFIX}")
 
     _ensure_cli_on_path()
+    threading.Thread(target=_heal_portable_tool_sigs, daemon=True, name="heal-tool-sigs").start()
 
     # Restore automatic Game Mode policy in case a previous run crashed while
     # it had Game Mode forced on.
