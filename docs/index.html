@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>MacNCheese — Run Windows Games on macOS for Free</title>
-  <meta name="description" content="Free, open-source launcher to play Windows Steam games on Apple Silicon Macs using Wine, DXVK, and MoltenVK. No subscriptions. No terminal required.">
+  <meta name="description" content="Free, open-source launcher to play Windows Steam games on Apple Silicon Macs using Wine, DXMT, D3DMetal and DXVK. No subscriptions. No terminal required.">
   <meta name="theme-color" content="#0a0a0b">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://mont127.github.io/MacNdCheese/">
@@ -12,7 +12,7 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://mont127.github.io/MacNdCheese/">
   <meta property="og:title" content="MacNCheese — Run Windows Games on macOS for Free">
-  <meta property="og:description" content="Free, open-source launcher to play Windows Steam games on Apple Silicon Macs using Wine, DXVK, and MoltenVK. No subscriptions. No terminal required.">
+  <meta property="og:description" content="Free, open-source launcher to play Windows Steam games on Apple Silicon Macs using Wine, DXMT, D3DMetal and DXVK. No subscriptions. No terminal required.">
   <meta property="og:image" content="https://mont127.github.io/MacNdCheese/icon.png">
   <meta property="og:site_name" content="MacNCheese">
 
@@ -29,7 +29,7 @@
     "operatingSystem": "macOS",
     "applicationCategory": "GameApplication",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-    "description": "Free, open-source launcher to play Windows Steam games on Apple Silicon Macs using Wine, DXVK, and MoltenVK.",
+    "description": "Free, open-source launcher to play Windows Steam games on Apple Silicon Macs using Wine, DXMT, D3DMetal and DXVK.",
     "url": "https://mont127.github.io/MacNdCheese/",
     "downloadUrl": "https://github.com/mont127/MacNdCheese/releases",
     "softwareVersion": "3.0.1"
@@ -574,7 +574,7 @@
     <a href="#showcases"    class="nav-link">Showcases</a>
     <a href="#tutorial"     class="nav-link">Tutorial</a>
     <a href="#faq"          class="nav-link">FAQ</a>
-    <a href="https://github.com/mont127/MacNdCheese/releases/latest/download/MacNCheese.dmg"
+    <a href="https://github.com/mont127/MacNdCheese/releases/latest/download/MacNCheese-universal.dmg"
        class="btn-nav-dl" aria-label="Download MacNCheese">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
       Download
@@ -604,7 +604,7 @@
         no subscriptions, no terminal, no nonsense.
       </p>
       <div class="hero-actions">
-        <a href="https://github.com/mont127/MacNdCheese/releases/latest/download/MacNCheese.dmg"
+        <a href="https://github.com/mont127/MacNdCheese/releases/latest/download/MacNCheese-universal.dmg"
            class="btn btn-primary btn-lg" aria-label="Download MacNCheese DMG for macOS">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
           Download for macOS
@@ -620,11 +620,11 @@
           GitHub
         </a>
       </div>
-      <p class="hero-brew">or via Homebrew: <code>brew install --cask realmaitreal/macndcheese/macndcheese</code></p>
+      <p class="hero-brew">or via Homebrew: <code>brew install --cask macndcheese-org/tap/macndcheese</code></p>
       <div class="hero-meta" aria-label="At a glance">
-        <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Apple Silicon M1&ndash;M4</span>
+        <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Apple Silicon (M1 and newer)</span>
         <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Windows Steam Games</span>
-        <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Wine + DXVK + MoltenVK</span>
+        <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Wine + DXMT + D3DMetal + DXVK</span>
         <span class="hero-chip"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>100% Free, Forever</span>
       </div>
     </div>
@@ -635,7 +635,7 @@
     <div class="section-inner">
       <p class="section-eye reveal">Why MacNCheese</p>
       <h2 class="section-title reveal" id="features-heading">Everything set up automatically</h2>
-      <p class="section-sub reveal">MacNCheese handles Wine, DXVK, MoltenVK, and more so you can focus on gaming.</p>
+      <p class="section-sub reveal">MacNCheese handles Wine, DXMT, D3DMetal, DXVK and more so you can focus on gaming.</p>
       <div class="features-grid">
 
         <article class="feature-card wide reveal">
@@ -650,16 +650,16 @@
           <div class="feature-icon" aria-hidden="true">
             <svg class="icon" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>
           </div>
-          <h3>DXVK</h3>
-          <p>Translates DirectX 9&ndash;11 to Vulkan, then to Metal via MoltenVK. Most games work out of the box.</p>
+          <h3>Graphics Backends</h3>
+          <p>DXMT (DirectX 9&ndash;11 to Metal), Apple&rsquo;s D3DMetal (DirectX 11/12), DXVK (via MoltenVK) and OpenGL. Pick one per game.</p>
         </article>
 
         <article class="feature-card reveal">
           <div class="feature-icon" aria-hidden="true">
             <svg class="icon" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/></svg>
           </div>
-          <h3>Apple Silicon Optimized</h3>
-          <p>Built specifically for M1, M2, M3, and M4 chips. Takes full advantage of the ARM architecture and Metal GPU API.</p>
+          <h3>Made for Apple Silicon</h3>
+          <p>Built and tested on M-series Macs. Windows games run as x86-64 through Rosetta&nbsp;2 and draw with Metal.</p>
         </article>
 
         <article class="feature-card reveal">
@@ -667,15 +667,15 @@
             <svg class="icon" viewBox="0 0 24 24"><line x1="6" x2="10" y1="12" y2="12"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="15" x2="15.01" y1="13" y2="13"/><line x1="18" x2="18.01" y1="11" y2="11"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.544-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
           </div>
           <h3>Steam Integration</h3>
-          <p>Install Steam for Windows inside Wine with one click. Your game library appears automatically in MacNCheese.</p>
+          <p>Choose your <code>SteamSetup.exe</code> and MacNCheese creates a ready-to-play Steam bottle. Your game library appears automatically in MacNCheese.</p>
         </article>
 
         <article class="feature-card reveal">
           <div class="feature-icon" aria-hidden="true">
             <svg class="icon" viewBox="0 0 24 24"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z"/><path d="M5 3v4M19 17v4M3 5h4M17 19h4"/></svg>
           </div>
-          <h3>Smart Auto Mode</h3>
-          <p>Not sure which backend to pick? Auto mode detects your game and selects the best option &mdash; DXVK or DXMT.</p>
+          <h3>Sensible Defaults</h3>
+          <p>On Auto, a game uses its bottle&rsquo;s graphics engine (D3DMetal unless you change it). Steam always draws through DXMT, and DirectX&nbsp;9 games use DXMT on Apple Silicon. Override any of it per game.</p>
         </article>
 
         <article class="feature-card wide reveal">
@@ -709,8 +709,8 @@
         <li class="step reveal">
           <div class="step-num" aria-label="Step 2">2</div>
           <div class="step-body">
-            <h3>Click Install</h3>
-            <p>Hit <strong>Install</strong> &mdash; MacNCheese automatically downloads and sets up Wine, DXVK, MoltenVK, and Steam. Just wait for it to finish.</p>
+            <h3>Run the first-time setup</h3>
+            <p>Click <strong>Install &amp; Get Started</strong> and MacNCheese downloads Wine, its graphics layers and the tools it needs. Then choose a <code>SteamSetup.exe</code> (from <a href="https://store.steampowered.com/about/" target="_blank" rel="noopener">store.steampowered.com/about</a>) and it sets up a Steam bottle for you.</p>
           </div>
         </li>
 
@@ -718,7 +718,7 @@
           <div class="step-num" aria-label="Step 3">3</div>
           <div class="step-body">
             <h3>Launch your game</h3>
-            <p>Open Steam from the app&rsquo;s top bar, install your game, then return to MacNCheese. Select your game from the list and hit <strong>Launch</strong>. Leave the backend on <strong>Auto</strong> if you&rsquo;re unsure.</p>
+            <p>Open Steam from the app&rsquo;s top bar, install your game, then return to MacNCheese. Select your game from the list and hit <strong>Play</strong>. Leave the Graphics Engine on <strong>Auto</strong> if you&rsquo;re unsure.</p>
           </div>
         </li>
 
@@ -845,19 +845,20 @@
 
         <details class="reveal">
           <summary>Does it work on Intel Macs?</summary>
-          <div class="faq-body">Officially, no. MacNCheese is built and tested for Apple Silicon (M1, M2, M3, M4). Intel Macs are not the target platform. You might get it running from source, but it&rsquo;s unsupported.</div>
+          <div class="faq-body">Officially, no. MacNCheese is built and tested for Apple Silicon (M1 and newer). Intel Macs are not the target platform. You might get it running from source, but it&rsquo;s unsupported.</div>
         </details>
 
         <details class="reveal">
           <summary>Which graphics backend should I pick?</summary>
           <div class="faq-body">
-            <p>Leave it on <strong>Auto</strong> and MacNCheese will choose the best backend for your game. If you need to manually select:</p>
+            <p>Leave it on <strong>Auto</strong> and the game uses its bottle&rsquo;s graphics engine (D3DMetal unless you change it in the toolbar). If a game misbehaves, pick one for it:</p>
             <table>
               <thead><tr><th>Backend</th><th>Best For</th></tr></thead>
               <tbody>
-                <tr><td>DXVK</td><td>Most DirectX 10/11 games</td></tr>
-                <tr><td>DXMT</td><td>Experimental DX11 via Metal</td></tr>
-                <tr><td>Mesa</td><td>Fallback / debugging</td></tr>
+                <tr><td>D3DMetal</td><td>DirectX 11/12 games, best performance</td></tr>
+                <tr><td>DXMT</td><td>DirectX 10/11 games; also runs Steam and every DirectX 9 game</td></tr>
+                <tr><td>DXVK</td><td>Fallback when the two above don&rsquo;t work</td></tr>
+                <tr><td>OpenGL</td><td>OpenGL and SDL3 games</td></tr>
               </tbody>
             </table>
           </div>
@@ -868,8 +869,8 @@
           <div class="faq-body">
             The graphics backend didn&rsquo;t load properly. Try these steps:
             <ol>
-              <li>Make sure Wine is installed (click Install Wine)</li>
-              <li>Switch the backend to DXVK explicitly</li>
+              <li>Make sure setup finished: <strong>Settings &rarr; Setup</strong> shows anything still missing</li>
+              <li>Switch the game&rsquo;s Graphics Engine to DXMT or D3DMetal explicitly</li>
               <li>Re-launch the game from MacNCheese, not from Steam directly</li>
             </ol>
           </div>
@@ -888,13 +889,13 @@
         <details class="reveal">
           <summary>How do I build from source?</summary>
           <div class="faq-body">
-            <p>You&rsquo;ll need macOS with Homebrew and Xcode Command Line Tools installed.</p>
+            <p>You&rsquo;ll need macOS with Xcode Command Line Tools (<code>xcode-select --install</code>). The app is SwiftUI with a Python backend that only uses the standard library, so there is nothing to <code>pip install</code>.</p>
             <ol>
-              <li>Clone: <code>git clone https://github.com/mont127/MacNdCheese/</code></li>
-              <li>Set up env: <code>uv venv &amp;&amp; source .venv/bin/activate</code></li>
-              <li>Install deps: <code>uv pip install -r requirements.txt</code></li>
-              <li>Run: <code>uv run MacNCheese.py</code></li>
+              <li>Clone: <code>git clone https://github.com/mont127/MacNdCheese</code></li>
+              <li>Build and install into <code>/Applications</code> for testing: <code>bash install.sh</code></li>
+              <li>Or build a distributable <code>.dmg</code>: <code>bash buildapp.sh universal</code> (or <code>arm64</code> / <code>x86_64</code>)</li>
             </ol>
+            <p>See <a href="https://github.com/mont127/MacNdCheese/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">CONTRIBUTING.md</a> for the full details.</p>
           </div>
         </details>
 
@@ -909,7 +910,7 @@
         <h2 id="cta-heading">Ready to play?</h2>
         <p>Download MacNCheese and start running your Windows game library on macOS today &mdash; completely free.</p>
         <div class="cta-actions">
-          <a href="https://github.com/mont127/MacNdCheese/releases/latest/download/MacNCheese.dmg"
+          <a href="https://github.com/mont127/MacNdCheese/releases/latest/download/MacNCheese-universal.dmg"
              class="btn btn-primary btn-lg" aria-label="Download MacNCheese for macOS">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M6 11l6 6 6-6M4 19h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Download for macOS
@@ -937,7 +938,7 @@
         </div>
         <p class="footer-desc">
           Free, open-source Windows game launcher for Apple Silicon Macs.
-          Built with Wine, DXVK, and MoltenVK.
+          Built with Wine, DXMT, D3DMetal, DXVK and MoltenVK.
         </p>
       </div>
       <nav class="footer-links" aria-label="Footer links">
